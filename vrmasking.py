@@ -1,18 +1,14 @@
-import argparse, shutil, gc, os, sys, functools, re, subprocess, time, torch, cv2, time, imageio, numpy as np
+import argparse, shutil, gc, os, sys, functools, re, subprocess, time, torch, cv2, imageio, numpy as np
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import List
 from PIL import Image
-from typing import Callable, Tuple
-from typing import Callable
+from typing import Callable, Tuple, List
 import torch.nn.functional as F
 
 ENCODER = 'hevc_nvenc'
-
 VIDEO_EXTENSIONS = {'.mp4', '.mov', '.mkv', '.avi', '.webm', '.m4v', '.wmv'}
 SAM3_REPO_ID = "sin2piusc/sam3_fta"
-
 SAM3_MAX = 1008
 SAM3_BOX_CXCYWH_NORM = (0.5, 0.5, 0.5, 0.5)
 SAM3_BOX2_CXCYWH_NORM = (0.5, 0.9, 0.9, 0.18)
@@ -1271,7 +1267,7 @@ def main() -> int:
     parser.add_argument('--gate-dilate', type=int, default=5, help='Dilate SAM3 gating in hybrid mode')
     parser.add_argument('--no-normalize-input', dest='normalize_input', action='store_false', help='Skip upfront input normalization/transcoding')
     parser.set_defaults(normalize_input=True)
-    parser.add_argument('--overlay-output', type=str, default=None, help='Write a composited video with the mask over the original source')
+    parser.add_argument('--overlay-output', type=str, default='input_path', help='Write a composited video with the mask over the original source')
     parser.add_argument('--overlay-color', type=str, default='0x00ff00', help='Background color for the optional overlay preview (use 0x00ff00 for pure green)')
     args = parser.parse_args()
 
