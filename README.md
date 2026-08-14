@@ -18,7 +18,7 @@ optional:
     ('--gate-dilate', type=int, default=5, help='Dilate SAM3 gating in hybrid mode')
     ('--no-normalize-input', dest='normalize_input', action='store_false', help='Skip upfront input normalization/transcoding')
     parser.set_defaults(normalize_input=True)
-    ('--overlay-output', type=str, default='input_path', help='Write a composited video with the mask over the original source. Default: input folder')
+    ('--overlay-output', type=str, default='input_path', help='Where you want the composited video to be saved. Default: input folder')
     ('--overlay-color', type=str, default='0x00ff00', help='Background color, uses 0x00ff00 for pure green by default')
 
 
