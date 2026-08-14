@@ -1,13 +1,15 @@
-import argparse, shutil, gc, os, sys, functools, re, subprocess, torch, cv2, time, imageio, numpy as np
+import argparse, shutil, gc, os, sys, functools, re, subprocess, time, torch, cv2, time, imageio, numpy as np
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import List
 from PIL import Image
 from typing import Callable, Tuple
+from typing import Callable
 import torch.nn.functional as F
 
 ENCODER = 'hevc_nvenc'
+
 VIDEO_EXTENSIONS = {'.mp4', '.mov', '.mkv', '.avi', '.webm', '.m4v', '.wmv'}
 SAM3_REPO_ID = "sin2piusc/sam3_fta"
 
@@ -314,7 +316,6 @@ def extract_segment_frames(
     stereo_video: str,
     start: float,
     end: float,
-    fps: float,
     height: int,
     target_height: int,
     left_frame_out: str,
@@ -324,6 +325,7 @@ def extract_segment_frames(
     progress_prefix: str = "",
 ) -> tuple[str, str, str, str]:
 
+    fps = info(stereo_video)[2]
     enc = encoder_args()
     start_frame = round(start * fps)
     end_frame = round(end * fps)
@@ -431,6 +433,7 @@ def mask_overlay(
 ) -> str:
 
     resolved_path = overlay_path(source_video, output_path)
+
     src_w, src_h, src_fps, src_duration = info(source_video)
     mask_w, mask_h, mask_fps, mask_duration = info(mask_video)
 
@@ -1024,10 +1027,10 @@ def _input_videos(input_path: str) -> List[Path]:
         raise RuntimeError(f'No supported video files found in folder: {input_path}')
     return videos
 
-def process_video(video_path, original_video_path, args: argparse.Namespace, temp_root: Path, batch_mode: bool = False) -> str:
-    original_video_path = str(Path(original_video_path).expanduser().resolve())
-    original_video_name = Path(original_video_path).stem
-    safe_name = ''.join(ch if ch.isalnum() or ch in '._-' else '_' for ch in original_video_name)
+def process_video(video_path, args: argparse.Namespace, temp_root: Path, batch_mode: bool = False) -> str:
+    video_path = str(Path(video_path).expanduser().resolve())
+    video_name = Path(video_path).stem
+    safe_name = ''.join(ch if ch.isalnum() or ch in '._-' else '_' for ch in video_name)
     temp_dir = temp_root / safe_name
 
     if temp_dir.exists():
@@ -1040,8 +1043,6 @@ def process_video(video_path, original_video_path, args: argparse.Namespace, tem
     for d in [frames_dir, masks_dir, segments_dir]:
         d.mkdir(parents=True, exist_ok=True)
 
-    video_path = str(Path(video_path).expanduser().resolve())
-
     orig_w, orig_h, fps, duration = info(video_path)
     video_args = argparse.Namespace(**vars(args), video=video_path)
     print(f'Specs: {orig_w}x{orig_h}, {fps:.2f}fps, {format_timestamp(duration)}')
@@ -1051,7 +1052,7 @@ def process_video(video_path, original_video_path, args: argparse.Namespace, tem
     mask_square = video_args.mask_height
     segments = calculate_segments(duration, video_args.segment_length)
     mask_segments = [s for s in segments if s.seg_type == SegmentType.MASK]
-    mask_segments = extract_segments(video_args, segments, mask_segments, fps, orig_h, frames_dir, segments_dir)
+    mask_segments = extract_segments(video_args, segments, mask_segments, orig_h, frames_dir, segments_dir)
     mask_segments = sam3_masks(mask_segments, frames_dir, masks_dir, mask_square,
         video_args.prompt,
         video_args.seed_model,
@@ -1062,14 +1063,13 @@ def process_video(video_path, original_video_path, args: argparse.Namespace, tem
 
     output_mask = finalize(
         segments,
-        original_video_name,
+        video_name,
         str(video_path),
         video_path,
-        fps=fps,
         target_size=(orig_w, orig_h),
     )
 
-    overlay_target = str(Path(original_video_path).with_name(f"{original_video_name}_overlay.mp4"))
+    overlay_target = str(Path(video_path).with_name(f"{video_name}_overlay.mp4"))
     overlay_video = mask_overlay(
         video_path,
         output_mask,
@@ -1083,7 +1083,7 @@ def process_video(video_path, original_video_path, args: argparse.Namespace, tem
     print()
 
     with open(temp_dir / 'segments.txt', 'w', encoding='utf-8') as f:
-        f.write(f'# {original_video_name}\n')
+        f.write(f'# {video_name}\n')
         for seg in segments:
             f.write(f'{seg.index},{seg.seg_type.value},{seg.start_time:.3f},{seg.end_time:.3f},{seg.video_path}\n')
 
@@ -1110,7 +1110,6 @@ def extract_segments(
     args: argparse.Namespace,
     segments: List[SegmentInfo],
     mask_segments: List[SegmentInfo],
-    fps: float,
     orig_h: int,
     frames_dir: Path,
     segments_dir: Path,
@@ -1133,7 +1132,6 @@ def extract_segments(
             stereo_video=args.video,
             start=seg.start_time,
             end=seg.end_time,
-            fps=fps,
             height=orig_h,
             target_height=args.mask_height,
             left_frame_out=left_frame,
@@ -1246,7 +1244,7 @@ def matanyone(segments: List[SegmentInfo], segments_dir: Path, mask_square: int,
 
     return segments
 
-def finalize(segments: List[SegmentInfo], video_name: str, video_path: str, fps: float = 60) -> str:
+def finalize(segments: List[SegmentInfo], video_name: str, video_path: str) -> str:
 
     segment_vid = []
     for seg in sorted(segments, key=lambda s: s.index):
@@ -1257,7 +1255,7 @@ def finalize(segments: List[SegmentInfo], video_name: str, video_path: str, fps:
 
     output_dir = os.path.dirname(video_path) or '.'
     output_mask = os.path.join(output_dir, f'{video_name}_mask.mp4')
-    output_mask = concat_video(segment_vid, output_mask, fps=fps)
+    output_mask = concat_video(segment_vid, output_mask)
     return output_mask
 
 def main() -> int:
@@ -1293,20 +1291,16 @@ def main() -> int:
     processed = []
     batch_mode = len(video_paths) > 1
     for index, video_path in enumerate(video_paths, 1):
-        original_video_path = str(video_path)
-        print(f'[{index}/{len(video_paths)}] Processing: {original_video_path}')
+        video_path = str(video_path)
+        print(f'[{index}/{len(video_paths)}] Processing: {video_path}')
 
-        if args.normalize_input:
-            processing_video_path = norm_video(original_video_path)
-        else:
-            processing_video_path = original_video_path
+        video_path = norm_video(video_path)
+        output_mask = process_video(video_path, args, temp_root, batch_mode=batch_mode)
+        processed.append((video_path, output_mask))
 
-        output_mask = process_video(processing_video_path, original_video_path, args, temp_root, batch_mode=batch_mode)
-        processed.append((original_video_path, processing_video_path, output_mask))
-
-    for original_video_path, processing_video_path, output_mask in processed:
-        print(f'{original_video_path} -> {processing_video_path}')
-        print(f'{original_video_path} -> {output_mask}')
+    for video_path, output_mask in processed:
+        print(f'{video_path}')
+        print(f'{output_mask}')
 
     total_end = time.time() - start_time
     print('=' * 60)
