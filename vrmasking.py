@@ -1065,8 +1065,6 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path, batch_m
         segments,
         video_name,
         str(video_path),
-        video_path,
-        target_size=(orig_w, orig_h),
     )
 
     overlay_target = str(Path(video_path).with_name(f"{video_name}_overlay.mp4"))
