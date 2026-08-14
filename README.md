@@ -7,6 +7,8 @@ folder = (path to folder of videos)
 ```python
 python vrmasking.py (path to folder of videos)
 
+masks and composite videos will automatically be places in the input folder with the appropriate names.
+
 optional:
     ('--mask-height', type=int, default=1008)
     ('--segment-length', type=float, default=10)
