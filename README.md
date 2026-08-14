@@ -1,7 +1,11 @@
 how to use:
 
+python vrmasking.py folder
+
+folder = (path to folder of videos)
+
 ```python
-python pipeline.py (path to folder of videos)
+python vrmasking.py (path to folder of videos)
 
 optional:
     ('--mask-height', type=int, default=1008)
