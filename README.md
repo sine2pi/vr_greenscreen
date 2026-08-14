@@ -1,4 +1,6 @@
 how to use:
+
+```python
 python pipeline.py (path to folder of videos)
 
 optional:
@@ -14,3 +16,6 @@ optional:
     parser.set_defaults(normalize_input=True)
     ('--overlay-output', type=str, default='input_path', help='Write a composited video with the mask over the original source. Default: input folder')
     ('--overlay-color', type=str, default='0x00ff00', help='Background color for the optional overlay preview (use 0x00ff00 for pure green)')
+
+
+```
