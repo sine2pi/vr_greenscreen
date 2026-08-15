@@ -639,7 +639,7 @@ class sam3_video_inference:
                 session_id=session_id,
             )
         ):
-            outputs_per_frame[response["frame_index"]] = response["outputs"]
+            outputs_per_frame[response["frame_idx"]] = response["outputs"]
 
         return outputs_per_frame
 
@@ -685,7 +685,7 @@ class sam3_video_inference:
 
             except ValueError:
                 print(
-                    f'frame names are not in "<frame_index>.jpg" format: {frames[:5]=}, '
+                    f'frame names are not in "<frame_idx>.jpg" format: {frames[:5]=}, '
                     f"falling back to lexicographic sort."
                 )
                 frames.sort()
@@ -728,7 +728,7 @@ class sam3_video_inference:
             request=dict(
                 type="add_prompt",
                 session_id=session_id,
-                frame_index=frame_idx,
+                frame_idx=frame_idx,
                 text=prompt_text_str,
             )
         )
@@ -774,7 +774,7 @@ class sam3_video_inference:
                 request=dict(
                     type="add_prompt",
                     session_id=session_id,
-                    frame_index=frame_idx,
+                    frame_idx=frame_idx,
                     points=points_tensor,
                     point_labels=points_labels_tensor,
                     obj_id=obj_id,
@@ -808,7 +808,7 @@ class sam3_video_inference:
 
                     type="add_prompt",
                     session_id=session_id,
-                    frame_index=frame_idx,
+                    frame_idx=frame_idx,
                     points=points_tensor,
                     point_labels=points_labels_tensor,
                     obj_id=obj_id,
@@ -860,7 +860,7 @@ class sam3_video_inference:
 
                     type="add_prompt",
                     session_id=session_id,
-                    frame_index=frame_idx,
+                    frame_idx=frame_idx,
                     points=points_tensor,
                     point_labels=points_labels_tensor,
                     obj_id=obj_id,
