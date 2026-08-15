@@ -1,4 +1,4 @@
-import argparse, shutil, gc, os, sys, functools, re, subprocess, time, torch, cv2, imageio, numpy as np
+import argparse, shutil, gc, os, sys, functools, re, subprocess, time, torch, cv2, imageio, numpy as np, glob
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -10,7 +10,7 @@ from huggingface_hub import snapshot_download
 from sam3.model.sam3_image_processor import Sam3Processor
 from sam3.model_builder import build_sam3_image_model
 from sam3.model.box_ops import box_xywh_to_cxcywh
-from sam3.visualization_utils import draw_box_on_image, normalize_bbox, plot_results
+from sam3.visualization_utils import draw_box_on_image, normalize_bbox, plot_results, load_frame
 
 ENCODER = 'hevc_nvenc'
 VIDEO_EXTENSIONS = {'.mp4', '.mov', '.mkv', '.avi', '.webm', '.m4v', '.wmv'}
@@ -124,7 +124,7 @@ def frame_count(video_path: str) -> int:
 
     raw = (result.stdout or '').strip()
     count = int(raw)
-    
+
     return count
 
 def norm_video(source_video, w = None, h = None, progress_prefix: str = "[normalize] ") -> str:
@@ -136,7 +136,7 @@ def norm_video(source_video, w = None, h = None, progress_prefix: str = "[normal
         print()
         print(f"[normalize - skipped], FPS = {fps}")
         return source_video
-    
+
     else:
         source_path = Path(source_video).expanduser().resolve()
         output_video = str(source_path.with_name(f"{source_path.stem}_normed.mp4"))
@@ -161,7 +161,7 @@ def norm_video(source_video, w = None, h = None, progress_prefix: str = "[normal
                 "Input normalization failed.\n\nFFmpeg tail:\n"
                 + ''.join(stderr_text.splitlines(True)[-40:])
             )
-        
+
         if not os.path.exists(output_video):
             raise RuntimeError(f"Normalized video not created: {output_video}")
 
@@ -171,7 +171,7 @@ def resize_video(source_video: str, output_video: str, width: int, height: int, 
 
     enc = encoder_args()
 
-    os.makedirs(os.path.dirname(os.path.abspath(output_video)) or '.', exist_ok=True)   
+    os.makedirs(os.path.dirname(os.path.abspath(output_video)) or '.', exist_ok=True)
 
     cmd = [
         'ffmpeg', '-y', '-hide_banner',
@@ -187,10 +187,10 @@ def resize_video(source_video: str, output_video: str, width: int, height: int, 
             "Video resize failed.\n\nFFmpeg tail:\n"
             + ''.join(stderr_text.splitlines(True)[-40:])
         )
-    
+
     if not os.path.exists(output_video):
         raise RuntimeError(f"Resized video not created: {output_video}")
-    
+
     return output_video
 
 def concat_video(video_list: list[str], output_path: str, fps: float | None = None) -> str:
@@ -231,7 +231,7 @@ def concat_video(video_list: list[str], output_path: str, fps: float | None = No
 
         if not os.path.exists(video):
             raise RuntimeError(f"File missing: {video}")
-        
+
         rel_vid.append(os.path.relpath(video, common_dir).replace('\\', '/'))
 
     rel_output = os.path.relpath(abs_output, common_dir).replace('\\', '/')
@@ -334,6 +334,7 @@ def extract_segment_frames(
 
     fps = info(stereo_video)[2]
     enc = encoder_args()
+
     start_frame = round(start * fps)
     end_frame = round(end * fps)
     frames = end_frame - start_frame
@@ -348,7 +349,7 @@ def extract_segment_frames(
 
     orig_eye = height
     target_eye = target_height
- 
+
     frame_left = f"crop={orig_eye}:{orig_eye}:0:0"
     frame_right = f"crop={orig_eye}:{orig_eye}:{orig_eye}:0"
 
@@ -359,6 +360,7 @@ def extract_segment_frames(
     scale_h = target_height
 
     filter_complex = (
+
         f"[0:v]trim=start={fine_seek}:duration={seg_dur},setpts=PTS-STARTPTS,split=2[full][toscale];"
         f"[full]split=2[fullL][fullR];"
         f"[fullL]select=eq(n\\,0),{frame_left}[frame_left];"
@@ -383,6 +385,7 @@ def extract_segment_frames(
     ]
 
     cmd.extend([
+
         "-ss", str(keyframe_seek),
         "-i", stereo_video,
         "-filter_complex", filter_complex,
@@ -392,15 +395,18 @@ def extract_segment_frames(
         *right_output_args,
         *enc,
     ])
-
     process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
     stderr_lines = []
+
     for line in process.stderr:
         stderr_lines.append(line)
+
         if "frame=" in line:
             print(f"\r{progress_prefix}{_ffmpeg_progress(line)}", end="", flush=True)
 
     process.wait()
+
     if process.returncode != 0:
         tail = "".join(stderr_lines[-60:])
         raise RuntimeError(f"Segment extraction failed.\n\nFFmpeg tail:\n{tail}")
@@ -409,6 +415,7 @@ def extract_segment_frames(
     right_count = frame_count(right_video_out)
 
     print(f"{progress_prefix}timing check: left={left_count} right={right_count} fps={fps:.6f}")
+
     if left_count != right_count:
 
         raise RuntimeError(
@@ -420,8 +427,10 @@ def extract_segment_frames(
     return left_frame_out, right_frame_out, left_video_out, right_video_out
 
 def overlay_path(source_video: str, output_path: str) -> str:
+
     source_path = Path(source_video).expanduser()
     target_path = Path(output_path).expanduser()
+
     overlay_stem = source_path.stem
 
     if target_path.exists() and target_path.is_dir():
@@ -432,12 +441,7 @@ def overlay_path(source_video: str, output_path: str) -> str:
 
     return str(target_path.with_suffix('.mp4'))
 
-def mask_overlay(
-    source_video: str,
-    mask_video: str,
-    output_path: str,
-    background_color: str = '0x00ff00',
-) -> str:
+def mask_overlay(source_video: str, mask_video: str, output_path: str, background_color: str = '0x00ff00') -> str:
 
     resolved_path = overlay_path(source_video, output_path)
 
@@ -445,8 +449,10 @@ def mask_overlay(
     mask_w, mask_h, mask_fps, mask_duration = info(mask_video)
 
     if src_fps != mask_fps:
+
         if src_fps < 60:
             source_video = norm_video(source_video)
+
         if mask_fps < 60:
             mask_video = norm_video(mask_video)
 
@@ -454,6 +460,7 @@ def mask_overlay(
     fps = src_fps
 
     if (src_w, src_h) != (mask_w, mask_h):
+
         orig_filter = f"format=rgba,scale={src_w}:{src_h}:flags=lanczos"
         mask_filter = f"format=gray,scale={src_w}:{src_h}:flags=lanczos,lut=a=val/255"
         bg_filter = f"format=rgba,scale={src_w}:{src_h}:flags=lanczos"
@@ -464,6 +471,7 @@ def mask_overlay(
         bg_filter = 'format=rgba'
 
     filter_complex = (
+
         f"[0:v]{orig_filter}[orig];"
         f"[1:v]{mask_filter}[mask_alpha];"
         f"[orig][mask_alpha]alphamerge[alphaed];"
@@ -474,6 +482,7 @@ def mask_overlay(
     os.makedirs(os.path.dirname(os.path.abspath(resolved_path)) or '.', exist_ok=True)
 
     cmd = [
+
         'ffmpeg', '-y', '-hide_banner',
         '-i', source_video,
         '-i', mask_video,
@@ -481,7 +490,6 @@ def mask_overlay(
         '-filter_complex', filter_complex,
         '-map', '[out]',
         '-map', '0:a?',
-
     ]
 
     cmd.extend(encoder_args())
@@ -494,17 +502,14 @@ def mask_overlay(
 
     return resolved_path
 
-def stereo_video(
-    left_video: str,
-    right_video: str,
-    output_path: str,
-) -> str:
+def stereo_video(left_video: str, right_video: str, output_path: str) -> str:
 
     enc = encoder_args()
 
     filter_complex = "[0:v][1:v]hstack=inputs=2[out]"
 
     cmd = [
+
         'ffmpeg', '-y',
         '-i', left_video,
         '-i', right_video,
@@ -515,6 +520,7 @@ def stereo_video(
     ]
 
     result = subprocess.run(cmd, capture_output=True, text=True)
+
     if result.returncode != 0:
         raise RuntimeError(f"Stereo stitching failed: {result.stderr}")
 
@@ -527,16 +533,18 @@ def timestamp(ts: str) -> float:
 
     if len(parts) == 3:
         return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
-    
+
     elif len(parts) == 2:
         return int(parts[0]) * 60 + float(parts[1])
-    
+
     return float(parts[0])
 
 def format_timestamp(seconds: float) -> str:
+
     h = int(seconds // 3600)
     m = int((seconds % 3600) // 60)
     s = seconds % 60
+
     return f"{h:02d}:{m:02d}:{s:06.3f}"
 
 def sam3_box(width: int, height: int, normalized_box_cxcywh: tuple[float, float, float, float] = SAM3_BOX_CXCYWH_NORM) -> list[float]:
@@ -561,8 +569,454 @@ def sam3_box2(width: int, height: int, normalized_box_cxcywh: tuple[float, float
 
     return box
 
+def build_sam3_video_predictor(*model_args, checkpoint_path=None, gpus_to_use=None, is_sbs=False, max_num_objects=1, num_obj_for_compile=1, strict_state_dict_loading=False, **model_kwargs):
+    from sam31.model.sam3_video_predictor import Sam3VideoPredictorMultiGPU
+    return Sam3VideoPredictorMultiGPU(*model_args, checkpoint_path=checkpoint_path, gpus_to_use=gpus_to_use, is_sbs=is_sbs, max_num_objects= max_num_objects, num_obj_for_compile=num_obj_for_compile, strict_state_dict_loading=strict_state_dict_loading, **model_kwargs)
+
+class sam3_video_inference:
+
+    import sam31
+    sam31_root = os.path.join(os.path.dirname(sam31.__file__), "..")
+
+    def __init__(self, video_path: str= f"{sam31_root}/videos", prompt: str = "one woman", sam31=False):
+
+        self.video_path = video_path
+        self.prompt = prompt
+
+        if sam31:
+
+            from sam31.model_builder import build_sam3_multiplex_video_predictor
+
+            self.predictor = build_sam3_multiplex_video_predictor(
+
+                bpe_path=None,
+                max_num_objects = 1,
+                multiplex_count = 16,
+                use_fa3 = False,
+                use_rope_real = False,
+                compile = False,
+                warm_up = False,
+                default_output_prob_thresh  = 0.5,
+                async_loading_frames  = True,
+                num_obj_for_compile=1
+                )
+
+        else:
+
+            self.predictor = build_sam3_video_predictor(
+
+                bpe_path=None,
+                gpus_to_use = None,
+                has_presence_token = False,
+                geo_encoder_use_img_cross_attn = False,
+                strict_state_dict_loading = False,
+                async_loading_frames = True,
+                video_loader_type = "cv2",
+                apply_temporal_disambiguation = True,
+                compile = False,
+                is_sbs=None,
+                max_num_objects=1,
+                num_obj_for_compile=1,
+                use_fa3 = False
+                )
+
+    def propagate_in_video(self, predictor=None, session_id=None):
+
+        predictor=self.predictor
+
+        outputs_per_frame = {}
+
+        for response in predictor.handle_stream_request(
+            request=dict(
+                type="propagate_in_video",
+                session_id=session_id,
+            )
+        ):
+            outputs_per_frame[response["frame_index"]] = response["outputs"]
+
+        return outputs_per_frame
+
+    def abs_to_rel_coords(self, coords=None, IMG_WIDTH=None, IMG_HEIGHT=None, coord_type="point"):
+
+        if coord_type == "point":
+            return [[x / IMG_WIDTH, y / IMG_HEIGHT] for x, y in coords]
+
+        elif coord_type == "box":
+            return [
+                [x / IMG_WIDTH, y / IMG_HEIGHT, w / IMG_WIDTH, h / IMG_HEIGHT]
+                for x, y, w, h in coords
+            ]
+        else:
+            raise ValueError(f"Unknown coord_type: {coord_type}")
+
+    def ivebeenframed(self, video_path=None):
+
+        if video_path is None:
+            video_path = self.video_path
+
+        if isinstance(video_path, str) and video_path.endswith(".mp4"):
+
+            cap = cv2.VideoCapture(video_path)
+            frames = []
+
+            while True:
+                ret, frame = cap.read()
+
+                if not ret:
+                    break
+                frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+
+            cap.release()
+
+        else:
+            frames = glob.glob(os.path.join(video_path, "*.jpg"))
+
+            try:
+                frames.sort(
+                    key=lambda p: int(os.path.splitext(os.path.basename(p))[0])
+                )
+
+            except ValueError:
+                print(
+                    f'frame names are not in "<frame_index>.jpg" format: {frames[:5]=}, '
+                    f"falling back to lexicographic sort."
+                )
+                frames.sort()
+
+        self.sample_img = Image.fromarray(load_frame(frames[0]))
+
+    def track(self, predictor=None, video_path=None, prompt=None, remove=False, refine_object_3=False, refine_object=False):
+
+        if predictor is None:
+            predictor = self.predictor
+        if video_path is None:
+            video_path = self.video_path
+        if prompt is None:
+            prompt = self.prompt
+
+        IMG_WIDTH, IMG_HEIGHT = self.sample_img.size
+
+        response = predictor.handle_request(
+            request=dict(
+                type="start_session",
+                resource_path=video_path,
+            )
+        )
+        session_id = response["session_id"]
+
+        _ = predictor.handle_request(
+            request=dict(
+                type="reset_session",
+                session_id=session_id,
+            )
+        )
+
+        prompt_text_str = prompt
+        frame_idx = 0
+
+        response = predictor.handle_request(
+            request=dict(
+                type="add_prompt",
+                session_id=session_id,
+                frame_index=frame_idx,
+                text=prompt_text_str,
+            )
+        )
+        out = response["outputs"]
+
+        outputs_per_frame = self.propagate_in_video(predictor, session_id)
+
+        if remove:
+
+            obj_id = 2
+            response = predictor.handle_request(
+                request=dict(
+                    type="remove_object",
+                    session_id=session_id,
+                    obj_id=obj_id,
+                )
+            )
+
+            frame_idx = 0
+            obj_id = 2
+            points_abs = np.array(
+                [
+                    [740, 450],  # positive click
+                    [760, 630],  # negative click
+                    [840, 640],  # negative click
+                    [760, 550],  # positive click
+                ]
+            )
+
+            labels = np.array([1, 0, 0, 1])
+
+            points_tensor = torch.tensor(
+
+                self.abs_to_rel_coords(points_abs, IMG_WIDTH, IMG_HEIGHT, coord_type="point"),
+                dtype=torch.float32,
+            )
+
+            points_labels_tensor = torch.tensor(labels, dtype=torch.int32)
+
+            response = predictor.handle_request(
+                request=dict(
+                    type="add_prompt",
+                    session_id=session_id,
+                    frame_index=frame_idx,
+                    points=points_tensor,
+                    point_labels=points_labels_tensor,
+                    obj_id=obj_id,
+                )
+            )
+
+            out = response["outputs"]
+
+            frame_idx = 0
+            obj_id = 2
+            points_abs = np.array(
+
+                [
+                    [760, 550],
+                ]
+            )
+
+            labels = np.array([1])
+
+            points_tensor = torch.tensor(
+
+                self.abs_to_rel_coords(points_abs, IMG_WIDTH, IMG_HEIGHT, coord_type="point"),
+                dtype=torch.float32,
+            )
+
+            points_labels_tensor = torch.tensor(labels, dtype=torch.int32)
+
+            response = predictor.handle_request(
+
+                request=dict(
+
+                    type="add_prompt",
+                    session_id=session_id,
+                    frame_index=frame_idx,
+                    points=points_tensor,
+                    point_labels=points_labels_tensor,
+                    obj_id=obj_id,
+                )
+            )
+            out = response["outputs"]
+
+            outputs_per_frame = self.propagate_in_video(predictor, session_id)
+
+        if refine_object:
+
+            if refine_object_3:
+                frame_idx = 0
+                obj_id = 3
+                points_abs = np.array(
+
+                    [
+                        [800, 135],  # positive click
+                        [800, 180],  # negative click
+                    ]
+                )
+
+                labels = np.array([1, 0])
+
+            else:
+                frame_idx = 0
+                obj_id = 2
+                points_abs = np.array(
+
+                    [
+                        [740, 450],  # positive click
+                        [760, 630],  # negative click
+                        [840, 640],  # negative click
+                        [760, 550],  # positive click
+                    ]
+                )
+
+                labels = np.array([1, 0, 0, 1])
+
+            points_tensor = torch.tensor(
+
+                self.abs_to_rel_coords(points_abs, IMG_WIDTH, IMG_HEIGHT, coord_type="point"), dtype=torch.float32)
+
+            points_labels_tensor = torch.tensor(labels, dtype=torch.int32)
+
+            response = predictor.handle_request(
+
+                request=dict(
+
+                    type="add_prompt",
+                    session_id=session_id,
+                    frame_index=frame_idx,
+                    points=points_tensor,
+                    point_labels=points_labels_tensor,
+                    obj_id=obj_id,
+                )
+            )
+
+            out = response["outputs"]
+
+            outputs_per_frame = self.propagate_in_video(predictor, session_id)
+
+        _ = predictor.handle_request(
+
+            request=dict(
+
+                type="close_session",
+                session_id=session_id,
+            )
+        )
+
+        predictor.shutdown()
+
+        return outputs_per_frame
+
+def _extract_sam3_video_mask(outputs, out_h: int, out_w: int) -> np.ndarray | None:
+
+    if not isinstance(outputs, dict):
+        return None
+
+    masks = outputs.get("out_binary_masks", None)
+    if masks is None:
+        return None
+
+    masks = np.asarray(masks)
+    if masks.size == 0:
+        return None
+
+    if masks.ndim == 2:
+        best = masks.astype(np.float32)
+    elif masks.ndim == 3:
+        if masks.shape[0] == 1:
+            best = masks[0].astype(np.float32)
+        else:
+            probs = outputs.get("out_probs", None)
+            if probs is not None:
+                probs = np.asarray(probs)
+                if probs.size == masks.shape[0]:
+                    best = masks[int(np.argmax(probs))].astype(np.float32)
+                else:
+                    best = masks[0].astype(np.float32)
+            else:
+                best = masks[0].astype(np.float32)
+    else:
+        return None
+
+    if best.shape != (out_h, out_w):
+        best = cv2.resize(best.astype(np.uint8), (out_w, out_h), interpolation=cv2.INTER_NEAREST).astype(np.float32)
+
+    return np.clip(best, 0.0, 1.0)
+
+def _sam3_video_inference(frames_dir: str, output_size: int | None = None, prompt: str = "one woman") -> None:
+
+    folder = Path(frames_dir)
+    image_files = sorted(list(folder.glob("*.png")) + list(folder.glob("*.jpg")))
+    image_files = [f for f in image_files if "_mask" not in f.stem]
+
+    if not image_files:
+        return
+
+    seq_dir = folder / "_sam3video_seq"
+
+    if seq_dir.exists():
+        shutil.rmtree(seq_dir)
+
+    seq_dir.mkdir(parents=True, exist_ok=True)
+
+    frame_shapes: list[tuple[int, int]] = []
+    output_paths: list[Path] = []
+
+    for i, frame_path in enumerate(image_files):
+        out_path = frame_path.parent / f"{frame_path.stem}_mask.png"
+        output_paths.append(out_path)
+
+        raw = Image.open(frame_path)
+        image = raw.convert("RGB")
+        raw.close()
+
+        if output_size and image.height > output_size:
+            full = image
+            image = full.resize((output_size, output_size), Image.Resampling.BILINEAR)
+            full.close()
+
+        frame_shapes.append((image.height, image.width))
+        image.save(seq_dir / f"{i:06d}.jpg", format="JPEG", quality=95)
+        image.close()
+
+    tracker = sam3_video_inference(video_path=str(seq_dir), prompt=prompt)
+    tracker.ivebeenframed()
+    outputs_per_frame = tracker.track()
+
+    missing = 0
+    for i, out_path in enumerate(output_paths):
+        out_h, out_w = frame_shapes[i]
+        outputs = outputs_per_frame.get(i)
+
+        soft = _extract_sam3_video_mask(outputs, out_h, out_w)
+        
+        if soft is None:
+            missing += 1
+            soft = np.zeros((out_h, out_w), dtype=np.float32)
+
+        hard = (soft >= 0.5).astype(np.uint8) * 255
+        Image.fromarray(hard, mode='L').save(out_path)
+
+    if missing > 0:
+        print(f"SAM3 video: missing {missing}/{len(output_paths)} frames; wrote empty masks for those frames")
+
+    if seq_dir.exists():
+        shutil.rmtree(seq_dir)
+
+def sam3_video_batch(frames_dir: str, output_size: int | None = None, prompt: str = "one woman") -> None:
+
+    _sam3_video_inference(frames_dir, output_size=output_size, prompt=prompt)
+
+def _fill_soft_mask_gaps(
+    soft_masks: list[np.ndarray],
+    valid_flags: list[bool],
+    max_interp_gap: int = 6,
+) -> tuple[list[np.ndarray], int]:
+
+    if not soft_masks:
+        return soft_masks, 0
+
+    valid_idx = [i for i, ok in enumerate(valid_flags) if ok]
+    if not valid_idx:
+        return [m.copy() for m in soft_masks], 0
+
+    filled = [m.copy() for m in soft_masks]
+    filled_count = 0
+
+    for i in range(len(filled)):
+        if valid_flags[i]:
+            continue
+
+        prev_i = next((j for j in reversed(valid_idx) if j < i), None)
+        next_i = next((j for j in valid_idx if j > i), None)
+
+        if prev_i is not None and next_i is not None:
+            gap = next_i - prev_i - 1
+            if gap <= max_interp_gap:
+                alpha = (i - prev_i) / (next_i - prev_i)
+                filled[i] = (1.0 - alpha) * filled[prev_i] + alpha * filled[next_i]
+            else:
+                filled[i] = filled[prev_i].copy() if (i - prev_i) <= (next_i - i) else filled[next_i].copy()
+            filled_count += 1
+
+        elif prev_i is not None:
+            filled[i] = filled[prev_i].copy()
+            filled_count += 1
+
+        elif next_i is not None:
+            filled[i] = filled[next_i].copy()
+            filled_count += 1
+
+    return filled, filled_count
+
 def _sam3_inference(frames_dir: str, output_size: int | None = None, is_intro: bool = False, prompt: str = "one woman", show_plots = False) -> None:
 
+    _ = is_intro
     repo_path = snapshot_download(repo_id=SAM3_REPO_ID, local_files_only=False)
     model_path = os.path.join(repo_path, "sam3.pth")
     model = build_sam3_image_model(load_from_HF=False, enable_inst_interactivity=False, enable_segmentation=True, compile=False)
@@ -572,90 +1026,65 @@ def _sam3_inference(frames_dir: str, output_size: int | None = None, is_intro: b
     processor = Sam3Processor(model, confidence_threshold=0.4, device="cuda" if torch.cuda.is_available() else "cpu")
     folder = Path(frames_dir)
 
-    image_files = list(folder.glob("*.png")) + list(folder.glob("*.jpg"))
+    image_files = sorted(list(folder.glob("*.png")) + list(folder.glob("*.jpg")))
     image_files = [f for f in image_files if "_mask" not in f.stem]
 
     if not image_files:
         return
 
+    mask_paths: list[Path] = []
+    soft_masks: list[np.ndarray] = []
+    valid_flags: list[bool] = []
+    min_valid_pixels = 64
+
     with torch.inference_mode():
-
-        for frame_path in sorted(image_files):
-
+        for frame_path in image_files:
             output_path = frame_path.parent / f"{frame_path.stem}_mask.png"
+            mask_paths.append(output_path)
+
             raw = Image.open(frame_path)
             image = raw.convert("RGB")
             raw.close()
-            ow, oh = (image.width, image.height)
 
-            if oh > output_size:
-
+            ow, oh = image.width, image.height
+            if output_size and oh > output_size:
                 full = image
                 image = full.resize((output_size, output_size), Image.Resampling.BILINEAR)
                 width, height = image.width, image.height
                 full.close()
-
             else:
                 width, height = ow, oh
 
             inference_state = processor.set_image(image)
             processor.reset_all_prompts(inference_state)
 
-            inference_state = processor.set_text_prompt(state=inference_state, prompt="one woman")
-
-            box_input_xywh = [sam3_box(image.width, image.height)]
-            box_input_xywh = torch.tensor(box_input_xywh).view(-1, 4)
-
-            box_input_cxcywh = box_xywh_to_cxcywh(box_input_xywh)
-            norm_box_cxcywh = normalize_bbox(box_input_cxcywh, width, height).flatten().tolist()
-
+            inference_state = processor.set_text_prompt(state=inference_state, prompt=prompt)
+            box_input_xywh = torch.tensor([sam3_box(image.width, image.height)]).view(-1, 4)
+            norm_box_cxcywh = normalize_bbox(box_xywh_to_cxcywh(box_input_xywh), width, height).flatten().tolist()
             inference_state = processor.add_geometric_prompt(state=inference_state, box=norm_box_cxcywh, label=True)
 
             if show_plots:
-
                 plot_results(image, inference_state)
                 plt.imshow(draw_box_on_image(image, box_input_xywh.flatten().tolist()))
-                plt.axis("off")  
+                plt.axis("off")
                 plt.show()
 
             inference_state = processor.set_text_prompt(state=inference_state, prompt="one man")
-
-            box_input_xywh = [sam3_box2(image.width, image.height)]
-            box_input_xywh = torch.tensor(box_input_xywh).view(-1, 4)
-            
-            box_input_cxcywh = box_xywh_to_cxcywh(box_input_xywh)
-            norm_box_cxcywh = normalize_bbox(box_input_cxcywh, width, height).flatten().tolist()
-
+            box_input_xywh = torch.tensor([sam3_box2(image.width, image.height)]).view(-1, 4)
+            norm_box_cxcywh = normalize_bbox(box_xywh_to_cxcywh(box_input_xywh), width, height).flatten().tolist()
             inference_state = processor.add_geometric_prompt(state=inference_state, box=norm_box_cxcywh, label=False)
 
             if show_plots:
-
                 plot_results(image, inference_state)
                 plt.imshow(draw_box_on_image(image, box_input_xywh.flatten().tolist()))
-                plt.axis("off")  
+                plt.axis("off")
                 plt.show()
 
-            box_input_xywh = [sam3_box(width, height), sam3_box2(width, height)]
-            box_input_xywh = torch.tensor(box_input_xywh).view(-1, 4)
-            box_input_cxcywh = box_xywh_to_cxcywh(box_input_xywh).view(-1,4)
-            norm_boxes_cxcywh = normalize_bbox(box_input_cxcywh, width, height).tolist()
-
+            box_input_xywh = torch.tensor([sam3_box(width, height), sam3_box2(width, height)]).view(-1, 4)
+            norm_boxes_cxcywh = normalize_bbox(box_xywh_to_cxcywh(box_input_xywh).view(-1, 4), width, height).tolist()
             box_labels = [True, False]
-
             for box, label in zip(norm_boxes_cxcywh, box_labels):
                 inference_state = processor.add_geometric_prompt(state=inference_state, box=box, label=label)
-
-            if show_plots:
-
-                for i in range(len(box_input_xywh)):
-                    if box_labels[i] == 1:
-                        color = (0, 255, 0)
-                    else:
-                        color = (255, 0, 0)
-
-                plt.imshow(draw_box_on_image(image.copy(), box_input_xywh[i], color))
-                plt.axis("off") 
-                plt.show()
 
             masks = inference_state["masks"]
             scores = inference_state["scores"]
@@ -671,26 +1100,30 @@ def _sam3_inference(frames_dir: str, output_size: int | None = None, is_intro: b
                 masks = np.asarray(masks)
 
             if len(masks) == 0 or scores.size == 0:
-                best_mask = np.zeros((image.height, image.width), dtype=np.uint8)
-                print(f"No SAM3 masks/scores for {frame_path.name}; writing empty mask.")
+                best_soft = np.zeros((image.height, image.width), dtype=np.float32)
+                print(f"No SAM3 masks/scores for {frame_path.name}; marking as missing for temporal fill")
             else:
                 best_idx = int(np.argmax(scores))
-                best_mask = masks[best_idx]
-
-                if len(best_mask.shape) == 3:
-                    best_mask = best_mask[0]
-
-                best_mask = (best_mask * 255).astype(np.uint8)
+                best_soft = masks[best_idx]
+                if len(best_soft.shape) == 3:
+                    best_soft = best_soft[0]
+                best_soft = np.asarray(best_soft, dtype=np.float32)
+                best_soft = np.clip(best_soft, 0.0, 1.0)
                 print("Confidence:", scores[best_idx])
+
+            soft_masks.append(best_soft)
+            valid_flags.append(int(np.count_nonzero(best_soft >= 0.5)) >= min_valid_pixels)
 
             del inference_state
             image.close()
 
-            mask_image = Image.fromarray(best_mask)
-            mask_image.save(output_path)
+    filled_soft_masks, filled_count = _fill_soft_mask_gaps(soft_masks, valid_flags, max_interp_gap=6)
+    if filled_count > 0:
+        print(f"Filled {filled_count} missing/weak SAM3 masks using temporal soft-mask interpolation")
 
-            gc.collect()
-            torch.cuda.empty_cache()
+    for out_path, soft_mask in zip(mask_paths, filled_soft_masks):
+        hard_mask = (soft_mask >= 0.5).astype(np.uint8) * 255
+        Image.fromarray(hard_mask, mode='L').save(out_path)
 
     del processor, model, checkpoint
     gc.collect()
@@ -847,10 +1280,16 @@ def seed_mask_batch(
     gate_dilate: int = 5) -> None:
 
     seed_model = (seed_model or "sam3").lower()
+
     if seed_model == "sam3":
         sam3_batch(frames_dir, output_size=output_size, prompt=prompt)
+
+    elif seed_model == "sam3video":
+        sam3_video_batch(frames_dir, output_size=output_size, prompt=prompt)
+
     elif seed_model == "sapiens":
         _sapiens_inference(frames_dir, output_size=output_size, threshold=sapiens_threshold)
+
     elif seed_model == "hybrid":
         _sam_sapiens(
             frames_dir,
@@ -858,6 +1297,7 @@ def seed_mask_batch(
             prompt=prompt,
             threshold=sapiens_threshold,
             gate_dilate=gate_dilate)
+
     else:
         raise ValueError(f"Unsupported seed model: {seed_model}")
 
@@ -865,21 +1305,28 @@ _matanyone_is_first_status = True
 _matanyone_tqdm_lines = 1
 
 def _update_status(op_num: int, total_ops: int, label: str, duration: float) -> None:
+
     global _matanyone_is_first_status
+
     if not _matanyone_is_first_status:
         sys.stderr.write(f"\033[{1 + _matanyone_tqdm_lines}A")
     sys.stderr.write(f"\r[{op_num}/{total_ops}] {label} ({duration:.1f}s)\033[K\n")
+
     for i in range(_matanyone_tqdm_lines):
         sys.stderr.write("\r\033[K")
+
         if i < _matanyone_tqdm_lines - 1:
             sys.stderr.write("\n")
+
     sys.stderr.flush()
     _matanyone_is_first_status = False
 
 @functools.lru_cache(maxsize=1)
 def _load_matanyone_runtime():
+
     matanyone_root = Path(__file__).resolve().parent / 'MatAnyone2'
     matanyone_root_str = str(matanyone_root)
+
     if matanyone_root_str not in sys.path:
         sys.path.insert(0, matanyone_root_str)
 
@@ -923,33 +1370,41 @@ def _matanyone_process_segment(matanyone2, device, inference_core_cls, read_fram
     length += n_warmup
 
     os.makedirs(output_path, exist_ok=True)
+
     if suffix:
         video_name = f'{video_name}_{suffix}'
 
     mask = Image.open(mask_path).convert('L')
     mask = np.array(mask)
+
     if r_dilate > 0:
         mask = gen_dilate_fn(mask, r_dilate, r_dilate)
+
     if r_erode > 0:
         mask = gen_erosion_fn(mask, r_erode, r_erode)
     mask = torch.from_numpy(mask).float().to(device)
 
     objects = [1]
     phas = []
+
     for ti in tqdm.tqdm(range(length)):
+
         image = (vframes[ti] / 255.).float().to(device)
 
         if ti == 0:
             output_prob = processor.step(image, mask, objects=objects)
             output_prob = processor.step(image, first_frame_pred=True)
+
         elif ti <= n_warmup:
             output_prob = processor.step(image, first_frame_pred=True)
+
         else:
             output_prob = processor.step(image)
 
         mask = processor.output_prob_to_mask(output_prob)
 
         if ti > (n_warmup - 1):
+
             pha = mask.unsqueeze(2).cpu().numpy()
             pha = np.round(np.clip(pha * 255.0, 0, 255)).astype(np.uint8)
             phas.append(pha)
@@ -972,13 +1427,17 @@ def matanyone_inference(jobs: list[dict], on_segment_done: Callable[[str], None]
     matanyone2, device, inference_core_cls, read_frame_from_videos_fn, gen_dilate_fn, gen_erosion_fn = _load_matanyone_runtime()
 
     for attempt in range(max_retries):
+
         batch_completed = []
         _matanyone_is_first_status = True
 
         try:
             for job in remaining_jobs:
+
                 _update_status(job['op_num'], job['total_ops'], job['label'], job['duration'])
+
                 output_file = _matanyone_process_segment(
+
                     matanyone2,
                     device,
                     inference_core_cls,
@@ -987,26 +1446,33 @@ def matanyone_inference(jobs: list[dict], on_segment_done: Callable[[str], None]
                     gen_erosion_fn,
                     job,
                 )
+
                 batch_completed.append(output_file)
+
                 if on_segment_done:
                     on_segment_done(output_file)
 
             completed_paths.extend(batch_completed)
             sys.stderr.write("\n")
+
             return completed_paths
 
         except Exception as exc:
+
             completed_paths.extend(batch_completed)
             remaining_jobs = remaining_jobs[len(batch_completed):]
+
             if not remaining_jobs:
                 sys.stderr.write("\n")
                 return completed_paths
 
             if attempt < max_retries - 1:
                 start_op = len(completed_paths) + 1
+
                 for i, job in enumerate(remaining_jobs):
                     job['op_num'] = start_op + i
                 time.sleep(3.0)
+
                 continue
 
             raise RuntimeError(
@@ -1292,7 +1758,7 @@ def main() -> int:
     parser.add_argument('--erode', type=int, default=0)
     parser.add_argument('--dilate', type=int, default=0)
     parser.add_argument('--prompt', type=str, default='one woman')
-    parser.add_argument('--seed-model', type=str, default='sam3', choices=['sam3', 'sapiens', 'hybrid'], help='Seed mask guy (sam3, sapiens, or hybrid)')
+    parser.add_argument('--seed-model', type=str, default='sam3', choices=['sam3', 'sam3video', 'sapiens', 'hybrid'], help='Seed mask mode (sam3, sam3video, sapiens, or hybrid)')
     parser.add_argument('--sapiens-threshold', type=float, default=0.5, help='Threshold for converting Sapiens alpha matte to a binary mask')
     parser.add_argument('--gate-dilate', type=int, default=5, help='Dilate SAM3 gating in hybrid mode')
     parser.add_argument('--no-normalize-input', dest='normalize_input', action='store_false', help='Skip upfront input normalization/transcoding')
