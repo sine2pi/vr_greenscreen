@@ -5,6 +5,12 @@ from pathlib import Path
 from PIL import Image
 from typing import Callable, Tuple, List
 import torch.nn.functional as F
+import matplotlib.pyplot as plt
+from huggingface_hub import snapshot_download
+from sam3.model.sam3_image_processor import Sam3Processor
+from sam3.model_builder import build_sam3_image_model
+from sam3.model.box_ops import box_xywh_to_cxcywh
+from sam3.visualization_utils import draw_box_on_image, normalize_bbox, plot_results
 
 ENCODER = 'hevc_nvenc'
 VIDEO_EXTENSIONS = {'.mp4', '.mov', '.mkv', '.avi', '.webm', '.m4v', '.wmv'}
@@ -44,33 +50,33 @@ def encoder_args() -> list[str]:
     ]
 
 def _ffmpeg_progress(line: str) -> str:
+
     parts = []
+
     for field in ['time=', 'elapsed=', 'speed=']:
         match = re.search(rf'{field}(\S+)', line)
+
         if match:
             parts.append(f"{field}{match.group(1)}")
 
     return (' '.join(parts) + '\033[K') if parts else line.strip()
 
-def ffmpeg_progress(
-    cmd: list[str],
-    progress_prefix: str = "",
-    cwd: str | None = None
-) -> tuple[int, str]:
+def ffmpeg_progress(cmd: list[str], progress_prefix: str = "", cwd: str | None = None) -> tuple[int, str]:
 
     process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=cwd)
     stderr_lines = []
 
     for line in process.stderr:
         stderr_lines.append(line)
+
         if 'frame=' in line:
             print(f"\r{progress_prefix}{_ffmpeg_progress(line)}", end='', flush=True)
 
     process.wait()
     print()
+
     return process.returncode, "".join(stderr_lines)
 
-# @functools.lru_cache(maxsize=512)
 def info(video_path: str) -> Tuple[int, int, float, float]:
 
     cmd = [
@@ -80,17 +86,21 @@ def info(video_path: str) -> Tuple[int, int, float, float]:
         '-of', 'csv=p=0',
         video_path
     ]
+
     result = subprocess.run(cmd, capture_output=True, text=True)
+
     if result.returncode != 0:
         raise RuntimeError(f"ffprobe failed: {result.stderr}")
 
     lines = result.stdout.strip().split('\n')
+
     w, h, fps_str = lines[0].split(',')
     duration = float(lines[1]) if len(lines) > 1 else 0
 
     if '/' in fps_str:
         num, den = fps_str.split('/')
         fps = float(num) / float(den)
+
     else:
         fps = float(fps_str)
 
@@ -106,35 +116,33 @@ def frame_count(video_path: str) -> int:
         '-of', 'default=noprint_wrappers=1:nokey=1',
         video_path,
     ]
+
     result = subprocess.run(cmd, capture_output=True, text=True)
+
     if result.returncode != 0:
         raise RuntimeError(f"ffprobe frame count failed: {result.stderr}")
 
     raw = (result.stdout or '').strip()
-    if not raw or raw == 'N/A':
-        raise RuntimeError(f"ffprobe did not return nb_read_frames for {video_path}")
-    try:
-        count = int(raw)
-    except ValueError as exc:
-        raise RuntimeError(f"Invalid frame count '{raw}' for {video_path}") from exc
-
-    if count <= 0:
-        raise RuntimeError(f"Non-positive frame count for {video_path}: {count}")
+    count = int(raw)
+    
     return count
 
 def norm_video(source_video, w = None, h = None, progress_prefix: str = "[normalize] ") -> str:
 
     wi, hi, fps, _ = info(source_video)
+    enc = encoder_args()
+
     if fps == 60:
         print()
         print(f"[normalize - skipped], FPS = {fps}")
         return source_video
+    
     else:
         source_path = Path(source_video).expanduser().resolve()
         output_video = str(source_path.with_name(f"{source_path.stem}_normed.mp4"))
 
-        enc = encoder_args()
         fps = 60
+
         if w is not None:
             wi = w
             hi = h
@@ -146,29 +154,25 @@ def norm_video(source_video, w = None, h = None, progress_prefix: str = "[normal
             *enc,
             output_video,
         ]
-
         rc, stderr_text = ffmpeg_progress(cmd, progress_prefix=progress_prefix)
+
         if rc != 0:
             raise RuntimeError(
                 "Input normalization failed.\n\nFFmpeg tail:\n"
                 + ''.join(stderr_text.splitlines(True)[-40:])
             )
+        
         if not os.path.exists(output_video):
             raise RuntimeError(f"Normalized video not created: {output_video}")
 
         return output_video
 
-def resize_video(
-    source_video: str,
-    output_video: str,
-    width: int,
-    height: int,
-    progress_prefix: str = "[resize] ",
-) -> str:
-
-    os.makedirs(os.path.dirname(os.path.abspath(output_video)) or '.', exist_ok=True)
+def resize_video(source_video: str, output_video: str, width: int, height: int, progress_prefix: str = "[resize] ") -> str:
 
     enc = encoder_args()
+
+    os.makedirs(os.path.dirname(os.path.abspath(output_video)) or '.', exist_ok=True)   
+
     cmd = [
         'ffmpeg', '-y', '-hide_banner',
         '-i', source_video,
@@ -176,22 +180,20 @@ def resize_video(
         *enc,
         output_video,
     ]
-
     rc, stderr_text = ffmpeg_progress(cmd, progress_prefix=progress_prefix)
+
     if rc != 0:
         raise RuntimeError(
             "Video resize failed.\n\nFFmpeg tail:\n"
             + ''.join(stderr_text.splitlines(True)[-40:])
         )
+    
     if not os.path.exists(output_video):
         raise RuntimeError(f"Resized video not created: {output_video}")
+    
     return output_video
 
-def concat_video(
-    video_list: list[str],
-    output_path: str,
-    fps: float | None = None,
-) -> str:
+def concat_video(video_list: list[str], output_path: str, fps: float | None = None) -> str:
 
     BATCH_SIZE = 50
     n = len(video_list)
@@ -199,13 +201,17 @@ def concat_video(
 
     if n > BATCH_SIZE:
         base_path, ext = os.path.splitext(os.path.abspath(output_path))
+
         temp_batches = []
 
         for i in range(0, n, BATCH_SIZE):
+
             batch_files = video_list[i:i + BATCH_SIZE]
             batch_out = f"{base_path}_batch_{i//BATCH_SIZE}{ext}"
             temp_batches.append(batch_out)
+
             concat_video(batch_files, batch_out, fps=fps)
+
             return concat_video(temp_batches, output_path, fps=fps)
 
         for tb in temp_batches:
@@ -220,19 +226,24 @@ def concat_video(
         common_dir = os.path.dirname(common_dir)
 
     rel_vid = []
+
     for video in abs_vid:
+
         if not os.path.exists(video):
             raise RuntimeError(f"File missing: {video}")
+        
         rel_vid.append(os.path.relpath(video, common_dir).replace('\\', '/'))
 
     rel_output = os.path.relpath(abs_output, common_dir).replace('\\', '/')
     concat_file = os.path.join(common_dir, "_concat_list.txt")
 
     with open(concat_file, 'w', encoding='utf-8') as f:
+
         for rel in rel_vid:
             f.write(f"file '{rel}'\n")
 
     filter_parts = []
+
     for i in range(n):
         filter_parts.append(f"[{i}:v]format=yuv420p[v{i}]")
 
@@ -249,9 +260,10 @@ def concat_video(
         *enc,
         rel_output,
     ]
-
     rc, stderr_text = ffmpeg_progress(cmd_inline, cwd=common_dir)
+
     if rc != 0 and ('The filename or extension is too long' in stderr_text or 'WinError 206' in stderr_text):
+
         with open(filter_file, 'w', encoding='utf-8') as f:
             f.write(filter_complex)
 
@@ -274,19 +286,16 @@ def concat_video(
 
     if os.path.exists(filter_file):
         os.remove(filter_file)
+
     if os.path.exists(concat_file):
         os.remove(concat_file)
 
     return output_path
 
-def eye_frames(
-    video_path: str,
-    timestamps: list[float],
-    output_dir: str,
-    height: int,
-) -> list[str]:
+def eye_frames(video_path: str, timestamps: list[float], output_dir: str, height: int) -> list[str]:
 
     output_paths = []
+
     eye_size = height
     crop_filter = f"crop={eye_size}:{eye_size}:0:0"
 
@@ -302,7 +311,9 @@ def eye_frames(
             out_path
         ]
         process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
         process.wait()
+
         if process.returncode == 0 and os.path.exists(out_path):
             output_paths.append(out_path)
 
@@ -446,6 +457,7 @@ def mask_overlay(
         orig_filter = f"format=rgba,scale={src_w}:{src_h}:flags=lanczos"
         mask_filter = f"format=gray,scale={src_w}:{src_h}:flags=lanczos,lut=a=val/255"
         bg_filter = f"format=rgba,scale={src_w}:{src_h}:flags=lanczos"
+
     else:
         orig_filter = 'format=rgba'
         mask_filter = 'format=gray,lut=a=val/255'
@@ -476,6 +488,7 @@ def mask_overlay(
     cmd.append(resolved_path)
 
     rc, stderr_text = ffmpeg_progress(cmd)
+
     if rc != 0:
         raise RuntimeError(f"Mask overlay failed.\n\nFFmpeg tail:\n{''.join(stderr_text.splitlines(True)[-40:])}")
 
@@ -485,7 +498,6 @@ def stereo_video(
     left_video: str,
     right_video: str,
     output_path: str,
-
 ) -> str:
 
     enc = encoder_args()
@@ -512,10 +524,13 @@ def timestamp(ts: str) -> float:
 
     ts = ts.strip()
     parts = ts.split(':')
+
     if len(parts) == 3:
         return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
+    
     elif len(parts) == 2:
         return int(parts[0]) * 60 + float(parts[1])
+    
     return float(parts[0])
 
 def format_timestamp(seconds: float) -> str:
@@ -524,47 +539,39 @@ def format_timestamp(seconds: float) -> str:
     s = seconds % 60
     return f"{h:02d}:{m:02d}:{s:06.3f}"
 
-def sam3_box(
-    width: int,
-    height: int,
-    normalized_box_cxcywh: tuple[float, float, float, float] = SAM3_BOX_CXCYWH_NORM,
-) -> list[float]:
-    cx, cy, box_w, box_h = normalized_box_cxcywh
-    abs_w = box_w * width
-    abs_h = box_h * height
-    abs_x = (cx - box_w / 2.0) * width
-    abs_y = (cy - box_h / 2.0) * height
-    return [abs_x, abs_y, abs_w, abs_h]
+def sam3_box(width: int, height: int, normalized_box_cxcywh: tuple[float, float, float, float] = SAM3_BOX_CXCYWH_NORM) -> list[float]:
 
-def sam3_box2(
-    width: int,
-    height: int,
-    normalized_box_cxcywh: tuple[float, float, float, float] = SAM3_BOX2_CXCYWH_NORM,
-) -> list[float]:
     cx, cy, box_w, box_h = normalized_box_cxcywh
     abs_w = box_w * width
     abs_h = box_h * height
     abs_x = (cx - box_w / 2.0) * width
     abs_y = (cy - box_h / 2.0) * height
-    return [abs_x, abs_y, abs_w, abs_h]
+    box = [abs_x, abs_y, abs_w, abs_h]
+
+    return box
+
+def sam3_box2(width: int, height: int, normalized_box_cxcywh: tuple[float, float, float, float] = SAM3_BOX2_CXCYWH_NORM) -> list[float]:
+
+    cx, cy, box_w, box_h = normalized_box_cxcywh
+    abs_w = box_w * width
+    abs_h = box_h * height
+    abs_x = (cx - box_w / 2.0) * width
+    abs_y = (cy - box_h / 2.0) * height
+    box = [abs_x, abs_y, abs_w, abs_h]
+
+    return box
 
 def _sam3_inference(frames_dir: str, output_size: int | None = None, is_intro: bool = False, prompt: str = "one woman", show_plots = False) -> None:
-
-    import matplotlib.pyplot as plt
-    from huggingface_hub import snapshot_download
-    from sam3.model.sam3_image_processor import Sam3Processor
-    from sam3.model_builder import build_sam3_image_model
-    from sam3.model.box_ops import box_xywh_to_cxcywh
-    from sam3.visualization_utils import draw_box_on_image, normalize_bbox, plot_results
 
     repo_path = snapshot_download(repo_id=SAM3_REPO_ID, local_files_only=False)
     model_path = os.path.join(repo_path, "sam3.pth")
     model = build_sam3_image_model(load_from_HF=False, enable_inst_interactivity=False, enable_segmentation=True, compile=False)
     checkpoint = torch.load(model_path, weights_only=False, map_location='cpu')
     model.load_state_dict(checkpoint["model_state_dict"])
-    processor = Sam3Processor(model, confidence_threshold=0.4, device="cuda" if torch.cuda.is_available() else "cpu")
 
+    processor = Sam3Processor(model, confidence_threshold=0.4, device="cuda" if torch.cuda.is_available() else "cpu")
     folder = Path(frames_dir)
+
     image_files = list(folder.glob("*.png")) + list(folder.glob("*.jpg"))
     image_files = [f for f in image_files if "_mask" not in f.stem]
 
@@ -572,7 +579,9 @@ def _sam3_inference(frames_dir: str, output_size: int | None = None, is_intro: b
         return
 
     with torch.inference_mode():
+
         for frame_path in sorted(image_files):
+
             output_path = frame_path.parent / f"{frame_path.stem}_mask.png"
             raw = Image.open(frame_path)
             image = raw.convert("RGB")
@@ -580,10 +589,12 @@ def _sam3_inference(frames_dir: str, output_size: int | None = None, is_intro: b
             ow, oh = (image.width, image.height)
 
             if oh > output_size:
+
                 full = image
                 image = full.resize((output_size, output_size), Image.Resampling.BILINEAR)
                 width, height = image.width, image.height
                 full.close()
+
             else:
                 width, height = ow, oh
 
@@ -591,30 +602,36 @@ def _sam3_inference(frames_dir: str, output_size: int | None = None, is_intro: b
             processor.reset_all_prompts(inference_state)
 
             inference_state = processor.set_text_prompt(state=inference_state, prompt="one woman")
+
             box_input_xywh = [sam3_box(image.width, image.height)]
             box_input_xywh = torch.tensor(box_input_xywh).view(-1, 4)
+
             box_input_cxcywh = box_xywh_to_cxcywh(box_input_xywh)
             norm_box_cxcywh = normalize_bbox(box_input_cxcywh, width, height).flatten().tolist()
+
             inference_state = processor.add_geometric_prompt(state=inference_state, box=norm_box_cxcywh, label=True)
 
             if show_plots:
+
                 plot_results(image, inference_state)
-                image_with_box = draw_box_on_image(image, box_input_xywh.flatten().tolist())
-                plt.imshow(image_with_box)
+                plt.imshow(draw_box_on_image(image, box_input_xywh.flatten().tolist()))
                 plt.axis("off")  
                 plt.show()
 
             inference_state = processor.set_text_prompt(state=inference_state, prompt="one man")
+
             box_input_xywh = [sam3_box2(image.width, image.height)]
             box_input_xywh = torch.tensor(box_input_xywh).view(-1, 4)
+            
             box_input_cxcywh = box_xywh_to_cxcywh(box_input_xywh)
             norm_box_cxcywh = normalize_bbox(box_input_cxcywh, width, height).flatten().tolist()
+
             inference_state = processor.add_geometric_prompt(state=inference_state, box=norm_box_cxcywh, label=False)
 
             if show_plots:
+
                 plot_results(image, inference_state)
-                image_with_box = draw_box_on_image(image, box_input_xywh.flatten().tolist())
-                plt.imshow(image_with_box)
+                plt.imshow(draw_box_on_image(image, box_input_xywh.flatten().tolist()))
                 plt.axis("off")  
                 plt.show()
 
@@ -622,19 +639,21 @@ def _sam3_inference(frames_dir: str, output_size: int | None = None, is_intro: b
             box_input_xywh = torch.tensor(box_input_xywh).view(-1, 4)
             box_input_cxcywh = box_xywh_to_cxcywh(box_input_xywh).view(-1,4)
             norm_boxes_cxcywh = normalize_bbox(box_input_cxcywh, width, height).tolist()
+
             box_labels = [True, False]
+
             for box, label in zip(norm_boxes_cxcywh, box_labels):
                 inference_state = processor.add_geometric_prompt(state=inference_state, box=box, label=label)
 
             if show_plots:
-                image_with_box = image.copy()
+
                 for i in range(len(box_input_xywh)):
                     if box_labels[i] == 1:
                         color = (0, 255, 0)
                     else:
                         color = (255, 0, 0)
-                    image_with_box = draw_box_on_image(image_with_box, box_input_xywh[i], color)
-                plt.imshow(image_with_box)
+
+                plt.imshow(draw_box_on_image(image.copy(), box_input_xywh[i], color))
                 plt.axis("off") 
                 plt.show()
 
@@ -677,11 +696,8 @@ def _sam3_inference(frames_dir: str, output_size: int | None = None, is_intro: b
     gc.collect()
     torch.cuda.empty_cache()
 
-def sam3_batch(
-    frames_dir: str,
-    output_size: int | None = None,
-    prompt: str = "woman",
-    quiet: bool = False) -> None:
+def sam3_batch(frames_dir: str, output_size: int | None = None, prompt: str = "woman", quiet: bool = False) -> None:
+
     _sam3_inference(frames_dir, output_size=output_size, is_intro=quiet, prompt=prompt)
 
 def _estimate_alpha(image_bgr: np.ndarray, model) -> np.ndarray:
@@ -700,19 +716,25 @@ def _estimate_alpha(image_bgr: np.ndarray, model) -> np.ndarray:
         mode="bicubic",
         align_corners=False,
     )
+
     outputs = outputs.squeeze(0).float().cpu().numpy()
+
     if outputs.size == 3:
         alpha = outputs[2].clip(0.0, 1.0)
+
     else:
         alpha = outputs[3].clip(0.0, 1.0)
+
     return alpha
 
 def _sapiens_inference(frames_dir: str, output_size: int | None = None, threshold: float = 0.5) -> None:
+
     from huggingface_hub import hf_hub_download
     from sapiens.dense.src.models.core.matting_estimator import MattingEstimator
     from sapiens.dense.src.models.init_model import init_model
 
     _ = MattingEstimator
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
     ckpt = hf_hub_download(repo_id=SAPIENS_REPO_ID, filename=SAPIENS_CHECKPOINT)
     model = init_model(SAPIENS_CONFIG, ckpt, device=device)
@@ -720,10 +742,12 @@ def _sapiens_inference(frames_dir: str, output_size: int | None = None, threshol
     folder = Path(frames_dir)
     image_files = list(folder.glob("*.png")) + list(folder.glob("*.jpg"))
     image_files = [f for f in image_files if "_mask" not in f.stem]
+
     if not image_files:
         return
 
     with torch.inference_mode():
+
         for frame_path in sorted(image_files):
             output_path = frame_path.parent / f"{frame_path.stem}_mask.png"
             raw = Image.open(frame_path)
@@ -751,11 +775,13 @@ def _sapiens_inference(frames_dir: str, output_size: int | None = None, threshol
     torch.cuda.empty_cache()
 
 def _sam_sapiens(frames_dir: str, output_size: int | None = None, prompt: str = "one woman", threshold: float = 0.5, gate_dilate: int = 5) -> None:
+
     sam3_batch(frames_dir, output_size=output_size, prompt=prompt)
 
     folder = Path(frames_dir)
     image_files = list(folder.glob("*.png")) + list(folder.glob("*.jpg"))
     image_files = [f for f in image_files if "_mask" not in f.stem]
+
     if not image_files:
         return
 
@@ -764,6 +790,7 @@ def _sam_sapiens(frames_dir: str, output_size: int | None = None, prompt: str = 
     from sapiens.dense.src.models.init_model import init_model
 
     _ = MattingEstimator
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
     ckpt = hf_hub_download(repo_id=SAPIENS_REPO_ID, filename=SAPIENS_CHECKPOINT)
     model = init_model(SAPIENS_CONFIG, ckpt, device=device)
@@ -772,8 +799,10 @@ def _sam_sapiens(frames_dir: str, output_size: int | None = None, prompt: str = 
     kernel = np.ones((k, k), np.uint8)
 
     with torch.inference_mode():
+
         for frame_path in sorted(image_files):
             sam3_mask_path = frame_path.parent / f"{frame_path.stem}_mask.png"
+
             if not sam3_mask_path.exists():
                 continue
 
@@ -792,6 +821,7 @@ def _sam_sapiens(frames_dir: str, output_size: int | None = None, prompt: str = 
             sapiens_mask = (alpha >= threshold).astype(np.uint8) * 255
 
             sam3_mask = np.array(Image.open(sam3_mask_path).convert('L'))
+
             if sam3_mask.shape != sapiens_mask.shape:
                 sam3_mask = cv2.resize(sam3_mask, (sapiens_mask.shape[1], sapiens_mask.shape[0]), interpolation=cv2.INTER_NEAREST)
 
@@ -1258,9 +1288,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description='Minimal VR Video Masking Pipeline')
     parser.add_argument('input_path')
     parser.add_argument('--mask-height', type=int, default=1008)
-    parser.add_argument('--segment-length', type=float, default=4)
-    parser.add_argument('--erode', type=int, default=3)
-    parser.add_argument('--dilate', type=int, default=3)
+    parser.add_argument('--segment-length', type=float, default=10)
+    parser.add_argument('--erode', type=int, default=0)
+    parser.add_argument('--dilate', type=int, default=0)
     parser.add_argument('--prompt', type=str, default='one woman')
     parser.add_argument('--seed-model', type=str, default='sam3', choices=['sam3', 'sapiens', 'hybrid'], help='Seed mask guy (sam3, sapiens, or hybrid)')
     parser.add_argument('--sapiens-threshold', type=float, default=0.5, help='Threshold for converting Sapiens alpha matte to a binary mask')
