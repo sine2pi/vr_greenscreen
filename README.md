@@ -26,13 +26,5 @@ optional:
 
 ```
 Runs fine on windows.
-The sapiens thing was just to test an idea and can be ignored but it works fine if you want to experiment. Sam3 is safest bet. You can also try sam3.1 video... also changing these guys :
-``` python
-SAM3_BOX_CXCYWH_NORM = (0.5, 0.5, 0.5, 0.5) <- positive
-SAM3_BOX2_CXCYWH_NORM = (0.5, 0.9, 0.9, 0.18) <-negative
-
-```
-will help focus the text prompt. Make sure the text prompt and the box are the same person. 
-
-The script itself doesn't need anything special to run.. the encoder is nvenc but you can just change that. The AI models need the usual suspects of pytorch etc. No special make model or year of python or ffmpeg or anything whatever you have installed on your system is fine. 
+The sapiens thing was just to test an idea and can be ignored but it works fine if you want to experiment. Sam3 is safest bet. You can also try sam3.1 video... Seems to work better than image for this task. 
 
