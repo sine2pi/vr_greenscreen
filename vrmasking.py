@@ -1039,9 +1039,8 @@ def _fill_soft_mask_gaps(
 
     return filled, filled_count
 
-def _sam3_inference(frames_dir: str, output_size: int | None = None, is_intro: bool = False, prompt: str = "one woman", show_plots = False) -> None:
+def _sam3_inference(frames_dir: str, output_size: int | None = None, prompt: str = "one woman", show_plots = False) -> None:
 
-    _ = is_intro
     repo_path = snapshot_download(repo_id=SAM3_REPO_ID, local_files_only=False)
     model_path = os.path.join(repo_path, "sam3.pth")
     model = build_sam3_image_model(load_from_HF=False, enable_inst_interactivity=False, enable_segmentation=True, compile=False)
@@ -1155,8 +1154,7 @@ def _sam3_inference(frames_dir: str, output_size: int | None = None, is_intro: b
     torch.cuda.empty_cache()
 
 def sam3_batch(frames_dir: str, output_size: int | None = None, prompt: str = "woman", quiet: bool = False) -> None:
-
-    _sam3_inference(frames_dir, output_size=output_size, is_intro=quiet, prompt=prompt)
+    _sam3_inference(frames_dir, output_size=output_size, prompt=prompt)
 
 def _estimate_alpha(image_bgr: np.ndarray, model) -> np.ndarray:
 
