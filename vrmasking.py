@@ -584,10 +584,7 @@ def build_sam3_video_predictor(*model_args, checkpoint_path=None, gpus_to_use=No
 
 class sam3_video_inference:
 
-    import sam31
-    sam31_root = os.path.join(os.path.dirname(sam31.__file__), "..")
-
-    def __init__(self, video_path: str= f"{sam31_root}/videos", prompt: str = "one woman", sam31=False):
+    def __init__(self, video_path: str, prompt: str = "one woman", sam31=False):
 
         self.video_path = video_path
         self.prompt = prompt
