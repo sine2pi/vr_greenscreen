@@ -1,4 +1,4 @@
-import argparse, shutil, gc, os, sys, functools, re, subprocess, time, torch, cv2, imageio, numpy as np, glob
+import argparse, shutil, gc, os, sys, functools, re, subprocess, time, torch, cv2, imageio, numpy as np, glob, tqdm
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -26,6 +26,7 @@ SAPIENS_CONFIG = "sapiens/dense/configs/normal/metasim_render_people/sapiens2_1b
 def encoder_args() -> list[str]:
 
     return [
+
         '-sws_flags', 'lanczos+full_chroma_int+accurate_rnd+full_chroma_inp',
         '-fps_mode', 'cfr',
         '-r', '60',
@@ -64,6 +65,7 @@ def _ffmpeg_progress(line: str) -> str:
 def ffmpeg_progress(cmd: list[str], progress_prefix: str = "", cwd: str | None = None) -> tuple[int, str]:
 
     process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=cwd)
+
     stderr_lines = []
 
     for line in process.stderr:
@@ -80,6 +82,7 @@ def ffmpeg_progress(cmd: list[str], progress_prefix: str = "", cwd: str | None =
 def info(video_path: str) -> Tuple[int, int, float, float]:
 
     cmd = [
+
         'ffprobe', '-v', 'error',
         '-select_streams', 'v:0',
         '-show_entries', 'stream=width,height,r_frame_rate:format=duration',
@@ -109,6 +112,7 @@ def info(video_path: str) -> Tuple[int, int, float, float]:
 def frame_count(video_path: str) -> int:
 
     cmd = [
+
         'ffprobe', '-v', 'error',
         '-count_frames',
         '-select_streams', 'v:0',
@@ -148,6 +152,7 @@ def norm_video(source_video, w = None, h = None, progress_prefix: str = "[normal
             hi = h
 
         cmd = [
+
             'ffmpeg', '-y', '-hide_banner',
             '-i', source_video,
             '-filter_complex', f'[0:v]fps={fps},setpts=N/({fps}*TB),scale=w={wi}:h={hi}:flags=lanczos:threads=0',
@@ -174,6 +179,7 @@ def resize_video(source_video: str, output_video: str, width: int, height: int, 
     os.makedirs(os.path.dirname(os.path.abspath(output_video)) or '.', exist_ok=True)
 
     cmd = [
+
         'ffmpeg', '-y', '-hide_banner',
         '-i', source_video,
         '-filter_complex', f'[0:v]fps=60,setpts=N/(60*TB),scale={width}:{height}:flags=lanczos:threads=0',
@@ -200,23 +206,22 @@ def concat_video(video_list: list[str], output_path: str, fps: float | None = No
     enc = encoder_args()
 
     if n > BATCH_SIZE:
-        base_path, ext = os.path.splitext(os.path.abspath(output_path))
 
+        base_path, ext = os.path.splitext(os.path.abspath(output_path))
         temp_batches = []
 
-        for i in range(0, n, BATCH_SIZE):
-
-            batch_files = video_list[i:i + BATCH_SIZE]
-            batch_out = f"{base_path}_batch_{i//BATCH_SIZE}{ext}"
-            temp_batches.append(batch_out)
-
-            concat_video(batch_files, batch_out, fps=fps)
+        try:
+            for i in range(0, n, BATCH_SIZE):
+                batch_files = video_list[i:i + BATCH_SIZE]
+                batch_out = f"{base_path}_batch_{i//BATCH_SIZE}{ext}"
+                temp_batches.append(batch_out)
+                concat_video(batch_files, batch_out, fps=fps)
 
             return concat_video(temp_batches, output_path, fps=fps)
-
-        for tb in temp_batches:
-            if os.path.exists(tb):
-                os.remove(tb)
+        finally:
+            for tb in temp_batches:
+                if os.path.exists(tb):
+                    os.remove(tb)
 
     abs_vid = [os.path.abspath(v) for v in video_list]
     abs_output = os.path.abspath(output_path)
@@ -253,6 +258,7 @@ def concat_video(video_list: list[str], output_path: str, fps: float | None = No
     filter_file = os.path.join(common_dir, "_concat_filter.txt")
 
     cmd_inline = [
+        
         'ffmpeg', '-y',
         *[item for rel in rel_vid for item in ['-i', rel]],
         '-filter_complex', filter_complex,
@@ -268,6 +274,7 @@ def concat_video(video_list: list[str], output_path: str, fps: float | None = No
             f.write(filter_complex)
 
         cmd_script = [
+
             'ffmpeg', '-y',
             *[item for rel in rel_vid for item in ['-i', rel]],
             '-/filter_complex', '_concat_filter.txt',
@@ -303,6 +310,7 @@ def eye_frames(video_path: str, timestamps: list[float], output_dir: str, height
         out_path = os.path.join(output_dir, f"frame_{ts:.0f}s.png")
 
         cmd = [
+
             'ffmpeg', '-y', '-hide_banner',
             '-ss', str(ts),
             '-i', video_path,
@@ -333,6 +341,7 @@ def extract_segment_frames(
 ) -> tuple[str, str, str, str]:
 
     fps = info(stereo_video)[2]
+
     enc = encoder_args()
 
     start_frame = round(start * fps)
@@ -627,6 +636,7 @@ class sam3_video_inference:
         outputs_per_frame = {}
 
         for response in predictor.handle_stream_request(
+
             request=dict(
                 type="propagate_in_video",
                 session_id=session_id,
@@ -697,6 +707,7 @@ class sam3_video_inference:
         IMG_WIDTH, IMG_HEIGHT = self.sample_img.size
 
         response = predictor.handle_request(
+
             request=dict(
                 type="start_session",
                 resource_path=video_path,
@@ -705,6 +716,7 @@ class sam3_video_inference:
         session_id = response["session_id"]
 
         _ = predictor.handle_request(
+
             request=dict(
                 type="reset_session",
                 session_id=session_id,
@@ -715,6 +727,7 @@ class sam3_video_inference:
         frame_idx = 0
 
         response = predictor.handle_request(
+
             request=dict(
                 type="add_prompt",
                 session_id=session_id,
@@ -730,6 +743,7 @@ class sam3_video_inference:
 
             obj_id = 2
             response = predictor.handle_request(
+
                 request=dict(
                     type="remove_object",
                     session_id=session_id,
@@ -759,6 +773,7 @@ class sam3_video_inference:
             points_labels_tensor = torch.tensor(labels, dtype=torch.int32)
 
             response = predictor.handle_request(
+
                 request=dict(
                     type="add_prompt",
                     session_id=session_id,
@@ -887,19 +902,27 @@ def _extract_sam3_video_mask(outputs, out_h: int, out_w: int) -> np.ndarray | No
 
     if masks.ndim == 2:
         best = masks.astype(np.float32)
+
     elif masks.ndim == 3:
+
         if masks.shape[0] == 1:
             best = masks[0].astype(np.float32)
+
         else:
             probs = outputs.get("out_probs", None)
+
             if probs is not None:
                 probs = np.asarray(probs)
+
                 if probs.size == masks.shape[0]:
                     best = masks[int(np.argmax(probs))].astype(np.float32)
+
                 else:
                     best = masks[0].astype(np.float32)
+
             else:
                 best = masks[0].astype(np.float32)
+
     else:
         return None
 
@@ -928,6 +951,7 @@ def _sam3_video_inference(frames_dir: str, output_size: int | None = None, promp
     output_paths: list[Path] = []
 
     for i, frame_path in enumerate(image_files):
+
         out_path = frame_path.parent / f"{frame_path.stem}_mask.png"
         output_paths.append(out_path)
 
@@ -936,6 +960,7 @@ def _sam3_video_inference(frames_dir: str, output_size: int | None = None, promp
         raw.close()
 
         if output_size and image.height > output_size:
+
             full = image
             image = full.resize((output_size, output_size), Image.Resampling.BILINEAR)
             full.close()
@@ -949,13 +974,16 @@ def _sam3_video_inference(frames_dir: str, output_size: int | None = None, promp
     outputs_per_frame = tracker.track()
 
     missing = 0
+    
     for i, out_path in enumerate(output_paths):
+
         out_h, out_w = frame_shapes[i]
         outputs = outputs_per_frame.get(i)
 
         soft = _extract_sam3_video_mask(outputs, out_h, out_w)
-        
+
         if soft is None:
+
             missing += 1
             soft = np.zeros((out_h, out_w), dtype=np.float32)
 
@@ -1351,8 +1379,7 @@ def _load_matanyone_runtime():
 
 @torch.inference_mode()
 def _matanyone_process_segment(matanyone2, device, inference_core_cls, read_frame_from_videos_fn, gen_dilate_fn, gen_erosion_fn, job: dict) -> str:
-    import tqdm
-
+    
     n_warmup = int(job.get('warmup', 6))
     input_path = job['input_path']
     mask_path = job['mask_path']
@@ -1362,11 +1389,11 @@ def _matanyone_process_segment(matanyone2, device, inference_core_cls, read_fram
     suffix = job.get('suffix', '')
 
     processor = inference_core_cls(matanyone2, cfg=matanyone2.cfg)
-    vframes, _, length, video_name = read_frame_from_videos_fn(input_path)
-    vframes = vframes.float()
+    frames, _, length, video_name = read_frame_from_videos_fn(input_path)
+    frames = frames.float()
 
-    repeated_frames = vframes[0].unsqueeze(0).repeat(n_warmup, 1, 1, 1)
-    vframes = torch.cat([repeated_frames, vframes], dim=0).float()
+    repeated_frames = frames[0].unsqueeze(0).repeat(n_warmup, 1, 1, 1)
+    frames = torch.cat([repeated_frames, frames], dim=0).float()
     length += n_warmup
 
     os.makedirs(output_path, exist_ok=True)
@@ -1382,6 +1409,7 @@ def _matanyone_process_segment(matanyone2, device, inference_core_cls, read_fram
 
     if r_erode > 0:
         mask = gen_erosion_fn(mask, r_erode, r_erode)
+
     mask = torch.from_numpy(mask).float().to(device)
 
     objects = [1]
@@ -1389,7 +1417,7 @@ def _matanyone_process_segment(matanyone2, device, inference_core_cls, read_fram
 
     for ti in tqdm.tqdm(range(length)):
 
-        image = (vframes[ti] / 255.).float().to(device)
+        image = (frames[ti] / 255.).float().to(device)
 
         if ti == 0:
             output_prob = processor.step(image, mask, objects=objects)
@@ -1410,10 +1438,12 @@ def _matanyone_process_segment(matanyone2, device, inference_core_cls, read_fram
             phas.append(pha)
 
     output_file = os.path.join(output_path, f'{video_name}_pha.mp4')
+
     imageio.mimwrite(output_file, np.array(phas), fps=60, quality=10)
 
-    del processor, vframes, phas, mask
+    del processor, frames, phas, mask
     torch.cuda.empty_cache()
+
     gc.collect()
     return output_file
 
@@ -1504,8 +1534,10 @@ def _input_videos(input_path: str) -> List[Path]:
         raise FileNotFoundError(f'Input path not found: {input_path}')
 
     if path.is_file():
+
         if path.suffix.lower() not in VIDEO_EXTENSIONS:
             raise RuntimeError(f'Unsupported video file: {path}')
+        
         return [path]
 
     if not path.is_dir():
@@ -1513,15 +1545,18 @@ def _input_videos(input_path: str) -> List[Path]:
 
     videos = sorted(
         p.resolve() for p in path.rglob('*')
-        if p.is_file() and p.suffix.lower() in VIDEO_EXTENSIONS)
+        if p.is_file() and p.suffix.lower() in VIDEO_EXTENSIONS
+        )
 
     if not videos:
         raise RuntimeError(f'No supported video files found in folder: {input_path}')
     return videos
 
 def process_video(video_path, args: argparse.Namespace, temp_root: Path, batch_mode: bool = False) -> str:
+
     video_path = str(Path(video_path).expanduser().resolve())
     video_name = Path(video_path).stem
+
     safe_name = ''.join(ch if ch.isalnum() or ch in '._-' else '_' for ch in video_name)
     temp_dir = temp_root / safe_name
 
@@ -1536,36 +1571,63 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path, batch_m
         d.mkdir(parents=True, exist_ok=True)
 
     orig_w, orig_h, fps, duration = info(video_path)
+
     video_args = argparse.Namespace(**vars(args), video=video_path)
+
     print(f'Specs: {orig_w}x{orig_h}, {fps:.2f}fps, {format_timestamp(duration)}')
     print(f'Mask height: {video_args.mask_height}px')
     print()
 
     mask_square = video_args.mask_height
-    segments = calculate_segments(duration, video_args.segment_length)
+
+    segments = calculate_segments(
+
+        duration, 
+        video_args.segment_length
+
+        )
+
     mask_segments = [s for s in segments if s.seg_type == SegmentType.MASK]
-    mask_segments = extract_segments(video_args, segments, mask_segments, orig_h, frames_dir, segments_dir)
-    mask_segments = sam3_masks(mask_segments, frames_dir, masks_dir, mask_square,
+    
+    mask_segments = extract_segments(
+
+        video_args, 
+        segments, 
+        mask_segments, 
+        orig_h, 
+        frames_dir, 
+        segments_dir
+
+        )
+
+    mask_segments = sam3_masks(
+
+        mask_segments, frames_dir, masks_dir, mask_square,
         video_args.prompt,
         video_args.seed_model,
         video_args.sapiens_threshold,
         video_args.gate_dilate,
     )
+
     segments = matanyone(segments, segments_dir, mask_square, video_args)
 
     output_mask = finalize(
+
         segments,
         video_name,
         str(video_path),
     )
 
     overlay_target = str(Path(video_path).with_name(f"{video_name}_overlay.mp4"))
+
     overlay_video = mask_overlay(
+
         video_path,
         output_mask,
         overlay_target,
         background_color=video_args.overlay_color,
     )
+
     print(f'Overlay preview: {overlay_video}')
     print('=' * 60)
     print(f'Segments: {len(segments)} ({len(mask_segments)} masks)')
@@ -1574,18 +1636,21 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path, batch_m
 
     with open(temp_dir / 'segments.txt', 'w', encoding='utf-8') as f:
         f.write(f'# {video_name}\n')
+
         for seg in segments:
             f.write(f'{seg.index},{seg.seg_type.value},{seg.start_time:.3f},{seg.end_time:.3f},{seg.video_path}\n')
 
     return output_mask
 
 def calculate_segments(video_duration: float, max_segment_length: float = 5.0) -> List[SegmentInfo]:
+
     segments: List[SegmentInfo] = []
     chunk_start = 0.0
     index = 0
 
     while chunk_start < video_duration:
         chunk_end = min(chunk_start + max_segment_length, video_duration)
+
         if 0 < video_duration - chunk_end < 1.0:
             chunk_end = video_duration
 
@@ -1594,6 +1659,7 @@ def calculate_segments(video_duration: float, max_segment_length: float = 5.0) -
 
         index += 1
         chunk_start = chunk_end
+
     return segments
 
 def extract_segments(
@@ -1606,19 +1672,25 @@ def extract_segments(
 ) -> List[SegmentInfo]:
 
     print(f'Total: {len(segments)} segments')
+
     for seg in segments:
+
         dur = seg.end_time - seg.start_time
+
         print(f'[{seg.index}] {seg.seg_type.value.upper():5} '
             f'{format_timestamp(seg.start_time)} → {format_timestamp(seg.end_time)} ({dur:.1f}s)')
     print()
 
     for i, seg in enumerate(mask_segments):
+
         left_frame = str(frames_dir / f'seg{seg.index:02d}_left.png')
         right_frame = str(frames_dir / f'seg{seg.index:02d}_right.png')
+
         seg_left_video = str(segments_dir / f'seg{seg.index:02d}_left.mp4')
         seg_right_video = str(segments_dir / f'seg{seg.index:02d}_right.mp4')
 
         left_frame_path, right_frame_path, _, _ = extract_segment_frames(
+
             stereo_video=args.video,
             start=seg.start_time,
             end=seg.end_time,
@@ -1628,14 +1700,17 @@ def extract_segments(
             right_frame_out=right_frame,
             left_video_out=seg_left_video,
             right_video_out=seg_right_video,
-            progress_prefix=f'[{i + 1}/{len(mask_segments)}] ',
-        )
+            progress_prefix=f'[{i + 1}/{len(mask_segments)}]'
+
+            )
+        
         seg.left_frame_path = left_frame_path
         seg.right_frame_path = right_frame_path
 
     return mask_segments
 
 def sam3_masks(
+        
     mask_segments: List[SegmentInfo],
     frames_dir: Path,
     masks_dir: Path,
@@ -1647,7 +1722,9 @@ def sam3_masks(
 ) -> List[SegmentInfo]:
 
     print(f"Seed model: {seed_model}")
+
     seed_mask_batch(
+
         str(frames_dir),
         output_size=mask_square,
         prompt=prompt,
@@ -1657,9 +1734,11 @@ def sam3_masks(
     )
 
     for seg in mask_segments:
+
         if seg.left_frame_path:
             base = os.path.splitext(os.path.basename(seg.left_frame_path))[0]
             mask_src = frames_dir / f'{base}_mask.png'
+
             if mask_src.exists():
                 final_mask_path = str(masks_dir / f'seg{seg.index:02d}_left_mask.png')
                 shutil.move(str(mask_src), final_mask_path)
@@ -1668,6 +1747,7 @@ def sam3_masks(
         if seg.right_frame_path:
             base = os.path.splitext(os.path.basename(seg.right_frame_path))[0]
             mask_src = frames_dir / f'{base}_mask.png'
+
             if mask_src.exists():
                 final_mask_path = str(masks_dir / f'seg{seg.index:02d}_right_mask.png')
                 shutil.move(str(mask_src), final_mask_path)
@@ -1684,6 +1764,7 @@ def matanyone(segments: List[SegmentInfo], segments_dir: Path, mask_square: int,
 
     jobs = []
     for seg in mask_segments:
+
         if not seg.left_mask_path or not seg.right_mask_path:
             raise RuntimeError(f'Segment [{seg.index}] missing SAM3 masks')
 
@@ -1691,6 +1772,7 @@ def matanyone(segments: List[SegmentInfo], segments_dir: Path, mask_square: int,
         seg_right_video = str(segments_dir / f'seg{seg.index:02d}_right.mp4')
 
         jobs.append({
+
             'input_path': seg_left_video,
             'mask_path': seg.left_mask_path,
             'output_path': matanyout,
@@ -1700,9 +1782,12 @@ def matanyone(segments: List[SegmentInfo], segments_dir: Path, mask_square: int,
             'op_num': len(jobs) + 1,
             'total_ops': total_ops,
             'label': f'seg{seg.index:02d}_left',
-            'duration': seg.end_time - seg.start_time})
+            'duration': seg.end_time - seg.start_time
+
+            })
 
         jobs.append({
+
             'input_path': seg_right_video,
             'mask_path': seg.right_mask_path,
             'output_path': matanyout,
@@ -1712,40 +1797,51 @@ def matanyone(segments: List[SegmentInfo], segments_dir: Path, mask_square: int,
             'op_num': len(jobs) + 1,
             'total_ops': total_ops,
             'label': f'seg{seg.index:02d}_right',
-            'duration': seg.end_time - seg.start_time})
+            'duration': seg.end_time - seg.start_time
+
+            })
 
     completed_paths = matanyone_inference(jobs)
+
     if len(completed_paths) != len(jobs):
         raise RuntimeError(f'Not all jobs completed successfully. Expected {len(jobs)}, got {len(completed_paths)}')
 
     for seg in mask_segments:
+
         left_basename = os.path.splitext(os.path.basename(f'seg{seg.index:02d}_left.mp4'))[0]
         right_basename = os.path.splitext(os.path.basename(f'seg{seg.index:02d}_right.mp4'))[0]
         left_pha = os.path.join(matanyout, f'{left_basename}_pha.mp4')
         right_pha = os.path.join(matanyout, f'{right_basename}_pha.mp4')
+
         if not os.path.exists(left_pha) or not os.path.exists(right_pha):
             raise RuntimeError(f'Could not find generated masks for segment {seg.index}')
 
         stereo_output = str(segments_dir / f'seg{seg.index:02d}_stereo.mp4')
+
         seg.video_path = stereo_video(
             left_pha,
             right_pha,
-            stereo_output)
+            stereo_output
+            )
 
     return segments
 
 def finalize(segments: List[SegmentInfo], video_name: str, video_path: str) -> str:
 
     segment_vid = []
+
     for seg in sorted(segments, key=lambda s: s.index):
+
         if seg.video_path and os.path.exists(seg.video_path):
             segment_vid.append(seg.video_path)
+
         else:
             raise RuntimeError(f'Segment [{seg.index}] missing')
 
     output_dir = os.path.dirname(video_path) or '.'
     output_mask = os.path.join(output_dir, f'{video_name}_mask.mp4')
     output_mask = concat_video(segment_vid, output_mask)
+
     return output_mask
 
 def main() -> int:
