@@ -579,19 +579,19 @@ def sam3_box2(width: int, height: int, normalized_box_cxcywh: tuple[float, float
     return box
 
 def build_sam3_video_predictor(*model_args, checkpoint_path=None, gpus_to_use=None, is_sbs=False, max_num_objects=1, num_obj_for_compile=1, strict_state_dict_loading=False, **model_kwargs):
-    from sam31.model.sam3_video_predictor import Sam3VideoPredictorMultiGPU
+    from sam3.model.sam3_video_predictor import Sam3VideoPredictorMultiGPU
     return Sam3VideoPredictorMultiGPU(*model_args, checkpoint_path=checkpoint_path, gpus_to_use=gpus_to_use, is_sbs=is_sbs, max_num_objects= max_num_objects, num_obj_for_compile=num_obj_for_compile, strict_state_dict_loading=strict_state_dict_loading, **model_kwargs)
 
 class sam3_video_inference:
 
-    def __init__(self, video_path: str, prompt: str = "one woman", sam31=False):
+    def __init__(self, video_path: str, prompt: str = "one woman", sam3=False):
 
         self.video_path = video_path
         self.prompt = prompt
 
-        if sam31:
+        if sam3:
 
-            from sam31.model_builder import build_sam3_multiplex_video_predictor
+            from sam3.model_builder import build_sam3_multiplex_video_predictor
 
             self.predictor = build_sam3_multiplex_video_predictor(
 
