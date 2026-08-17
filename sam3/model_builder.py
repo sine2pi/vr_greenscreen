@@ -954,6 +954,14 @@ def build_sam3_multiplex_video_predictor(
     )
     from sam3.model.sam3_multiplex_video_predictor import Sam3MultiplexVideoPredictor
 
+    if bpe_path is None:
+        bpe_path = os.path.join(
+            os.path.dirname(__file__),
+            "..",
+            "assets",
+            "bpe_simple_vocab_16e6.txt.gz",
+        )
+    
     tracker_model = build_sam3_multiplex_video_model(
         checkpoint_path=checkpoint_path,
         load_from_HF=False,
