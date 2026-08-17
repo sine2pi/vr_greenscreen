@@ -10,21 +10,27 @@ python vrmasking.py (path to folder of videos)
 masks and composite videos will automatically be places in the input folder with the appropriate names.
 
 optional:
-    ('--mask-height', type=int, default=1008)
-    ('--segment-length', type=float, default=10)
-    ('--erode', type=int, default=0)
-    ('--dilate', type=int, default=0)
-    ('--prompt', type=str, default='one woman')
-    ('--seed-model', type=str, default='sam3', choices=['sam3', 'sam3video', 'sapiens', 'hybrid'], help='Seed mask mode (sam3, sam3video, sapiens, or hybrid)')
-    ('--sapiens-threshold', type=float, default=0.5, help='Threshold for converting Sapiens alpha matte to a binary mask')
-    ('--gate-dilate', type=int, default=5, help='Dilate SAM3 gating in hybrid mode')
-    ('--no-normalize-input', dest='normalize_input', action='store_false', help='Skip upfront input normalization/transcoding')
-    parser.set_defaults(normalize_input=True)
-    ('--overlay-output', type=str, default='input_path', help='Where you want the composited video to be saved. Default: input folder')
-    ('--overlay-color', type=str, default='0x00ff00', help='Background color, uses 0x00ff00 for pure green by default')
+   ('--mask-height', type=int, default=1008)
+   ('--segment-length', type=float, default=1)
+   ('--erode', type=int, default=0)
+   ('--dilate', type=int, default=0)
+   ('--prompt', type=str, default='one woman')
+   ('--warmup', type=int, default=8)
+   ('--seed-model', type=str, default='sam3', choices=['sam3', 'sam3video', 'sam31video', 'sapiens', 'hybrid'], help='Seed mask mode (sam3, sam3video, sam31video, sapiens, or hybrid)')
+   ('--sapiens-threshold', type=float, default=0.5, help='Threshold for converting Sapiens alpha matte to a binary mask')
+   ('--gate-dilate', type=int, default=5, help='Dilate SAM3 gating in hybrid mode')
+   ('--matanyone-version', type=str, default='v2', choices=['v1', 'v2'], help='Select MatAnyone runtime version')
+   ('--ma2-mem-every', type=int, default=None, help='Override MatAnyone mem_every (works for v1 and v2; e.g. 2 or 3 for faster refresh)')
+   ('--ma2-max-mem-frames', type=int, default=None, help='Override MatAnyone memory window in frames (works for v1 and v2)')
+   ('--ma2-use-long-term', type=str, default='auto', choices=['auto', 'on', 'off'], help='Override MatAnyone long-term memory mode (works for v1 and v2)')
+   ('--temporal-median-window', type=int, default=0, help='Temporal median window for alpha cleanup. 0 disables; use odd values >= 3 (e.g. 5)')
+   ('--no-normalize-input', dest='normalize_input', action='store_false', help='Skip upfront input normalization/transcoding')
+   ('--overlay-output', type=str, default='input_path', help='Write a composited video with the mask over the original source')
+   ('--overlay-color', type=str, default='0x00ff00', help='Background color for the optional overlay preview (use 0x00ff00 for pure green)')
+    args.matanyone_version = str(args.matanyone_version).lower()
 
 
 ```
-Runs fine on windows.
-The sapiens thing was just to test an idea and can be ignored but it works fine if you want to experiment. Sam3 is safest bet. You can also try sam3.1 video... Seems to work better than image for this task. 
+
+added matanyone version 1 and ability to tone down the memory on it.. background bleed is the issue.
 
