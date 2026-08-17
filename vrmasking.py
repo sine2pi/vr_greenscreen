@@ -1,4 +1,4 @@
-import argparse, shutil, gc, os, sys, functools, re, subprocess, time, torch, cv2, imageio, numpy as np, glob, tqdm
+import argparse, shutil, gc, os, sys, functools, re, subprocess, time, torch, cv2, imageio, numpy as np, glob, tqdm, random, av
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -7,21 +7,33 @@ from typing import Callable, Tuple, List
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
 from huggingface_hub import snapshot_download
+from omegaconf import open_dict
 from sam3.model.sam3_image_processor import Sam3Processor
 from sam3.model_builder import build_sam3_image_model
 from sam3.model.box_ops import box_xywh_to_cxcywh
 from sam3.visualization_utils import draw_box_on_image, normalize_bbox, plot_results, load_frame
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+def _setup_tf32() -> None:
+    if torch.cuda.is_available():
+        device_props = torch.cuda.get_device_properties(0)
+        if device_props.major >= 8:
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+_setup_tf32()
+
 ENCODER = 'hevc_nvenc'
-VIDEO_EXTENSIONS = {'.mp4', '.mov', '.mkv', '.avi', '.webm', '.m4v', '.wmv'}
+IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.JPG', '.JPEG', '.PNG')
+VIDEO_EXTENSIONS = ('.mp4', '.mov', '.avi', '.MP4', '.MOV', '.AVI')
+
 SAM3_REPO_ID = "sin2piusc/sam3_fta"
 SAM3_MAX = 1008
 SAM3_BOX_CXCYWH_NORM = (0.5, 0.5, 0.5, 0.5)
 SAM3_BOX2_CXCYWH_NORM = (0.5, 0.9, 0.9, 0.18)
 
-SAPIENS_REPO_ID = "facebook/sapiens2-matting-1b" #facebook/sapiens2-seg-1b
-SAPIENS_CHECKPOINT = "sapiens2_1b_matting.safetensors"#sapiens2_1b_seg.safetensors
-SAPIENS_CONFIG = "sapiens/dense/configs/normal/metasim_render_people/sapiens2_1b_matting_gss_p3m_metasim-1024x768.py"
+SAPIENS_REPO_ID = "facebook/sapiens2-matting-1b"
+SAPIENS_CHECKPOINT = "sapiens2_1b_matting.safetensors"
+SAPIENS_CONFIG = "assets/sapiens2_1b_matting_gss_p3m_metasim-1024x768.py"
 
 def encoder_args() -> list[str]:
 
@@ -53,7 +65,6 @@ def encoder_args() -> list[str]:
 def _ffmpeg_progress(line: str) -> str:
 
     parts = []
-
     for field in ['time=', 'elapsed=', 'speed=']:
         match = re.search(rf'{field}(\S+)', line)
 
@@ -153,7 +164,7 @@ def norm_video(source_video, w = None, h = None, progress_prefix: str = "[normal
 
         cmd = [
 
-            'ffmpeg', '-y', '-hide_banner',
+            'ffmpeg', '-y', '-hwaccel', 'auto',
             '-i', source_video,
             '-filter_complex', f'[0:v]fps={fps},setpts=N/({fps}*TB),scale=w={wi}:h={hi}:flags=lanczos:threads=0',
             *enc,
@@ -180,7 +191,7 @@ def resize_video(source_video: str, output_video: str, width: int, height: int, 
 
     cmd = [
 
-        'ffmpeg', '-y', '-hide_banner',
+        'ffmpeg', '-y', '-hwaccel', 'auto',
         '-i', source_video,
         '-filter_complex', f'[0:v]fps=60,setpts=N/(60*TB),scale={width}:{height}:flags=lanczos:threads=0',
         *enc,
@@ -258,8 +269,8 @@ def concat_video(video_list: list[str], output_path: str, fps: float | None = No
     filter_file = os.path.join(common_dir, "_concat_filter.txt")
 
     cmd_inline = [
-        
-        'ffmpeg', '-y',
+
+        'ffmpeg', '-y', '-hwaccel', 'auto',
         *[item for rel in rel_vid for item in ['-i', rel]],
         '-filter_complex', filter_complex,
         '-map', '[outv]',
@@ -275,7 +286,7 @@ def concat_video(video_list: list[str], output_path: str, fps: float | None = No
 
         cmd_script = [
 
-            'ffmpeg', '-y',
+            'ffmpeg', '-y', '-hwaccel', 'auto',
             *[item for rel in rel_vid for item in ['-i', rel]],
             '-/filter_complex', '_concat_filter.txt',
             '-map', '[outv]',
@@ -311,7 +322,7 @@ def eye_frames(video_path: str, timestamps: list[float], output_dir: str, height
 
         cmd = [
 
-            'ffmpeg', '-y', '-hide_banner',
+            'ffmpeg', '-y', '-hwaccel', 'auto',
             '-ss', str(ts),
             '-i', video_path,
             '-vf', crop_filter,
@@ -453,7 +464,6 @@ def overlay_path(source_video: str, output_path: str) -> str:
 def mask_overlay(source_video: str, mask_video: str, output_path: str, background_color: str = '0x00ff00') -> str:
 
     resolved_path = overlay_path(source_video, output_path)
-
     src_w, src_h, src_fps, src_duration = info(source_video)
     mask_w, mask_h, mask_fps, mask_duration = info(mask_video)
 
@@ -492,7 +502,7 @@ def mask_overlay(source_video: str, mask_video: str, output_path: str, backgroun
 
     cmd = [
 
-        'ffmpeg', '-y', '-hide_banner',
+        'ffmpeg', '-y', '-hwaccel', 'auto',
         '-i', source_video,
         '-i', mask_video,
         '-f', 'lavfi', '-i', f'color=c={background_color}:s={src_w}x{src_h}:d={duration}:r={fps}',
@@ -519,7 +529,7 @@ def stereo_video(left_video: str, right_video: str, output_path: str) -> str:
 
     cmd = [
 
-        'ffmpeg', '-y',
+        'ffmpeg', '-y', '-hwaccel', 'auto',
         '-i', left_video,
         '-i', right_video,
         '-filter_complex', filter_complex,
@@ -584,12 +594,12 @@ def build_sam3_video_predictor(*model_args, checkpoint_path=None, gpus_to_use=No
 
 class sam3_video_inference:
 
-    def __init__(self, video_path: str, prompt: str = "one woman", sam3=False):
+    def __init__(self, video_path: str, prompt: str = "one woman", sam31=True):
 
         self.video_path = video_path
         self.prompt = prompt
 
-        if sam3:
+        if sam31:
 
             from sam3.model_builder import build_sam3_multiplex_video_predictor
 
@@ -603,7 +613,7 @@ class sam3_video_inference:
                 compile = False,
                 warm_up = False,
                 default_output_prob_thresh  = 0.5,
-                async_loading_frames  = True,
+                async_loading_frames  = False,
                 num_obj_for_compile=1
                 )
 
@@ -629,7 +639,6 @@ class sam3_video_inference:
     def propagate_in_video(self, predictor=None, session_id=None):
 
         predictor=self.predictor
-
         outputs_per_frame = {}
 
         for response in predictor.handle_stream_request(
@@ -637,6 +646,8 @@ class sam3_video_inference:
             request=dict(
                 type="propagate_in_video",
                 session_id=session_id,
+                propagation_direction="forward",
+
             )
         ):
             outputs_per_frame[response["frame_idx"]] = response["outputs"]
@@ -692,15 +703,9 @@ class sam3_video_inference:
 
         self.sample_img = Image.fromarray(load_frame(frames[0]))
 
-    def track(self, predictor=None, video_path=None, prompt=None, remove=False, refine_object_3=False, refine_object=False):
+    def track(self, remove=False, refine_object_3=False, refine_object=False):
 
-        if predictor is None:
-            predictor = self.predictor
-        if video_path is None:
-            video_path = self.video_path
-        if prompt is None:
-            prompt = self.prompt
-
+        predictor, video_path, prompt  = self.predictor, self.video_path, self.prompt
         IMG_WIDTH, IMG_HEIGHT = self.sample_img.size
 
         response = predictor.handle_request(
@@ -708,6 +713,7 @@ class sam3_video_inference:
             request=dict(
                 type="start_session",
                 resource_path=video_path,
+
             )
         )
         session_id = response["session_id"]
@@ -720,7 +726,7 @@ class sam3_video_inference:
             )
         )
 
-        prompt_text_str = prompt
+        prompt_text = prompt
         frame_idx = 0
 
         response = predictor.handle_request(
@@ -729,12 +735,13 @@ class sam3_video_inference:
                 type="add_prompt",
                 session_id=session_id,
                 frame_idx=frame_idx,
-                text=prompt_text_str,
+                text=prompt_text,
+
             )
         )
-        out = response["outputs"]
 
-        outputs_per_frame = self.propagate_in_video(predictor, session_id)
+        out = response["outputs"]
+        outputs = self.propagate_in_video(predictor, session_id)
 
         if remove:
 
@@ -752,22 +759,15 @@ class sam3_video_inference:
             obj_id = 2
             points_abs = np.array(
                 [
-                    [740, 450],  # positive click
-                    [760, 630],  # negative click
-                    [840, 640],  # negative click
-                    [760, 550],  # positive click
+                    [740, 450],
+                    [760, 630],
+                    [840, 640],
+                    [760, 550],
                 ]
             )
 
-            labels = np.array([1, 0, 0, 1])
-
-            points_tensor = torch.tensor(
-
-                self.abs_to_rel_coords(points_abs, IMG_WIDTH, IMG_HEIGHT, coord_type="point"),
-                dtype=torch.float32,
-            )
-
-            points_labels_tensor = torch.tensor(labels, dtype=torch.int32)
+            points_tensor = torch.tensor(self.abs_to_rel_coords(points_abs, IMG_WIDTH, IMG_HEIGHT, coord_type="point"), dtype=torch.float32)
+            points_labels_tensor = torch.tensor(np.array([1, 0, 0, 1]), dtype=torch.int32)
 
             response = predictor.handle_request(
 
@@ -782,6 +782,9 @@ class sam3_video_inference:
             )
 
             out = response["outputs"]
+            outputs = self.propagate_in_video(predictor, session_id)
+
+        if refine_object:
 
             frame_idx = 0
             obj_id = 2
@@ -792,20 +795,12 @@ class sam3_video_inference:
                 ]
             )
 
-            labels = np.array([1])
-
-            points_tensor = torch.tensor(
-
-                self.abs_to_rel_coords(points_abs, IMG_WIDTH, IMG_HEIGHT, coord_type="point"),
-                dtype=torch.float32,
-            )
-
-            points_labels_tensor = torch.tensor(labels, dtype=torch.int32)
+            points_tensor = torch.tensor(self.abs_to_rel_coords(points_abs, IMG_WIDTH, IMG_HEIGHT, coord_type="point"), dtype=torch.float32)
+            points_labels_tensor = torch.tensor(np.array([1]), dtype=torch.int32)
 
             response = predictor.handle_request(
 
                 request=dict(
-
                     type="add_prompt",
                     session_id=session_id,
                     frame_idx=frame_idx,
@@ -814,24 +809,41 @@ class sam3_video_inference:
                     obj_id=obj_id,
                 )
             )
+
             out = response["outputs"]
-
-            outputs_per_frame = self.propagate_in_video(predictor, session_id)
-
-        if refine_object:
+            outputs = self.propagate_in_video(predictor, session_id)
 
             if refine_object_3:
+
                 frame_idx = 0
                 obj_id = 3
                 points_abs = np.array(
 
                     [
-                        [800, 135],  # positive click
-                        [800, 180],  # negative click
+                        [800, 135],
+                        [800, 180],
                     ]
                 )
 
                 labels = np.array([1, 0])
+                points_tensor = torch.tensor(self.abs_to_rel_coords(points_abs, IMG_WIDTH, IMG_HEIGHT, coord_type="point"), dtype=torch.float32)
+                points_labels_tensor = torch.tensor(labels, dtype=torch.int32)
+
+                response = predictor.handle_request(
+
+                    request=dict(
+
+                        type="add_prompt",
+                        session_id=session_id,
+                        frame_idx=frame_idx,
+                        points=points_tensor,
+                        point_labels=points_labels_tensor,
+                        obj_id=obj_id,
+                    )
+                )
+
+                outputs = response["outputs"]
+                outputs = self.propagate_in_video(predictor, session_id)
 
             else:
                 frame_idx = 0
@@ -839,42 +851,36 @@ class sam3_video_inference:
                 points_abs = np.array(
 
                     [
-                        [740, 450],  # positive click
-                        [760, 630],  # negative click
-                        [840, 640],  # negative click
-                        [760, 550],  # positive click
+                        [740, 450],
+                        [760, 630],
+                        [840, 640],
+                        [760, 550],
                     ]
                 )
 
                 labels = np.array([1, 0, 0, 1])
+                points_tensor = torch.tensor(self.abs_to_rel_coords(points_abs, IMG_WIDTH, IMG_HEIGHT, coord_type="point"), dtype=torch.float32)
+                points_labels_tensor = torch.tensor(labels, dtype=torch.int32)
 
-            points_tensor = torch.tensor(
+                response = predictor.handle_request(
 
-                self.abs_to_rel_coords(points_abs, IMG_WIDTH, IMG_HEIGHT, coord_type="point"), dtype=torch.float32)
+                    request=dict(
 
-            points_labels_tensor = torch.tensor(labels, dtype=torch.int32)
-
-            response = predictor.handle_request(
-
-                request=dict(
-
-                    type="add_prompt",
-                    session_id=session_id,
-                    frame_idx=frame_idx,
-                    points=points_tensor,
-                    point_labels=points_labels_tensor,
-                    obj_id=obj_id,
+                        type="add_prompt",
+                        session_id=session_id,
+                        frame_idx=frame_idx,
+                        points=points_tensor,
+                        point_labels=points_labels_tensor,
+                        obj_id=obj_id,
+                    )
                 )
-            )
 
-            out = response["outputs"]
-
-            outputs_per_frame = self.propagate_in_video(predictor, session_id)
+                outputs = response["outputs"]
+                outputs = self.propagate_in_video(predictor, session_id)
 
         _ = predictor.handle_request(
 
             request=dict(
-
                 type="close_session",
                 session_id=session_id,
             )
@@ -882,7 +888,7 @@ class sam3_video_inference:
 
         predictor.shutdown()
 
-        return outputs_per_frame
+        return outputs
 
 def _extract_sam3_video_mask(outputs, out_h: int, out_w: int) -> np.ndarray | None:
 
@@ -926,9 +932,10 @@ def _extract_sam3_video_mask(outputs, out_h: int, out_w: int) -> np.ndarray | No
     if best.shape != (out_h, out_w):
         best = cv2.resize(best.astype(np.uint8), (out_w, out_h), interpolation=cv2.INTER_NEAREST).astype(np.float32)
 
-    return np.clip(best, 0.0, 1.0)
+    best = np.clip((best - 0.5) * 5.0 + 0.5, 0.0, 1.0)
+    return best
 
-def _sam3_video_inference(frames_dir: str, output_size: int | None = None, prompt: str = "one woman") -> None:
+def _sam3_video_inference(frames_dir: str, output_size: int | None = None, prompt: str = "one woman", sam31=False) -> None:
 
     folder = Path(frames_dir)
     image_files = sorted(list(folder.glob("*.png")) + list(folder.glob("*.jpg")))
@@ -963,15 +970,15 @@ def _sam3_video_inference(frames_dir: str, output_size: int | None = None, promp
             full.close()
 
         frame_shapes.append((image.height, image.width))
-        image.save(seq_dir / f"{i:06d}.jpg", format="JPEG", quality=95)
+        image.save(seq_dir / f"{i:06d}.jpg", format="JPEG", quality=100)
         image.close()
 
-    tracker = sam3_video_inference(video_path=str(seq_dir), prompt=prompt)
+    tracker = sam3_video_inference(video_path=str(seq_dir), prompt=prompt, sam31=sam31)
     tracker.ivebeenframed()
     outputs_per_frame = tracker.track()
 
     missing = 0
-    
+
     for i, out_path in enumerate(output_paths):
 
         out_h, out_w = frame_shapes[i]
@@ -993,9 +1000,9 @@ def _sam3_video_inference(frames_dir: str, output_size: int | None = None, promp
     if seq_dir.exists():
         shutil.rmtree(seq_dir)
 
-def sam3_video_batch(frames_dir: str, output_size: int | None = None, prompt: str = "one woman") -> None:
+def sam3_video_batch(frames_dir: str, output_size: int | None = None, prompt: str = "one woman", sam31=False) -> None:
 
-    _sam3_video_inference(frames_dir, output_size=output_size, prompt=prompt)
+    _sam3_video_inference(frames_dir, output_size=output_size, prompt=prompt, sam31=sam31)
 
 def _fill_soft_mask_gaps(
     soft_masks: list[np.ndarray],
@@ -1059,7 +1066,7 @@ def _sam3_inference(frames_dir: str, output_size: int | None = None, prompt: str
     mask_paths: list[Path] = []
     soft_masks: list[np.ndarray] = []
     valid_flags: list[bool] = []
-    min_valid_pixels = 64
+    min_valid_pixels = 512
 
     with torch.inference_mode():
         for frame_path in image_files:
@@ -1093,23 +1100,6 @@ def _sam3_inference(frames_dir: str, output_size: int | None = None, prompt: str
                 plt.axis("off")
                 plt.show()
 
-            inference_state = processor.set_text_prompt(state=inference_state, prompt="one man")
-            box_input_xywh = torch.tensor([sam3_box2(image.width, image.height)]).view(-1, 4)
-            norm_box_cxcywh = normalize_bbox(box_xywh_to_cxcywh(box_input_xywh), width, height).flatten().tolist()
-            inference_state = processor.add_geometric_prompt(state=inference_state, box=norm_box_cxcywh, label=False)
-
-            if show_plots:
-                plot_results(image, inference_state)
-                plt.imshow(draw_box_on_image(image, box_input_xywh.flatten().tolist()))
-                plt.axis("off")
-                plt.show()
-
-            box_input_xywh = torch.tensor([sam3_box(width, height), sam3_box2(width, height)]).view(-1, 4)
-            norm_boxes_cxcywh = normalize_bbox(box_xywh_to_cxcywh(box_input_xywh).view(-1, 4), width, height).tolist()
-            box_labels = [True, False]
-            for box, label in zip(norm_boxes_cxcywh, box_labels):
-                inference_state = processor.add_geometric_prompt(state=inference_state, box=box, label=label)
-
             masks = inference_state["masks"]
             scores = inference_state["scores"]
 
@@ -1129,10 +1119,12 @@ def _sam3_inference(frames_dir: str, output_size: int | None = None, prompt: str
             else:
                 best_idx = int(np.argmax(scores))
                 best_soft = masks[best_idx]
+
                 if len(best_soft.shape) == 3:
                     best_soft = best_soft[0]
                 best_soft = np.asarray(best_soft, dtype=np.float32)
-                best_soft = np.clip(best_soft, 0.0, 1.0)
+
+                best_soft = np.clip((best_soft - 0.5) * 5.0 + 0.5, 0.0, 1.0)
                 print("Confidence:", scores[best_idx])
 
             soft_masks.append(best_soft)
@@ -1308,7 +1300,10 @@ def seed_mask_batch(
         sam3_batch(frames_dir, output_size=output_size, prompt=prompt)
 
     elif seed_model == "sam3video":
-        sam3_video_batch(frames_dir, output_size=output_size, prompt=prompt)
+        sam3_video_batch(frames_dir, output_size=output_size, prompt=prompt, sam31=False)
+
+    elif seed_model == "sam31video":
+        sam3_video_batch(frames_dir, output_size=output_size, prompt=prompt, sam31=True)
 
     elif seed_model == "sapiens":
         _sapiens_inference(frames_dir, output_size=output_size, threshold=sapiens_threshold)
@@ -1344,37 +1339,158 @@ def _update_status(op_num: int, total_ops: int, label: str, duration: float) -> 
     sys.stderr.flush()
     _matanyone_is_first_status = False
 
-@functools.lru_cache(maxsize=1)
-def _load_matanyone_runtime():
+@functools.lru_cache(maxsize=2)
+def _load_matanyone_runtime(version: str = 'v2'):
 
-    matanyone_root = Path(__file__).resolve().parent / 'MatAnyone2'
-    matanyone_root_str = str(matanyone_root)
+    version = str(version).lower()
 
-    if matanyone_root_str not in sys.path:
-        sys.path.insert(0, matanyone_root_str)
+    if version == 'v1':
+        matanyone_root = Path(__file__).resolve().parent / 'MatAnyone'
+        matanyone_root_str = str(matanyone_root)
 
-    from MatAnyone2.matanyone2.utils.inference_utils import gen_dilate, gen_erosion, read_frame_from_videos
-    from MatAnyone2.matanyone2.inference.inference_core import InferenceCore
-    from MatAnyone2.matanyone2.utils.get_default_model import get_matanyone2_model
-    from MatAnyone2.matanyone2.utils.device import get_default_device
+        if matanyone_root_str not in sys.path:
+            sys.path.insert(0, matanyone_root_str)
 
-    device = get_default_device()
-    pretrain_model_url = "https://github.com/pq-yang/MatAnyone2/releases/download/v1.0.0/matanyone2.pth"
-    model_dir = matanyone_root / 'pretrained_models'
-    model_dir.mkdir(parents=True, exist_ok=True)
-    ckpt_path = model_dir / 'matanyone2.pth'
+        from MatAnyone.matanyone.inference.inference_core import InferenceCore
+        from MatAnyone.matanyone.utils.get_default_model import get_matanyone_model
+        from MatAnyone.matanyone.utils.device import get_default_device
 
-    if not ckpt_path.exists():
-        sys.stderr.write(" Downloading MatAnyone2 weights...\n")
+        device = get_default_device()
+        pretrain_model_url = "https://github.com/pq-yang/MatAnyone/releases/download/v1.0.0/matanyone.pth"
+        model_dir = matanyone_root / 'pretrained_models'
+        model_dir.mkdir(parents=True, exist_ok=True)
+        ckpt_path = model_dir / 'matanyone.pth'
+
+        if not ckpt_path.exists():
+            sys.stderr.write(" Downloading MatAnyone v1 weights...\n")
+            sys.stderr.flush()
+            torch.hub.download_url_to_file(pretrain_model_url, str(ckpt_path), progress=False)
+
+        model = get_matanyone_model(str(ckpt_path), device)
+        return model, device, InferenceCore, 'v1'
+
+    if version == 'v2':
+        matanyone_root = Path(__file__).resolve().parent / 'MatAnyone2'
+        matanyone_root_str = str(matanyone_root)
+
+        if matanyone_root_str not in sys.path:
+            sys.path.insert(0, matanyone_root_str)
+
+        from MatAnyone2.matanyone2.inference.inference_core import InferenceCore
+        from MatAnyone2.matanyone2.utils.get_default_model import get_matanyone2_model
+        from MatAnyone2.matanyone2.utils.device import get_default_device
+
+        device = get_default_device()
+        pretrain_model_url = "https://github.com/pq-yang/MatAnyone2/releases/download/v1.0.0/matanyone2.pth"
+        model_dir = matanyone_root / 'pretrained_models'
+        model_dir.mkdir(parents=True, exist_ok=True)
+        ckpt_path = model_dir / 'matanyone2.pth'
+
+        if not ckpt_path.exists():
+            sys.stderr.write(" Downloading MatAnyone2 weights...\n")
+            sys.stderr.flush()
+            torch.hub.download_url_to_file(pretrain_model_url, str(ckpt_path), progress=False)
+
+        model = get_matanyone2_model(str(ckpt_path), device)
+        return model, device, InferenceCore, 'v2'
+
+    raise ValueError(f"Unsupported MatAnyone version: {version}")
+
+def _apply_matanyone_config_overrides(matanyone_model, job: dict, *, verbose: bool = False) -> None:
+
+    cfg = matanyone_model.cfg
+
+    mem_every = job.get('ma2_mem_every')
+    max_mem_frames = job.get('ma2_max_mem_frames')
+    use_long_term = job.get('ma2_use_long_term')
+
+    if mem_every is None and max_mem_frames is None and use_long_term is None:
+        return
+
+    with open_dict(cfg):
+        if mem_every is not None:
+            cfg.mem_every = int(mem_every)
+
+        if use_long_term is not None:
+            cfg.use_long_term = bool(use_long_term)
+
+        if max_mem_frames is not None:
+            max_mem_frames = int(max_mem_frames)
+            cfg.max_mem_frames = max_mem_frames
+
+            if cfg.long_term.min_mem_frames > max_mem_frames:
+                cfg.long_term.min_mem_frames = max_mem_frames
+            cfg.long_term.max_mem_frames = max_mem_frames
+
+    if verbose:
+        mode = 'on' if cfg.use_long_term else 'off'
+        version = str(job.get('matanyone_version', 'v2')).lower()
+        model_name = 'MatAnyone v1' if version == 'v1' else 'MatAnyone2'
+        sys.stderr.write(
+            f" {model_name} cfg override => mem_every={cfg.mem_every}, "
+            f"max_mem_frames={cfg.max_mem_frames}, long_term={mode}, "
+            f"long_term.max_mem_frames={cfg.long_term.max_mem_frames}\n"
+        )
         sys.stderr.flush()
-        torch.hub.download_url_to_file(pretrain_model_url, str(ckpt_path), progress=False)
 
-    model = get_matanyone2_model(str(ckpt_path), device)
-    return model, device, InferenceCore, read_frame_from_videos, gen_dilate, gen_erosion
+def _apply_temporal_median_filter(phas: np.ndarray, window: int) -> np.ndarray:
+
+    if window <= 1:
+        return phas
+
+    try:
+        from scipy.ndimage import median_filter
+    except Exception as exc:
+        raise RuntimeError(
+            "Temporal median filtering requires scipy. "
+            "Install scipy or set --temporal-median-window 0."
+        ) from exc
+
+    return median_filter(phas, size=(window, 1, 1, 1), mode='nearest').astype(np.uint8)
+
+def read_frame_from_videos(frame_root):
+    if frame_root.endswith(VIDEO_EXTENSIONS):
+        video_name = os.path.basename(frame_root)[:-4]
+        container = av.open(frame_root)
+        stream = container.streams.video[0]
+        fps = float(stream.average_rate)
+        frames_list = []
+        for frame in container.decode(stream):
+            arr = frame.to_ndarray(format='rgb24')
+            frames_list.append(arr)
+        container.close()
+        frames = torch.from_numpy(np.stack(frames_list)).permute(0, 3, 1, 2).contiguous()
+    length = frames.shape[0]
+    return frames, fps, length, video_name
+
+def get_video_paths(input_root):
+    video_paths = []
+    for root, _, files in os.walk(input_root):
+        for file in files:
+            if file.lower().endswith(VIDEO_EXTENSIONS):
+                video_paths.append(os.path.join(root, file))
+    return sorted(video_paths)
+
+def str_to_list(value):
+    return list(map(int, value.split(',')))
+
+def gen_dilate(alpha, min_kernel_size, max_kernel_size):
+    kernel_size = random.randint(min_kernel_size, max_kernel_size)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size,kernel_size))
+    fg_and_unknown = np.array(np.not_equal(alpha, 0).astype(np.float32))
+    dilate = cv2.dilate(fg_and_unknown, kernel, iterations=1)*255
+    return dilate.astype(np.float32)
+
+def gen_erosion(alpha, min_kernel_size, max_kernel_size):
+    kernel_size = random.randint(min_kernel_size, max_kernel_size)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size,kernel_size))
+    fg = np.array(np.equal(alpha, 255).astype(np.float32))
+    erode = cv2.erode(fg, kernel, iterations=1)*255
+    return erode.astype(np.float32)
 
 @torch.inference_mode()
-def _matanyone_process_segment(matanyone2, device, inference_core_cls, read_frame_from_videos_fn, gen_dilate_fn, gen_erosion_fn, job: dict) -> str:
-    
+def _matanyone_process_segment(matanyone_model, device, inference_core_cls, job: dict) -> str:
+
     n_warmup = int(job.get('warmup', 6))
     input_path = job['input_path']
     mask_path = job['mask_path']
@@ -1382,9 +1498,11 @@ def _matanyone_process_segment(matanyone2, device, inference_core_cls, read_fram
     r_erode = int(job.get('erode', 0))
     r_dilate = int(job.get('dilate', 0))
     suffix = job.get('suffix', '')
+    temporal_median_window = int(job.get('temporal_median_window', 0))
 
-    processor = inference_core_cls(matanyone2, cfg=matanyone2.cfg)
-    frames, _, length, video_name = read_frame_from_videos_fn(input_path)
+    _apply_matanyone_config_overrides(matanyone_model, job, verbose=(job.get('op_num', 1) == 1))
+    processor = inference_core_cls(matanyone_model, cfg=matanyone_model.cfg)
+    frames, fps, length, video_name = read_frame_from_videos(input_path)
     frames = frames.float()
 
     repeated_frames = frames[0].unsqueeze(0).repeat(n_warmup, 1, 1, 1)
@@ -1400,19 +1518,20 @@ def _matanyone_process_segment(matanyone2, device, inference_core_cls, read_fram
     mask = np.array(mask)
 
     if r_dilate > 0:
-        mask = gen_dilate_fn(mask, r_dilate, r_dilate)
+        mask = gen_dilate(mask, r_dilate, r_dilate)
 
     if r_erode > 0:
-        mask = gen_erosion_fn(mask, r_erode, r_erode)
+        mask = gen_erosion(mask, r_erode, r_erode)
 
     mask = torch.from_numpy(mask).float().to(device)
 
     objects = [1]
+
     phas = []
 
     for ti in tqdm.tqdm(range(length)):
-
-        image = (frames[ti] / 255.).float().to(device)
+        image = frames[ti]
+        image = (image / 255.).float().to(device)
 
         if ti == 0:
             output_prob = processor.step(image, mask, objects=objects)
@@ -1425,18 +1544,20 @@ def _matanyone_process_segment(matanyone2, device, inference_core_cls, read_fram
             output_prob = processor.step(image)
 
         mask = processor.output_prob_to_mask(output_prob)
+        pha = mask.unsqueeze(2).cpu().numpy()
 
-        if ti > (n_warmup - 1):
-
-            pha = mask.unsqueeze(2).cpu().numpy()
+        if ti > (n_warmup-1):
             pha = np.round(np.clip(pha * 255.0, 0, 255)).astype(np.uint8)
             phas.append(pha)
 
+    phas_np = np.array(phas, dtype=np.uint8)
+
+    if temporal_median_window > 1 and phas_np.shape[0] >= temporal_median_window:
+        phas_np = _apply_temporal_median_filter(phas_np, temporal_median_window)
+
     output_file = os.path.join(output_path, f'{video_name}_pha.mp4')
-
-    imageio.mimwrite(output_file, np.array(phas), fps=60, quality=10)
-
-    del processor, frames, phas, mask
+    imageio.mimwrite(output_file, phas_np, fps=fps, quality=7)
+    del processor, frames, phas, phas_np, mask
     torch.cuda.empty_cache()
 
     gc.collect()
@@ -1445,11 +1566,23 @@ def _matanyone_process_segment(matanyone2, device, inference_core_cls, read_fram
 def matanyone_inference(jobs: list[dict], on_segment_done: Callable[[str], None] = None) -> list[str]:
     global _matanyone_is_first_status
 
-    max_retries = 8
+    max_retries = 1
     remaining_jobs = list(jobs)
     completed_paths = []
 
-    matanyone2, device, inference_core_cls, read_frame_from_videos_fn, gen_dilate_fn, gen_erosion_fn = _load_matanyone_runtime()
+    if not remaining_jobs:
+        return completed_paths
+
+    version = str(remaining_jobs[0].get('matanyone_version', 'v2')).lower()
+    for job in remaining_jobs:
+        job_version = str(job.get('matanyone_version', version)).lower()
+        if job_version != version:
+            raise RuntimeError(f"Mixed MatAnyone versions in one batch are not supported: {version} vs {job_version}")
+
+    matanyone_model, device, inference_core_cls, loaded_version = _load_matanyone_runtime(version)
+
+    if loaded_version != version:
+        raise RuntimeError(f"Loaded model version mismatch: expected {version}, got {loaded_version}")
 
     for attempt in range(max_retries):
 
@@ -1463,12 +1596,9 @@ def matanyone_inference(jobs: list[dict], on_segment_done: Callable[[str], None]
 
                 output_file = _matanyone_process_segment(
 
-                    matanyone2,
+                    matanyone_model,
                     device,
                     inference_core_cls,
-                    read_frame_from_videos_fn,
-                    gen_dilate_fn,
-                    gen_erosion_fn,
                     job,
                 )
 
@@ -1532,7 +1662,7 @@ def _input_videos(input_path: str) -> List[Path]:
 
         if path.suffix.lower() not in VIDEO_EXTENSIONS:
             raise RuntimeError(f'Unsupported video file: {path}')
-        
+
         return [path]
 
     if not path.is_dir():
@@ -1577,20 +1707,20 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path, batch_m
 
     segments = calculate_segments(
 
-        duration, 
+        duration,
         video_args.segment_length
 
         )
 
     mask_segments = [s for s in segments if s.seg_type == SegmentType.MASK]
-    
+
     mask_segments = extract_segments(
 
-        video_args, 
-        segments, 
-        mask_segments, 
-        orig_h, 
-        frames_dir, 
+        video_args,
+        segments,
+        mask_segments,
+        orig_h,
+        frames_dir,
         segments_dir
 
         )
@@ -1698,14 +1828,14 @@ def extract_segments(
             progress_prefix=f'[{i + 1}/{len(mask_segments)}]'
 
             )
-        
+
         seg.left_frame_path = left_frame_path
         seg.right_frame_path = right_frame_path
 
     return mask_segments
 
 def sam3_masks(
-        
+
     mask_segments: List[SegmentInfo],
     frames_dir: Path,
     masks_dir: Path,
@@ -1752,6 +1882,8 @@ def sam3_masks(
 
 def matanyone(segments: List[SegmentInfo], segments_dir: Path, mask_square: int, args: argparse.Namespace) -> List[SegmentInfo]:
 
+    print(f"MatAnyone runtime: {args.matanyone_version}")
+
     matanyout = str(segments_dir / 'matanyone_output')
     os.makedirs(matanyout, exist_ok=True)
     mask_segments = [s for s in segments if s.seg_type == SegmentType.MASK]
@@ -1773,7 +1905,13 @@ def matanyone(segments: List[SegmentInfo], segments_dir: Path, mask_square: int,
             'output_path': matanyout,
             'max_size': mask_square,
             'erode': args.erode,
+            'warmup': args.warmup,
             'dilate': args.dilate,
+            'matanyone_version': args.matanyone_version,
+            'ma2_mem_every': args.ma2_mem_every,
+            'ma2_max_mem_frames': args.ma2_max_mem_frames,
+            'ma2_use_long_term': args.ma2_use_long_term,
+            'temporal_median_window': args.temporal_median_window,
             'op_num': len(jobs) + 1,
             'total_ops': total_ops,
             'label': f'seg{seg.index:02d}_left',
@@ -1788,7 +1926,13 @@ def matanyone(segments: List[SegmentInfo], segments_dir: Path, mask_square: int,
             'output_path': matanyout,
             'max_size': mask_square,
             'erode': args.erode,
+            'warmup': args.warmup,
             'dilate': args.dilate,
+            'matanyone_version': args.matanyone_version,
+            'ma2_mem_every': args.ma2_mem_every,
+            'ma2_max_mem_frames': args.ma2_max_mem_frames,
+            'ma2_use_long_term': args.ma2_use_long_term,
+            'temporal_median_window': args.temporal_median_window,
             'op_num': len(jobs) + 1,
             'total_ops': total_ops,
             'label': f'seg{seg.index:02d}_right',
@@ -1845,23 +1989,44 @@ def main() -> int:
     parser = argparse.ArgumentParser(description='Minimal VR Video Masking Pipeline')
     parser.add_argument('input_path')
     parser.add_argument('--mask-height', type=int, default=1008)
-    parser.add_argument('--segment-length', type=float, default=10)
+    parser.add_argument('--segment-length', type=float, default=1)
     parser.add_argument('--erode', type=int, default=0)
     parser.add_argument('--dilate', type=int, default=0)
     parser.add_argument('--prompt', type=str, default='one woman')
-    parser.add_argument('--seed-model', type=str, default='sam3', choices=['sam3', 'sam3video', 'sapiens', 'hybrid'], help='Seed mask mode (sam3, sam3video, sapiens, or hybrid)')
+    parser.add_argument('--warmup', type=int, default=8)
+    parser.add_argument('--seed-model', type=str, default='sam3', choices=['sam3', 'sam3video', 'sam31video', 'sapiens', 'hybrid'], help='Seed mask mode (sam3, sam3video, sam31video, sapiens, or hybrid)')
     parser.add_argument('--sapiens-threshold', type=float, default=0.5, help='Threshold for converting Sapiens alpha matte to a binary mask')
     parser.add_argument('--gate-dilate', type=int, default=5, help='Dilate SAM3 gating in hybrid mode')
+    parser.add_argument('--matanyone-version', type=str, default='v2', choices=['v1', 'v2'], help='Select MatAnyone runtime version')
+    parser.add_argument('--ma2-mem-every', type=int, default=None, help='Override MatAnyone mem_every (works for v1 and v2; e.g. 2 or 3 for faster refresh)')
+    parser.add_argument('--ma2-max-mem-frames', type=int, default=None, help='Override MatAnyone memory window in frames (works for v1 and v2)')
+    parser.add_argument('--ma2-use-long-term', type=str, default='auto', choices=['auto', 'on', 'off'], help='Override MatAnyone long-term memory mode (works for v1 and v2)')
+    parser.add_argument('--temporal-median-window', type=int, default=0, help='Temporal median window for alpha cleanup. 0 disables; use odd values >= 3 (e.g. 5)')
     parser.add_argument('--no-normalize-input', dest='normalize_input', action='store_false', help='Skip upfront input normalization/transcoding')
     parser.set_defaults(normalize_input=True)
     parser.add_argument('--overlay-output', type=str, default='input_path', help='Write a composited video with the mask over the original source')
     parser.add_argument('--overlay-color', type=str, default='0x00ff00', help='Background color for the optional overlay preview (use 0x00ff00 for pure green)')
     args = parser.parse_args()
+    args.matanyone_version = str(args.matanyone_version).lower()
 
     if not (0.0 <= args.sapiens_threshold <= 1.0):
         raise ValueError('--sapiens-threshold must be between 0.0 and 1.0')
     if args.gate_dilate < 1:
         raise ValueError('--gate-dilate must be >= 1')
+    if args.ma2_mem_every is not None and args.ma2_mem_every < 1:
+        raise ValueError('--ma2-mem-every must be >= 1')
+    if args.ma2_max_mem_frames is not None and args.ma2_max_mem_frames < 2:
+        raise ValueError('--ma2-max-mem-frames must be >= 2')
+    if args.ma2_use_long_term == 'auto':
+        args.ma2_use_long_term = None
+    else:
+        args.ma2_use_long_term = (args.ma2_use_long_term == 'on')
+    if args.temporal_median_window < 0:
+        raise ValueError('--temporal-median-window must be >= 0')
+    if args.temporal_median_window != 0 and args.temporal_median_window < 3:
+        raise ValueError('--temporal-median-window must be 0 or odd >= 3')
+    if args.temporal_median_window % 2 == 0 and args.temporal_median_window != 0:
+        raise ValueError('--temporal-median-window must be odd (e.g. 3, 5, 7)')
 
     video_paths = _input_videos(args.input_path)
     temp_root = Path('temp_pipeline')
