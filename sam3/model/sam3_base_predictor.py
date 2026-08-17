@@ -35,7 +35,7 @@ class Sam3BasePredictor:
         # Subclasses must populate these
         self.model = None
         self._all_inference_states: Dict[str, dict] = {}
-    
+
     def set_cache_threshold(self, max_frame=None):
         """Set the threshold for clearing the CUDA cache on session close."""
         global _CLEAR_CACHE_THRESHOLD
@@ -217,7 +217,7 @@ class Sam3BasePredictor:
         result = self.model.remove_object(
             inference_state, obj_id, frame_idx=frame_idx, is_user_action=is_user_action
         )
-        # Handle both return conventions
+
         if result is None or (isinstance(result, tuple) and result[1] is None):
             import numpy as np
 
@@ -238,7 +238,7 @@ class Sam3BasePredictor:
             _, outputs = result
         else:
             outputs = result
-       
+
         return {"frame_idx": frame_idx, "outputs": outputs}
 
     def cancel_propagation(self, session_id):

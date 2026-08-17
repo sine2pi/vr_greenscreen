@@ -570,9 +570,9 @@ def download_ckpt_from_hf(version="sam3"):
         ckpt_name = "sam3.1_multiplex.pt"
         cfg_name = "config.json"
 
-    elif version == "sam3_FT":
-        repo_id = "garrrrido/sam3-finetuned"
-        ckpt_name = "sam3_finetuned.pth"
+    elif version == "sam3sin":
+        repo_id = "sin2piusc/sam3_fta"
+        ckpt_name = "sam3.pth"
         cfg_name = "config.json"
 
     elif version == "sam3_fp16":
@@ -840,6 +840,8 @@ def _create_multiplex_tri_backbone(
     return tri_neck
 
 def build_sam3_multiplex_video_model(
+    bpe_path=None,
+    max_num_objects = 1,
     checkpoint_path: Optional[str] = None,
     load_from_HF=True,
     multiplex_count: int = 16,
@@ -848,6 +850,10 @@ def build_sam3_multiplex_video_model(
     strict_state_dict_loading: bool = False,
     device="cuda" if torch.cuda.is_available() else "cpu",
     compile=False,
+    default_output_prob_thresh  = 0.4,
+    async_loading_frames  = True,
+    num_obj_for_compile=1,
+    warm_up = False,
     # is_sbs=True,
 ):
 
@@ -961,7 +967,7 @@ def build_sam3_multiplex_video_predictor(
             "assets",
             "bpe_simple_vocab_16e6.txt.gz",
         )
-    
+
     tracker_model = build_sam3_multiplex_video_model(
         checkpoint_path=checkpoint_path,
         load_from_HF=False,
@@ -1028,7 +1034,7 @@ def build_sam3_multiplex_video_predictor(
         reconstruction_bbox_iou_thresh=-1,
         reconstruction_bbox_det_score=0,
         max_num_objects=max_num_objects,
-        postprocess_batch_size=0,
+        postprocess_batch_size=1,
         use_batched_grounding=True,
         batched_grounding_batch_size=0,
         max_num_kboxes=0,

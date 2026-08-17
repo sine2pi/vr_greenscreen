@@ -97,7 +97,12 @@ class Sam3MultiplexTracking(Sam3MultiplexBase):
         self.image_std = image_std
         self.compile_model = compile_model
         self.detector.compile_model = self.compile_model
-        self.postprocess_batch_size = postprocess_batch_size
+        if postprocess_batch_size is None or int(postprocess_batch_size) < 1:
+            logger.warning(
+                f"Invalid {postprocess_batch_size=}; clamping to 1 to avoid propagate_in_video deadlock"
+            )
+            postprocess_batch_size = 1
+        self.postprocess_batch_size = int(postprocess_batch_size)
 
     TEXT_ID_FOR_TEXT = 0
     TEXT_ID_FOR_VISUAL = 1
