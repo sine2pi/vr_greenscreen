@@ -30,10 +30,14 @@ SAM3_REPO_ID = "sin2piusc/sam3_fta"
 SAM3_MAX = 1008
 SAM3_BOX_CXCYWH_NORM = (0.5, 0.5, 0.5, 0.5)
 SAM3_BOX2_CXCYWH_NORM = (0.5, 0.9, 0.9, 0.18)
+BATCH_SIZE = 50 # for concatenation only
 
 SAPIENS_REPO_ID = "facebook/sapiens2-matting-1b"
 SAPIENS_CHECKPOINT = "sapiens2_1b_matting.safetensors"
 SAPIENS_CONFIG = "assets/sapiens2_1b_matting_gss_p3m_metasim-1024x768.py"
+
+MATANYONE_V1 = "https://github.com/pq-yang/MatAnyone/releases/download/v1.0.0/matanyone.pth"
+MATANYONE_V2 = "https://github.com/pq-yang/MatAnyone2/releases/download/v1.0.0/matanyone2.pth"
 
 def encoder_args() -> list[str]:
 
@@ -170,6 +174,7 @@ def norm_video(source_video, w = None, h = None, progress_prefix: str = "[normal
             *enc,
             output_video,
         ]
+
         rc, stderr_text = ffmpeg_progress(cmd, progress_prefix=progress_prefix)
 
         if rc != 0:
@@ -197,6 +202,7 @@ def resize_video(source_video: str, output_video: str, width: int, height: int, 
         *enc,
         output_video,
     ]
+    
     rc, stderr_text = ffmpeg_progress(cmd, progress_prefix=progress_prefix)
 
     if rc != 0:
@@ -293,6 +299,7 @@ def concat_video(video_list: list[str], output_path: str, fps: float | None = No
             *enc,
             rel_output,
         ]
+        
         rc, stderr_text = ffmpeg_progress(cmd_script, cwd=common_dir)
 
     if rc != 0:
@@ -329,6 +336,7 @@ def eye_frames(video_path: str, timestamps: list[float], output_dir: str, height
             '-frames:v', '1', '-compression_level', '1',
             out_path
         ]
+        
         process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
         process.wait()
@@ -450,7 +458,6 @@ def overlay_path(source_video: str, output_path: str) -> str:
 
     source_path = Path(source_video).expanduser()
     target_path = Path(output_path).expanduser()
-
     overlay_stem = source_path.stem
 
     if target_path.exists() and target_path.is_dir():
@@ -660,10 +667,13 @@ class sam3_video_inference:
             return [[x / IMG_WIDTH, y / IMG_HEIGHT] for x, y in coords]
 
         elif coord_type == "box":
+            
             return [
+                
                 [x / IMG_WIDTH, y / IMG_HEIGHT, w / IMG_WIDTH, h / IMG_HEIGHT]
                 for x, y, w, h in coords
             ]
+            
         else:
             raise ValueError(f"Unknown coord_type: {coord_type}")
 
@@ -716,6 +726,7 @@ class sam3_video_inference:
 
             )
         )
+
         session_id = response["session_id"]
 
         _ = predictor.handle_request(
@@ -842,7 +853,7 @@ class sam3_video_inference:
                     )
                 )
 
-                outputs = response["outputs"]
+                out = response["outputs"]
                 outputs = self.propagate_in_video(predictor, session_id)
 
             else:
@@ -875,7 +886,7 @@ class sam3_video_inference:
                     )
                 )
 
-                outputs = response["outputs"]
+                out = response["outputs"]
                 outputs = self.propagate_in_video(predictor, session_id)
 
         _ = predictor.handle_request(
@@ -896,10 +907,12 @@ def _extract_sam3_video_mask(outputs, out_h: int, out_w: int) -> np.ndarray | No
         return None
 
     masks = outputs.get("out_binary_masks", None)
+    
     if masks is None:
         return None
 
     masks = np.asarray(masks)
+    
     if masks.size == 0:
         return None
 
@@ -932,7 +945,7 @@ def _extract_sam3_video_mask(outputs, out_h: int, out_w: int) -> np.ndarray | No
     if best.shape != (out_h, out_w):
         best = cv2.resize(best.astype(np.uint8), (out_w, out_h), interpolation=cv2.INTER_NEAREST).astype(np.float32)
 
-    best = np.clip((best - 0.5) * 5.0 + 0.5, 0.0, 1.0)
+    best = np.clip((best - 0.5) * 3.0 + 0.5, 0.0, 1.0)
     return best
 
 def _sam3_video_inference(frames_dir: str, output_size: int | None = None, prompt: str = "one woman", sam31=False) -> None:
@@ -955,7 +968,6 @@ def _sam3_video_inference(frames_dir: str, output_size: int | None = None, promp
     output_paths: list[Path] = []
 
     for i, frame_path in enumerate(image_files):
-
         out_path = frame_path.parent / f"{frame_path.stem}_mask.png"
         output_paths.append(out_path)
 
@@ -980,14 +992,12 @@ def _sam3_video_inference(frames_dir: str, output_size: int | None = None, promp
     missing = 0
 
     for i, out_path in enumerate(output_paths):
-
         out_h, out_w = frame_shapes[i]
         outputs = outputs_per_frame.get(i)
 
         soft = _extract_sam3_video_mask(outputs, out_h, out_w)
 
         if soft is None:
-
             missing += 1
             soft = np.zeros((out_h, out_w), dtype=np.float32)
 
@@ -1014,6 +1024,7 @@ def _fill_soft_mask_gaps(
         return soft_masks, 0
 
     valid_idx = [i for i, ok in enumerate(valid_flags) if ok]
+
     if not valid_idx:
         return [m.copy() for m in soft_masks], 0
 
@@ -1021,6 +1032,7 @@ def _fill_soft_mask_gaps(
     filled_count = 0
 
     for i in range(len(filled)):
+
         if valid_flags[i]:
             continue
 
@@ -1029,11 +1041,14 @@ def _fill_soft_mask_gaps(
 
         if prev_i is not None and next_i is not None:
             gap = next_i - prev_i - 1
+
             if gap <= max_interp_gap:
                 alpha = (i - prev_i) / (next_i - prev_i)
                 filled[i] = (1.0 - alpha) * filled[prev_i] + alpha * filled[next_i]
+
             else:
                 filled[i] = filled[prev_i].copy() if (i - prev_i) <= (next_i - i) else filled[next_i].copy()
+
             filled_count += 1
 
         elif prev_i is not None:
@@ -1048,24 +1063,26 @@ def _fill_soft_mask_gaps(
 
 def _sam3_inference(frames_dir: str, output_size: int | None = None, prompt: str = "one woman", show_plots = False) -> None:
 
+    folder = Path(frames_dir)
+    image_files = sorted(list(folder.glob("*.png")) + list(folder.glob("*.jpg")))
+    image_files = [f for f in image_files if "_mask" not in f.stem]
+    
     repo_path = snapshot_download(repo_id=SAM3_REPO_ID, local_files_only=False)
     model_path = os.path.join(repo_path, "sam3.pth")
+    
     model = build_sam3_image_model(load_from_HF=False, enable_inst_interactivity=False, enable_segmentation=True, compile=False)
     checkpoint = torch.load(model_path, weights_only=False, map_location='cpu')
     model.load_state_dict(checkpoint["model_state_dict"])
 
     processor = Sam3Processor(model, confidence_threshold=0.4, device="cuda" if torch.cuda.is_available() else "cpu")
-    folder = Path(frames_dir)
-
-    image_files = sorted(list(folder.glob("*.png")) + list(folder.glob("*.jpg")))
-    image_files = [f for f in image_files if "_mask" not in f.stem]
-
+    
     if not image_files:
         return
 
     mask_paths: list[Path] = []
     soft_masks: list[np.ndarray] = []
     valid_flags: list[bool] = []
+
     min_valid_pixels = 512
 
     with torch.inference_mode():
@@ -1078,11 +1095,13 @@ def _sam3_inference(frames_dir: str, output_size: int | None = None, prompt: str
             raw.close()
 
             ow, oh = image.width, image.height
+
             if output_size and oh > output_size:
                 full = image
                 image = full.resize((output_size, output_size), Image.Resampling.BILINEAR)
                 width, height = image.width, image.height
                 full.close()
+                
             else:
                 width, height = ow, oh
 
@@ -1091,6 +1110,7 @@ def _sam3_inference(frames_dir: str, output_size: int | None = None, prompt: str
 
             inference_state = processor.set_text_prompt(state=inference_state, prompt=prompt)
             box_input_xywh = torch.tensor([sam3_box(image.width, image.height)]).view(-1, 4)
+
             norm_box_cxcywh = normalize_bbox(box_xywh_to_cxcywh(box_input_xywh), width, height).flatten().tolist()
             inference_state = processor.add_geometric_prompt(state=inference_state, box=norm_box_cxcywh, label=True)
 
@@ -1105,26 +1125,31 @@ def _sam3_inference(frames_dir: str, output_size: int | None = None, prompt: str
 
             if isinstance(scores, torch.Tensor):
                 scores = scores.cpu().numpy()
+
             else:
                 scores = np.asarray(scores)
 
             if isinstance(masks, torch.Tensor):
                 masks = masks.cpu().numpy()
+
             else:
                 masks = np.asarray(masks)
 
             if len(masks) == 0 or scores.size == 0:
                 best_soft = np.zeros((image.height, image.width), dtype=np.float32)
+
                 print(f"No SAM3 masks/scores for {frame_path.name}; marking as missing for temporal fill")
+
             else:
                 best_idx = int(np.argmax(scores))
                 best_soft = masks[best_idx]
 
                 if len(best_soft.shape) == 3:
                     best_soft = best_soft[0]
-                best_soft = np.asarray(best_soft, dtype=np.float32)
 
-                best_soft = np.clip((best_soft - 0.5) * 5.0 + 0.5, 0.0, 1.0)
+                best_soft = np.asarray(best_soft, dtype=np.float32)
+                best_soft = np.clip((best_soft - 0.5) * 3.0 + 0.5, 0.0, 1.0)
+
                 print("Confidence:", scores[best_idx])
 
             soft_masks.append(best_soft)
@@ -1184,10 +1209,11 @@ def _sapiens_inference(frames_dir: str, output_size: int | None = None, threshol
     _ = MattingEstimator
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    folder = Path(frames_dir)
+
     ckpt = hf_hub_download(repo_id=SAPIENS_REPO_ID, filename=SAPIENS_CHECKPOINT)
     model = init_model(SAPIENS_CONFIG, ckpt, device=device)
 
-    folder = Path(frames_dir)
     image_files = list(folder.glob("*.png")) + list(folder.glob("*.jpg"))
     image_files = [f for f in image_files if "_mask" not in f.stem]
 
@@ -1215,6 +1241,7 @@ def _sapiens_inference(frames_dir: str, output_size: int | None = None, threshol
 
             Image.fromarray(mask, mode='L').save(output_path)
             image.close()
+
             gc.collect()
             torch.cuda.empty_cache()
 
@@ -1266,8 +1293,8 @@ def _sam_sapiens(frames_dir: str, output_size: int | None = None, prompt: str = 
             image_rgb = np.array(image)
             image_bgr = image_rgb[:, :, ::-1]
             alpha = _estimate_alpha(image_bgr, model)
-            sapiens_mask = (alpha >= threshold).astype(np.uint8) * 255
 
+            sapiens_mask = (alpha >= threshold).astype(np.uint8) * 255
             sam3_mask = np.array(Image.open(sam3_mask_path).convert('L'))
 
             if sam3_mask.shape != sapiens_mask.shape:
@@ -1328,6 +1355,7 @@ def _update_status(op_num: int, total_ops: int, label: str, duration: float) -> 
 
     if not _matanyone_is_first_status:
         sys.stderr.write(f"\033[{1 + _matanyone_tqdm_lines}A")
+
     sys.stderr.write(f"\r[{op_num}/{total_ops}] {label} ({duration:.1f}s)\033[K\n")
 
     for i in range(_matanyone_tqdm_lines):
@@ -1356,7 +1384,7 @@ def _load_matanyone_runtime(version: str = 'v2'):
         from MatAnyone.matanyone.utils.device import get_default_device
 
         device = get_default_device()
-        pretrain_model_url = "https://github.com/pq-yang/MatAnyone/releases/download/v1.0.0/matanyone.pth"
+        pretrain_model_url = MATANYONE_V1
         model_dir = matanyone_root / 'pretrained_models'
         model_dir.mkdir(parents=True, exist_ok=True)
         ckpt_path = model_dir / 'matanyone.pth'
@@ -1381,7 +1409,7 @@ def _load_matanyone_runtime(version: str = 'v2'):
         from MatAnyone2.matanyone2.utils.device import get_default_device
 
         device = get_default_device()
-        pretrain_model_url = "https://github.com/pq-yang/MatAnyone2/releases/download/v1.0.0/matanyone2.pth"
+        pretrain_model_url = MATANYONE_V2
         model_dir = matanyone_root / 'pretrained_models'
         model_dir.mkdir(parents=True, exist_ok=True)
         ckpt_path = model_dir / 'matanyone2.pth'
@@ -1392,6 +1420,7 @@ def _load_matanyone_runtime(version: str = 'v2'):
             torch.hub.download_url_to_file(pretrain_model_url, str(ckpt_path), progress=False)
 
         model = get_matanyone2_model(str(ckpt_path), device)
+
         return model, device, InferenceCore, 'v2'
 
     raise ValueError(f"Unsupported MatAnyone version: {version}")
@@ -1399,7 +1428,6 @@ def _load_matanyone_runtime(version: str = 'v2'):
 def _apply_matanyone_config_overrides(matanyone_model, job: dict, *, verbose: bool = False) -> None:
 
     cfg = matanyone_model.cfg
-
     mem_every = job.get('ma2_mem_every')
     max_mem_frames = job.get('ma2_max_mem_frames')
     use_long_term = job.get('ma2_use_long_term')
@@ -1408,6 +1436,7 @@ def _apply_matanyone_config_overrides(matanyone_model, job: dict, *, verbose: bo
         return
 
     with open_dict(cfg):
+
         if mem_every is not None:
             cfg.mem_every = int(mem_every)
 
@@ -1420,6 +1449,7 @@ def _apply_matanyone_config_overrides(matanyone_model, job: dict, *, verbose: bo
 
             if cfg.long_term.min_mem_frames > max_mem_frames:
                 cfg.long_term.min_mem_frames = max_mem_frames
+
             cfg.long_term.max_mem_frames = max_mem_frames
 
     if verbose:
@@ -1440,6 +1470,7 @@ def _apply_temporal_median_filter(phas: np.ndarray, window: int) -> np.ndarray:
 
     try:
         from scipy.ndimage import median_filter
+
     except Exception as exc:
         raise RuntimeError(
             "Temporal median filtering requires scipy. "
@@ -1449,26 +1480,32 @@ def _apply_temporal_median_filter(phas: np.ndarray, window: int) -> np.ndarray:
     return median_filter(phas, size=(window, 1, 1, 1), mode='nearest').astype(np.uint8)
 
 def read_frame_from_videos(frame_root):
+
     if frame_root.endswith(VIDEO_EXTENSIONS):
         video_name = os.path.basename(frame_root)[:-4]
         container = av.open(frame_root)
         stream = container.streams.video[0]
         fps = float(stream.average_rate)
         frames_list = []
+
         for frame in container.decode(stream):
             arr = frame.to_ndarray(format='rgb24')
             frames_list.append(arr)
+
         container.close()
         frames = torch.from_numpy(np.stack(frames_list)).permute(0, 3, 1, 2).contiguous()
+
     length = frames.shape[0]
     return frames, fps, length, video_name
 
 def get_video_paths(input_root):
     video_paths = []
+
     for root, _, files in os.walk(input_root):
         for file in files:
             if file.lower().endswith(VIDEO_EXTENSIONS):
                 video_paths.append(os.path.join(root, file))
+
     return sorted(video_paths)
 
 def str_to_list(value):
@@ -1502,6 +1539,7 @@ def _matanyone_process_segment(matanyone_model, device, inference_core_cls, job:
 
     _apply_matanyone_config_overrides(matanyone_model, job, verbose=(job.get('op_num', 1) == 1))
     processor = inference_core_cls(matanyone_model, cfg=matanyone_model.cfg)
+
     frames, fps, length, video_name = read_frame_from_videos(input_path)
     frames = frames.float()
 
@@ -1526,7 +1564,6 @@ def _matanyone_process_segment(matanyone_model, device, inference_core_cls, job:
     mask = torch.from_numpy(mask).float().to(device)
 
     objects = [1]
-
     phas = []
 
     for ti in tqdm.tqdm(range(length)):
@@ -1557,6 +1594,7 @@ def _matanyone_process_segment(matanyone_model, device, inference_core_cls, job:
 
     output_file = os.path.join(output_path, f'{video_name}_pha.mp4')
     imageio.mimwrite(output_file, phas_np, fps=fps, quality=7)
+
     del processor, frames, phas, phas_np, mask
     torch.cuda.empty_cache()
 
@@ -1574,8 +1612,10 @@ def matanyone_inference(jobs: list[dict], on_segment_done: Callable[[str], None]
         return completed_paths
 
     version = str(remaining_jobs[0].get('matanyone_version', 'v2')).lower()
+
     for job in remaining_jobs:
         job_version = str(job.get('matanyone_version', version)).lower()
+
         if job_version != version:
             raise RuntimeError(f"Mixed MatAnyone versions in one batch are not supported: {version} vs {job_version}")
 
@@ -1619,6 +1659,7 @@ def matanyone_inference(jobs: list[dict], on_segment_done: Callable[[str], None]
 
             if not remaining_jobs:
                 sys.stderr.write("\n")
+
                 return completed_paths
 
             if attempt < max_retries - 1:
@@ -1675,6 +1716,7 @@ def _input_videos(input_path: str) -> List[Path]:
 
     if not videos:
         raise RuntimeError(f'No supported video files found in folder: {input_path}')
+    
     return videos
 
 def process_video(video_path, args: argparse.Namespace, temp_root: Path, batch_mode: bool = False) -> str:
@@ -1732,6 +1774,7 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path, batch_m
         video_args.seed_model,
         video_args.sapiens_threshold,
         video_args.gate_dilate,
+        
     )
 
     segments = matanyone(segments, segments_dir, mask_square, video_args)
@@ -1741,6 +1784,7 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path, batch_m
         segments,
         video_name,
         str(video_path),
+        
     )
 
     overlay_target = str(Path(video_path).with_name(f"{video_name}_overlay.mp4"))
@@ -1751,6 +1795,7 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path, batch_m
         output_mask,
         overlay_target,
         background_color=video_args.overlay_color,
+        
     )
 
     print(f'Overlay preview: {overlay_video}')
@@ -1949,6 +1994,7 @@ def matanyone(segments: List[SegmentInfo], segments_dir: Path, mask_square: int,
 
         left_basename = os.path.splitext(os.path.basename(f'seg{seg.index:02d}_left.mp4'))[0]
         right_basename = os.path.splitext(os.path.basename(f'seg{seg.index:02d}_right.mp4'))[0]
+
         left_pha = os.path.join(matanyout, f'{left_basename}_pha.mp4')
         right_pha = os.path.join(matanyout, f'{right_basename}_pha.mp4')
 
@@ -1989,11 +2035,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description='Minimal VR Video Masking Pipeline')
     parser.add_argument('input_path')
     parser.add_argument('--mask-height', type=int, default=1008)
-    parser.add_argument('--segment-length', type=float, default=1)
-    parser.add_argument('--erode', type=int, default=0)
+    parser.add_argument('--segment-length', type=float, default=12)
+    parser.add_argument('--erode', type=int, default=6)
     parser.add_argument('--dilate', type=int, default=0)
     parser.add_argument('--prompt', type=str, default='one woman')
-    parser.add_argument('--warmup', type=int, default=8)
+    parser.add_argument('--warmup', type=int, default=6)
     parser.add_argument('--seed-model', type=str, default='sam3', choices=['sam3', 'sam3video', 'sam31video', 'sapiens', 'hybrid'], help='Seed mask mode (sam3, sam3video, sam31video, sapiens, or hybrid)')
     parser.add_argument('--sapiens-threshold', type=float, default=0.5, help='Threshold for converting Sapiens alpha matte to a binary mask')
     parser.add_argument('--gate-dilate', type=int, default=5, help='Dilate SAM3 gating in hybrid mode')
