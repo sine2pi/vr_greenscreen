@@ -69,6 +69,7 @@ def encoder_args() -> list[str]:
 def _ffmpeg_progress(line: str) -> str:
 
     parts = []
+
     for field in ['time=', 'elapsed=', 'speed=']:
         match = re.search(rf'{field}(\S+)', line)
 
@@ -202,7 +203,7 @@ def resize_video(source_video: str, output_video: str, width: int, height: int, 
         *enc,
         output_video,
     ]
-    
+
     rc, stderr_text = ffmpeg_progress(cmd, progress_prefix=progress_prefix)
 
     if rc != 0:
@@ -299,7 +300,7 @@ def concat_video(video_list: list[str], output_path: str, fps: float | None = No
             *enc,
             rel_output,
         ]
-        
+
         rc, stderr_text = ffmpeg_progress(cmd_script, cwd=common_dir)
 
     if rc != 0:
@@ -336,7 +337,7 @@ def eye_frames(video_path: str, timestamps: list[float], output_dir: str, height
             '-frames:v', '1', '-compression_level', '1',
             out_path
         ]
-        
+
         process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
         process.wait()
@@ -641,6 +642,7 @@ class sam3_video_inference:
                 max_num_objects=1,
                 num_obj_for_compile=1,
                 use_fa3 = False
+
                 )
 
     def propagate_in_video(self, predictor=None, session_id=None):
@@ -667,13 +669,13 @@ class sam3_video_inference:
             return [[x / IMG_WIDTH, y / IMG_HEIGHT] for x, y in coords]
 
         elif coord_type == "box":
-            
+
             return [
-                
+
                 [x / IMG_WIDTH, y / IMG_HEIGHT, w / IMG_WIDTH, h / IMG_HEIGHT]
                 for x, y, w, h in coords
             ]
-            
+
         else:
             raise ValueError(f"Unknown coord_type: {coord_type}")
 
@@ -907,12 +909,12 @@ def _extract_sam3_video_mask(outputs, out_h: int, out_w: int) -> np.ndarray | No
         return None
 
     masks = outputs.get("out_binary_masks", None)
-    
+
     if masks is None:
         return None
 
     masks = np.asarray(masks)
-    
+
     if masks.size == 0:
         return None
 
@@ -1066,16 +1068,16 @@ def _sam3_inference(frames_dir: str, output_size: int | None = None, prompt: str
     folder = Path(frames_dir)
     image_files = sorted(list(folder.glob("*.png")) + list(folder.glob("*.jpg")))
     image_files = [f for f in image_files if "_mask" not in f.stem]
-    
+
     repo_path = snapshot_download(repo_id=SAM3_REPO_ID, local_files_only=False)
     model_path = os.path.join(repo_path, "sam3.pth")
-    
+
     model = build_sam3_image_model(load_from_HF=False, enable_inst_interactivity=False, enable_segmentation=True, compile=False)
     checkpoint = torch.load(model_path, weights_only=False, map_location='cpu')
     model.load_state_dict(checkpoint["model_state_dict"])
 
     processor = Sam3Processor(model, confidence_threshold=0.4, device="cuda" if torch.cuda.is_available() else "cpu")
-    
+
     if not image_files:
         return
 
@@ -1101,7 +1103,7 @@ def _sam3_inference(frames_dir: str, output_size: int | None = None, prompt: str
                 image = full.resize((output_size, output_size), Image.Resampling.BILINEAR)
                 width, height = image.width, image.height
                 full.close()
-                
+
             else:
                 width, height = ow, oh
 
@@ -1716,7 +1718,7 @@ def _input_videos(input_path: str) -> List[Path]:
 
     if not videos:
         raise RuntimeError(f'No supported video files found in folder: {input_path}')
-    
+
     return videos
 
 def process_video(video_path, args: argparse.Namespace, temp_root: Path, batch_mode: bool = False) -> str:
@@ -1746,71 +1748,92 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path, batch_m
     print()
 
     mask_square = video_args.mask_height
+    overlay_mask = video_args.overlay_mask
 
-    segments = calculate_segments(
+    if overlay_mask is None:
 
-        duration,
-        video_args.segment_length
+        segments = calculate_segments(
+
+            duration,
+            video_args.segment_length
+
+            )
+
+        mask_segments = [s for s in segments if s.seg_type == SegmentType.MASK]
+
+        mask_segments = extract_segments(
+
+            video_args,
+            segments,
+            mask_segments,
+            orig_h,
+            frames_dir,
+            segments_dir
+
+            )
+
+        mask_segments = sam3_masks(
+
+            mask_segments, frames_dir, masks_dir, mask_square,
+            video_args.prompt,
+            video_args.seed_model,
+            video_args.sapiens_threshold,
+            video_args.gate_dilate,
 
         )
 
-    mask_segments = [s for s in segments if s.seg_type == SegmentType.MASK]
+        segments = matanyone(segments, segments_dir, mask_square, video_args)
 
-    mask_segments = extract_segments(
+        output_mask = finalize(
 
-        video_args,
-        segments,
-        mask_segments,
-        orig_h,
-        frames_dir,
-        segments_dir
+            segments,
+            video_name,
+            str(video_path),
 
         )
 
-    mask_segments = sam3_masks(
+        overlay_target = str(Path(video_path).with_name(f"{video_name}_overlay.mp4"))
 
-        mask_segments, frames_dir, masks_dir, mask_square,
-        video_args.prompt,
-        video_args.seed_model,
-        video_args.sapiens_threshold,
-        video_args.gate_dilate,
-        
-    )
+        overlay_video = mask_overlay(
 
-    segments = matanyone(segments, segments_dir, mask_square, video_args)
+            video_path,
+            output_mask,
+            overlay_target,
+            background_color=video_args.overlay_color,
 
-    output_mask = finalize(
+        )
 
-        segments,
-        video_name,
-        str(video_path),
-        
-    )
+        print(f'Overlay preview: {overlay_video}')
+        print('=' * 60)
+        print(f'Segments: {len(segments)} ({len(mask_segments)} masks)')
+        print(f'Output: {output_mask}')
+        print()
 
-    overlay_target = str(Path(video_path).with_name(f"{video_name}_overlay.mp4"))
+        with open(temp_dir / 'segments.txt', 'w', encoding='utf-8') as f:
+            f.write(f'# {video_name}\n')
 
-    overlay_video = mask_overlay(
+            for seg in segments:
+                f.write(f'{seg.index},{seg.seg_type.value},{seg.start_time:.3f},{seg.end_time:.3f},{seg.video_path}\n')
 
-        video_path,
-        output_mask,
-        overlay_target,
-        background_color=video_args.overlay_color,
-        
-    )
+        return output_mask
 
-    print(f'Overlay preview: {overlay_video}')
-    print('=' * 60)
-    print(f'Segments: {len(segments)} ({len(mask_segments)} masks)')
-    print(f'Output: {output_mask}')
-    print()
+    else:
 
-    with open(temp_dir / 'segments.txt', 'w', encoding='utf-8') as f:
-        f.write(f'# {video_name}\n')
+        overlay_target = str(Path(video_path).with_name(f"{video_name}_overlay.mp4"))
 
-        for seg in segments:
-            f.write(f'{seg.index},{seg.seg_type.value},{seg.start_time:.3f},{seg.end_time:.3f},{seg.video_path}\n')
+        overlay_video = mask_overlay(
 
-    return output_mask
+            video_path,
+            overlay_mask,
+            overlay_target,
+            background_color=video_args.overlay_color,
+
+        )
+
+        print(f'Overlay preview: {overlay_video}')
+        print('=' * 60)
+
+        return overlay_video
 
 def calculate_segments(video_duration: float, max_segment_length: float = 5.0) -> List[SegmentInfo]:
 
@@ -2036,7 +2059,7 @@ def main() -> int:
     parser.add_argument('input_path')
     parser.add_argument('--mask-height', type=int, default=1008)
     parser.add_argument('--segment-length', type=float, default=12)
-    parser.add_argument('--erode', type=int, default=6)
+    parser.add_argument('--erode', type=int, default=4)
     parser.add_argument('--dilate', type=int, default=0)
     parser.add_argument('--prompt', type=str, default='one woman')
     parser.add_argument('--warmup', type=int, default=6)
@@ -2052,6 +2075,8 @@ def main() -> int:
     parser.set_defaults(normalize_input=True)
     parser.add_argument('--overlay-output', type=str, default='input_path', help='Write a composited video with the mask over the original source')
     parser.add_argument('--overlay-color', type=str, default='0x00ff00', help='Background color for the optional overlay preview (use 0x00ff00 for pure green)')
+    parser.add_argument('--overlay-mask', type=str, default=None, help='Write a composited video with a provided mask over the original source')
+
     args = parser.parse_args()
     args.matanyone_version = str(args.matanyone_version).lower()
 
