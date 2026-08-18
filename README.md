@@ -26,7 +26,7 @@ optional:
    ('--temporal-median-window', type=int, default=0, help='Temporal median window for alpha cleanup. 0 disables; use odd values >= 3 (e.g. 5)')
    ('--no-normalize-input', dest='normalize_input', action='store_false', help='Skip upfront input normalization/transcoding')
    ('--overlay-output', type=str, default='input_path', help='Write a composited video with the mask over the original source')
-   ('--overlay-color', type=str, default='0x00ff00', help='Background color for the optional overlay preview (use 0x00ff00 for pure green)')
+   ('--overlay-color', type=str, default='0x00ff00', help='Background color for overlay (use 0x00ff00 for pure green)')
    ('--overlay-mask', type=str, default=None, help='Write a composited video with a provided mask over the original source')
 
 
