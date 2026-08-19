@@ -971,6 +971,7 @@ def _sam3_video_inference(frames_dir: str, output_size: int | None = None, promp
     output_paths: list[Path] = []
 
     for i, frame_path in enumerate(image_files):
+
         out_path = frame_path.parent / f"{frame_path.stem}_mask.png"
         output_paths.append(out_path)
 
@@ -1064,16 +1065,17 @@ def _fill_soft_mask_gaps(
 
     return filled, filled_count
 
-def _sam3_inference(frames_dir: str, output_size: int | None = None, prompt: str = "one woman", show_plots = True) -> None:
+def _sam3_inference(frames_dir: str, output_size: int | None = None, prompt: str = "one woman", show_plots = False) -> None:
 
     folder = Path(frames_dir)
+
     image_files = sorted(list(folder.glob("*.png")) + list(folder.glob("*.jpg")))
     image_files = [f for f in image_files if "_mask" not in f.stem]
 
     repo_path = snapshot_download(repo_id=SAM3_REPO_ID, local_files_only=False)
     model_path = os.path.join(repo_path, "sam3.pth")
 
-    model = build_sam3_image_model(load_from_HF=False, enable_inst_interactivity=False, enable_segmentation=True, compile=False)
+    model = build_sam3_image_model(load_from_HF = False, enable_inst_interactivity = False, enable_segmentation = True, compile = False)
     checkpoint = torch.load(model_path, weights_only=False, map_location='cpu')
     model.load_state_dict(checkpoint["model_state_dict"])
 
@@ -1089,19 +1091,17 @@ def _sam3_inference(frames_dir: str, output_size: int | None = None, prompt: str
     min_valid_pixels = int(output_size * 0.8)
 
     with torch.inference_mode():
+
         for frame_path in image_files:
+
             output_path = frame_path.parent / f"{frame_path.stem}_mask.png"
             mask_paths.append(output_path)
-
             raw = Image.open(frame_path)
             image = raw.convert("RGB")
+            width, height = image.width, image.height
             raw.close()
 
-            width, height = image.width, image.height
-
-            inference_state = processor.set_image(image)
-
-            inference_state = processor.set_text_prompt(state=inference_state, prompt=prompt)
+            inference_state = processor.set_text_prompt(state=processor.set_image(image), prompt=prompt)
             box_input_cxcywh = box_xywh_to_cxcywh(torch.tensor([sam3_box(width, height), sam3_box2(width, height)]).view(-1, 4)).view(-1,4)
 
             for box, label in zip(normalize_bbox(box_input_cxcywh, width, height).tolist(), [True, False]):
@@ -1129,7 +1129,6 @@ def _sam3_inference(frames_dir: str, output_size: int | None = None, prompt: str
 
             if len(masks) == 0 or scores.size == 0:
                 best_soft = np.zeros((image.height, image.width), dtype=np.float32)
-
                 print(f"No SAM3 masks/scores for {frame_path.name}; marking as missing for temporal fill")
 
             else:
@@ -1140,8 +1139,8 @@ def _sam3_inference(frames_dir: str, output_size: int | None = None, prompt: str
                     best_soft = best_soft[0]
 
                 best_soft = np.asarray(best_soft, dtype=np.float32)
-
                 best_soft = cv2.resize(best_soft.astype(np.uint8), (output_size, output_size), interpolation=cv2.INTER_NEAREST_EXACT).astype(np.float32) 
+
                 print("Confidence:", scores[best_idx])
 
             soft_masks.append(best_soft)
