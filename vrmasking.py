@@ -28,9 +28,9 @@ VIDEO_EXTENSIONS = ('.mp4', '.mov', '.avi', '.MP4', '.MOV', '.AVI')
 
 SAM3_REPO_ID = "sin2piusc/sam3_fta"
 SAM3_MAX = 1008
-SAM3_BOX_CXCYWH_NORM = (0.5, 0.5, 0.5, 0.5)
+SAM3_BOX_CXCYWH_NORM = (0.5, 0.4, 0.5, 0.5)
 SAM3_BOX2_CXCYWH_NORM = (0.5, 0.9, 0.9, 0.18)
-BATCH_SIZE = 50 # for concatenation only
+BATCH_SIZE = 50
 
 SAPIENS_REPO_ID = "facebook/sapiens2-matting-1b"
 SAPIENS_CHECKPOINT = "sapiens2_1b_matting.safetensors"
@@ -443,7 +443,7 @@ def extract_segment_frames(
     left_count = frame_count(left_video_out)
     right_count = frame_count(right_video_out)
 
-    print(f"{progress_prefix}timing check: left={left_count} right={right_count} fps={fps:.6f}")
+    print(f"{progress_prefix} Frame check: left={left_count} right={right_count} fps={fps:.6f}")
 
     if left_count != right_count:
 
@@ -945,7 +945,8 @@ def _extract_sam3_video_mask(outputs, out_h: int, out_w: int) -> np.ndarray | No
         return None
 
     if best.shape != (out_h, out_w):
-        best = cv2.resize(best.astype(np.uint8), (out_w, out_h), interpolation=cv2.INTER_NEAREST).astype(np.float32)
+
+        best = cv2.resize(best.astype(np.uint8), (out_w, out_h), interpolation=cv2.INTER_NEAREST_EXACT).astype(np.float32)
 
     best = np.clip((best - 0.5) * 3.0 + 0.5, 0.0, 1.0)
     return best
@@ -1063,7 +1064,7 @@ def _fill_soft_mask_gaps(
 
     return filled, filled_count
 
-def _sam3_inference(frames_dir: str, output_size: int | None = None, prompt: str = "one woman", show_plots = False) -> None:
+def _sam3_inference(frames_dir: str, output_size: int | None = None, prompt: str = "one woman", show_plots = True) -> None:
 
     folder = Path(frames_dir)
     image_files = sorted(list(folder.glob("*.png")) + list(folder.glob("*.jpg")))
@@ -1076,7 +1077,7 @@ def _sam3_inference(frames_dir: str, output_size: int | None = None, prompt: str
     checkpoint = torch.load(model_path, weights_only=False, map_location='cpu')
     model.load_state_dict(checkpoint["model_state_dict"])
 
-    processor = Sam3Processor(model, confidence_threshold=0.2, device="cuda" if torch.cuda.is_available() else "cpu")
+    processor = Sam3Processor(model, confidence_threshold=0.4, device="cuda" if torch.cuda.is_available() else "cpu")
 
     if not image_files:
         return
@@ -1085,7 +1086,7 @@ def _sam3_inference(frames_dir: str, output_size: int | None = None, prompt: str
     soft_masks: list[np.ndarray] = []
     valid_flags: list[bool] = []
 
-    min_valid_pixels = 512
+    min_valid_pixels = int(output_size * 0.8)
 
     with torch.inference_mode():
         for frame_path in image_files:
@@ -1096,29 +1097,18 @@ def _sam3_inference(frames_dir: str, output_size: int | None = None, prompt: str
             image = raw.convert("RGB")
             raw.close()
 
-            ow, oh = image.width, image.height
-
-            if output_size and oh > output_size:
-                full = image
-                image = full.resize((output_size, output_size), Image.Resampling.BILINEAR)
-                width, height = image.width, image.height
-                full.close()
-
-            else:
-                width, height = ow, oh
+            width, height = image.width, image.height
 
             inference_state = processor.set_image(image)
-            processor.reset_all_prompts(inference_state)
 
             inference_state = processor.set_text_prompt(state=inference_state, prompt=prompt)
-            box_input_xywh = torch.tensor([sam3_box(image.width, image.height)]).view(-1, 4)
+            box_input_cxcywh = box_xywh_to_cxcywh(torch.tensor([sam3_box(width, height), sam3_box2(width, height)]).view(-1, 4)).view(-1,4)
 
-            norm_box_cxcywh = normalize_bbox(box_xywh_to_cxcywh(box_input_xywh), width, height).flatten().tolist()
-            inference_state = processor.add_geometric_prompt(state=inference_state, box=norm_box_cxcywh, label=True)
+            for box, label in zip(normalize_bbox(box_input_cxcywh, width, height).tolist(), [True, False]):
+                inference_state = processor.add_geometric_prompt(state=inference_state, box=box, label=label)
 
             if show_plots:
                 plot_results(image, inference_state)
-                plt.imshow(draw_box_on_image(image, box_input_xywh.flatten().tolist()))
                 plt.axis("off")
                 plt.show()
 
@@ -1150,12 +1140,12 @@ def _sam3_inference(frames_dir: str, output_size: int | None = None, prompt: str
                     best_soft = best_soft[0]
 
                 best_soft = np.asarray(best_soft, dtype=np.float32)
-                best_soft = np.clip((best_soft - 0.5) * 3.0 + 0.5, 0.0, 1.0)
 
+                best_soft = cv2.resize(best_soft.astype(np.uint8), (output_size, output_size), interpolation=cv2.INTER_NEAREST_EXACT).astype(np.float32) 
                 print("Confidence:", scores[best_idx])
 
             soft_masks.append(best_soft)
-            valid_flags.append(int(np.count_nonzero(best_soft >= 0.5)) >= min_valid_pixels)
+            valid_flags.append(np.count_nonzero(best_soft >= 0.5) >= min_valid_pixels)
 
             del inference_state
             image.close()
@@ -1300,7 +1290,7 @@ def _sam_sapiens(frames_dir: str, output_size: int | None = None, prompt: str = 
             sam3_mask = np.array(Image.open(sam3_mask_path).convert('L'))
 
             if sam3_mask.shape != sapiens_mask.shape:
-                sam3_mask = cv2.resize(sam3_mask, (sapiens_mask.shape[1], sapiens_mask.shape[0]), interpolation=cv2.INTER_NEAREST)
+                sam3_mask = cv2.resize(sam3_mask, (sapiens_mask.shape[1], sapiens_mask.shape[0]), interpolation=cv2.INTER_NEAREST_EXACT)
 
             sam3_gate = (sam3_mask > 127).astype(np.uint8)
             sam3_gate = cv2.dilate(sam3_gate, kernel, iterations=1)
@@ -1479,7 +1469,7 @@ def _apply_temporal_median_filter(phas: np.ndarray, window: int) -> np.ndarray:
             "Install scipy or set --temporal-median-window 0."
         ) from exc
 
-    return median_filter(phas, size=(window, 1, 1, 1), mode='nearest').astype(np.uint8)
+    return median_filter(phas, size=(window, 1, 1, 1), mode='nearest-exact').astype(np.uint8)
 
 def read_frame_from_videos(frame_root):
 
@@ -1533,6 +1523,7 @@ def _matanyone_process_segment(matanyone_model, device, inference_core_cls, job:
     n_warmup = int(job.get('warmup', 6))
     input_path = job['input_path']
     mask_path = job['mask_path']
+    max_size = int(job.get('max_height', 0))
     output_path = job['output_path']
     r_erode = int(job.get('erode', 0))
     r_dilate = int(job.get('dilate', 0))
@@ -1548,7 +1539,7 @@ def _matanyone_process_segment(matanyone_model, device, inference_core_cls, job:
     repeated_frames = frames[0].unsqueeze(0).repeat(n_warmup, 1, 1, 1)
     frames = torch.cat([repeated_frames, frames], dim=0).float()
     length += n_warmup
-
+    
     os.makedirs(output_path, exist_ok=True)
 
     if suffix:
@@ -1571,7 +1562,7 @@ def _matanyone_process_segment(matanyone_model, device, inference_core_cls, job:
     for ti in tqdm.tqdm(range(length)):
         image = frames[ti]
         image = (image / 255.).float().to(device)
-
+        
         if ti == 0:
             output_prob = processor.step(image, mask, objects=objects)
             output_prob = processor.step(image, first_frame_pred=True)
@@ -1950,7 +1941,7 @@ def sam3_masks(
 
 def matanyone(segments: List[SegmentInfo], segments_dir: Path, mask_square: int, args: argparse.Namespace) -> List[SegmentInfo]:
 
-    print(f"MatAnyone runtime: {args.matanyone_version}")
+    print(f"MatAnyone model: {args.matanyone_version}")
 
     matanyout = str(segments_dir / 'matanyone_output')
     os.makedirs(matanyout, exist_ok=True)
@@ -1971,7 +1962,7 @@ def matanyone(segments: List[SegmentInfo], segments_dir: Path, mask_square: int,
             'input_path': seg_left_video,
             'mask_path': seg.left_mask_path,
             'output_path': matanyout,
-            'max_size': mask_square,
+            'max_size': args.mask_height,
             'erode': args.erode,
             'warmup': args.warmup,
             'dilate': args.dilate,
@@ -1992,7 +1983,7 @@ def matanyone(segments: List[SegmentInfo], segments_dir: Path, mask_square: int,
             'input_path': seg_right_video,
             'mask_path': seg.right_mask_path,
             'output_path': matanyout,
-            'max_size': mask_square,
+            'max_size': args.mask_height,
             'erode': args.erode,
             'warmup': args.warmup,
             'dilate': args.dilate,
@@ -2057,9 +2048,9 @@ def main() -> int:
     start_time = time.time()
     parser = argparse.ArgumentParser(description='Minimal VR Video Masking Pipeline')
     parser.add_argument('input_path')
-    parser.add_argument('--mask-height', type=int, default=1008)
-    parser.add_argument('--segment-length', type=float, default=12)
-    parser.add_argument('--erode', type=int, default=4)
+    parser.add_argument('--mask-height', type=int, default=640)
+    parser.add_argument('--segment-length', type=float, default=0)
+    parser.add_argument('--erode', type=int, default=0)
     parser.add_argument('--dilate', type=int, default=0)
     parser.add_argument('--prompt', type=str, default='one woman')
     parser.add_argument('--warmup', type=int, default=6)
@@ -2074,7 +2065,7 @@ def main() -> int:
     parser.add_argument('--no-normalize-input', dest='normalize_input', action='store_false', help='Skip upfront input normalization/transcoding')
     parser.set_defaults(normalize_input=True)
     parser.add_argument('--overlay-output', type=str, default='input_path', help='Write a composited video with the mask over the original source')
-    parser.add_argument('--overlay-color', type=str, default='0x00ff00', help='Background color for the optional overlay preview (use 0x00ff00 for pure green)')
+    parser.add_argument('--overlay-color', type=str, default='0x00ff00', help='Background color for overlay (use 0x00ff00 for pure green)')
     parser.add_argument('--overlay-mask', type=str, default=None, help='Write a composited video with a provided mask over the original source')
 
     args = parser.parse_args()
