@@ -1076,7 +1076,7 @@ def _sam3_inference(frames_dir: str, output_size: int | None = None, prompt: str
     checkpoint = torch.load(model_path, weights_only=False, map_location='cpu')
     model.load_state_dict(checkpoint["model_state_dict"])
 
-    processor = Sam3Processor(model, confidence_threshold=0.4, device="cuda" if torch.cuda.is_available() else "cpu")
+    processor = Sam3Processor(model, confidence_threshold=0.2, device="cuda" if torch.cuda.is_available() else "cpu")
 
     if not image_files:
         return
