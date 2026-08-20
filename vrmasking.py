@@ -2047,7 +2047,7 @@ def main() -> int:
     start_time = time.time()
     parser = argparse.ArgumentParser(description='Minimal VR Video Masking Pipeline')
     parser.add_argument('input_path')
-    parser.add_argument('--mask-height', type=int, default=640)
+    parser.add_argument('--mask-height', type=int, default=1008)
     parser.add_argument('--segment-length', type=float, default=0)
     parser.add_argument('--erode', type=int, default=0)
     parser.add_argument('--dilate', type=int, default=0)
