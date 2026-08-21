@@ -145,72 +145,53 @@ def ffmpeg_progress(cmd: list[str], progress_prefix: str = "", cwd: str | None =
 
     return process.returncode, "".join(stderr_lines)
 
-# def info(video_path: str) -> Tuple[int, int, float, float]:
+def info(video_path: str) -> Tuple[int, int, float, float]:
 
-#     cmd = [
+    cmd = [
 
-#         'ffprobe', '-v', 'error',
-#         '-select_streams', 'v:0',
-#         '-show_entries', 'stream=width,height,r_frame_rate:format=duration',
-#         '-of', 'csv=p=0',
-#         video_path
-#     ]
-
-#     result = subprocess.run(cmd, capture_output=True, text=True)
-
-#     if result.returncode != 0:
-#         raise RuntimeError(f"ffprobe failed: {result.stderr}")
-
-#     lines = result.stdout.strip().split('\n')
-
-#     w, h, fps_str = lines[0].split(',')
-#     duration = float(lines[1]) if len(lines) > 1 else 0
-
-#     if '/' in fps_str:
-#         num, den = fps_str.split('/')
-#         fps = float(num) / float(den)
-
-#     else:
-#         fps = float(fps_str)
-
-#     return int(w), int(h), fps, duration
-
-def info(video_path: str) -> Tuple[int, int, float, float, bool]:
-  
-    meta_cmd = [
-        'ffprobe', '-v', 'error', 
-        '-select_streams', 'v:0', 
-        '-show_entries', 'stream=width,height,avg_frame_rate:format=duration', 
-        '-of', 'csv=p=0', 
+        'ffprobe', '-v', 'error',
+        '-select_streams', 'v:0',
+        '-show_entries', 'stream=width,height,r_frame_rate,avg_frame_rate:format=duration',
+        '-of', 'csv=p=0',
         video_path
     ]
-    meta_result = subprocess.run(meta_cmd, capture_output=True, text=True)
-    if meta_result.returncode != 0:
-        raise RuntimeError(f"ffprobe metadata extraction failed: {meta_result.stderr}")
-        
-    lines = meta_result.stdout.strip().split('\n')
-    w, h, fps_str = lines[0].split(',')
-    duration = float(lines[1]) if len(lines) > 1 else 0.0
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+
+    if result.returncode != 0:
+        raise RuntimeError(f"ffprobe failed: {result.stderr}")
+
+    lines = result.stdout.strip().split('\n')
+
+    w, h, fps_str,fps_avg = lines[0].split(',')
+
+    cmd2 = ['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', video_path]
+    duration = float(subprocess.check_output(cmd2).decode().strip())
+
+#     vfr_cmd = [
+#         'ffmpeg', '-i', video_path, 
+#         '-vf', 'vfrdet', 
+#         '-f', 'null', '-'
+#     ]
+#     vfr_result = subprocess.run(vfr_cmd, capture_output=True, text=True)
+    
+#     is_vfr = False
+#     vfr_match = re.search(r'VFR:(\d+\.\d+)', vfr_result.stderr)
+#     if vfr_match:
+#         vfr_score = float(vfr_match.group(1))
+  
+#         is_vfr = vfr_score > 0.0
+
+    is_vfr = False
+    if fps_str != fps_avg:
+        is_vfr = True
 
     if '/' in fps_str:
         num, den = fps_str.split('/')
-        fps = float(num) / float(den) if float(den) != 0 else 0.0
+        fps = float(num) / float(den)
+
     else:
         fps = float(fps_str)
-
-    vfr_cmd = [
-        'ffmpeg', '-i', video_path, 
-        '-vf', 'vfrdet', 
-        '-f', 'null', '-'
-    ]
-    vfr_result = subprocess.run(vfr_cmd, capture_output=True, text=True)
-    
-    is_vfr = False
-    vfr_match = re.search(r'VFR:(\d+\.\d+)', vfr_result.stderr)
-    if vfr_match:
-        vfr_score = float(vfr_match.group(1))
-  
-        is_vfr = vfr_score > 0.0
 
     return int(w), int(h), normalize_fps(fps), duration, is_vfr
 
@@ -242,7 +223,7 @@ def norm_video(source_video, w = None, h = None, fps = None, progress_prefix: st
     enc = encoder_args()
 
     if is_vfr or video_args.normalize_input or fps is not None:
-
+        print(f"-- norm_video: VRF = {is_vfr} - {fps}, normalize_input = {video_args.normalize_input}")
         source_path = Path(source_video).expanduser().resolve()
         output_video = str(source_path.with_name(f"{source_path.stem}_normed.mp4"))
 
@@ -671,12 +652,11 @@ def get_video_paths(input_root):
 
     return sorted(video_paths)
 
-######################################## alpha_packer
-
 def _ceil_to(n: int, base: int) -> int:
     return ((n + base - 1) // base) * base
 
 def get_circle_mask(size: int) -> str:
+    
     import tempfile
     from pathlib import Path
 
@@ -697,38 +677,47 @@ def get_circle_mask(size: int) -> str:
         circle_img.save(str(mask_path))
 
     except ImportError:
+
         cmd = [
+
             "ffmpeg", "-y", "-f", "lavfi", "-i",
             f"color=c=white:s={size}x{size}:d=1,format=gray",
             "-vf",
             "geq=lum='if(lte(pow(X-W/2,2)+pow(Y-H/2,2),pow(min(W,H)/2,2)),255,0)'",
             "-frames:v", "1",
             str(mask_path),
+            
         ]
         subprocess.run(cmd, capture_output=True, text=True)
 
     return str(mask_path)
 
 def discover_input_pairs(input_path: str) -> list[tuple[Path, Path]]:
+
     path = Path(input_path).expanduser().resolve()
 
     if not path.exists():
         raise FileNotFoundError(f"Input path not found: {input_path}")
 
     if path.is_file():
+
         if path.suffix.lower() not in VIDEO_EXTENSIONS:
             raise RuntimeError(f"Unsupported video file: {path}")
 
         mask_path = path.with_name(f"{path.stem}_mask{path.suffix}")
+
         if not mask_path.exists():
             raise FileNotFoundError(f"Mask not found for {path}: expected {mask_path}")
+        
         return [(path, mask_path)]
 
     if not path.is_dir():
         raise RuntimeError(f"Input path is not a file or folder: {input_path}")
 
     pairs: list[tuple[Path, Path]] = []
+
     for candidate in sorted(path.rglob('*')):
+
         if not candidate.is_file() or candidate.suffix.lower() not in VIDEO_EXTENSIONS:
             continue
 
@@ -736,6 +725,7 @@ def discover_input_pairs(input_path: str) -> list[tuple[Path, Path]]:
             continue
 
         mask_path = candidate.with_name(f"{candidate.stem}_mask{candidate.suffix}")
+
         if mask_path.exists():
             pairs.append((candidate.resolve(), mask_path.resolve()))
 
@@ -756,6 +746,7 @@ def create_alpha_pack_command(
 
     if video_w == 2 * video_h:
         out_w = 2 * out_h
+
     else:
         out_w = _ceil_to(video_w, 32)
 
@@ -770,6 +761,7 @@ def create_alpha_pack_command(
         erosion_threshold = 32768
         contrast = 2.0
         gamma = 1.2
+
     else:
         erosion_threshold = 65535
         contrast = 2.5
