@@ -89,22 +89,23 @@ class sam3_video_inference:
             self.predictor = build_sam3_multiplex_video_predictor(
 
                 bpe_path=None,
-                max_num_objects = 2,
+                max_num_objects = 1,
                 multiplex_count = 16,
                 use_fa3 = False,
                 use_rope_real = False,
                 compile = False,
                 warm_up = False,
+                session_expiration_sec = 1200,
                 default_output_prob_thresh  = 0.5,
-                async_loading_frames  = False,
-                num_obj_for_compile=2
+                async_loading_frames  = True,
+                num_obj_for_compile=1
                 )
 
         else:
 
             self.predictor = build_sam3_video_predictor(
 
-                bpe_path=None,
+                bpe_path = None,
                 gpus_to_use = None,
                 has_presence_token = False,
                 geo_encoder_use_img_cross_attn = False,
@@ -114,8 +115,8 @@ class sam3_video_inference:
                 apply_temporal_disambiguation = True,
                 compile = False,
                 is_sbs=None,
-                max_num_objects=2,
-                num_obj_for_compile=2,
+                max_num_objects=1,
+                num_obj_for_compile=1,
                 use_fa3 = False
 
                 )

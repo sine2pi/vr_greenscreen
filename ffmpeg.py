@@ -34,6 +34,15 @@ def aborc(a, b, c):
 def abcord(a, b, c, d):
     return aorb(a, aborc(b, c, d))
 
+def normalize_fps(fps: float) -> float:
+    
+    rounded = round(fps, 2)
+
+    if abs(rounded - round(rounded)) < 0.05:
+        return float(round(rounded))
+        
+    return rounded
+
 def _input_videos(input_path: str) -> List[Path]:
     path = Path(input_path).expanduser().resolve()
 
@@ -136,35 +145,74 @@ def ffmpeg_progress(cmd: list[str], progress_prefix: str = "", cwd: str | None =
 
     return process.returncode, "".join(stderr_lines)
 
-def info(video_path: str) -> Tuple[int, int, float, float]:
+# def info(video_path: str) -> Tuple[int, int, float, float]:
 
-    cmd = [
+#     cmd = [
 
-        'ffprobe', '-v', 'error',
-        '-select_streams', 'v:0',
-        '-show_entries', 'stream=width,height,r_frame_rate:format=duration',
-        '-of', 'csv=p=0',
+#         'ffprobe', '-v', 'error',
+#         '-select_streams', 'v:0',
+#         '-show_entries', 'stream=width,height,r_frame_rate:format=duration',
+#         '-of', 'csv=p=0',
+#         video_path
+#     ]
+
+#     result = subprocess.run(cmd, capture_output=True, text=True)
+
+#     if result.returncode != 0:
+#         raise RuntimeError(f"ffprobe failed: {result.stderr}")
+
+#     lines = result.stdout.strip().split('\n')
+
+#     w, h, fps_str = lines[0].split(',')
+#     duration = float(lines[1]) if len(lines) > 1 else 0
+
+#     if '/' in fps_str:
+#         num, den = fps_str.split('/')
+#         fps = float(num) / float(den)
+
+#     else:
+#         fps = float(fps_str)
+
+#     return int(w), int(h), fps, duration
+
+def info(video_path: str) -> Tuple[int, int, float, float, bool]:
+  
+    meta_cmd = [
+        'ffprobe', '-v', 'error', 
+        '-select_streams', 'v:0', 
+        '-show_entries', 'stream=width,height,avg_frame_rate:format=duration', 
+        '-of', 'csv=p=0', 
         video_path
     ]
-
-    result = subprocess.run(cmd, capture_output=True, text=True)
-
-    if result.returncode != 0:
-        raise RuntimeError(f"ffprobe failed: {result.stderr}")
-
-    lines = result.stdout.strip().split('\n')
-
+    meta_result = subprocess.run(meta_cmd, capture_output=True, text=True)
+    if meta_result.returncode != 0:
+        raise RuntimeError(f"ffprobe metadata extraction failed: {meta_result.stderr}")
+        
+    lines = meta_result.stdout.strip().split('\n')
     w, h, fps_str = lines[0].split(',')
-    duration = float(lines[1]) if len(lines) > 1 else 0
+    duration = float(lines[1]) if len(lines) > 1 else 0.0
 
     if '/' in fps_str:
         num, den = fps_str.split('/')
-        fps = float(num) / float(den)
-
+        fps = float(num) / float(den) if float(den) != 0 else 0.0
     else:
         fps = float(fps_str)
 
-    return int(w), int(h), fps, duration
+    vfr_cmd = [
+        'ffmpeg', '-i', video_path, 
+        '-vf', 'vfrdet', 
+        '-f', 'null', '-'
+    ]
+    vfr_result = subprocess.run(vfr_cmd, capture_output=True, text=True)
+    
+    is_vfr = False
+    vfr_match = re.search(r'VFR:(\d+\.\d+)', vfr_result.stderr)
+    if vfr_match:
+        vfr_score = float(vfr_match.group(1))
+  
+        is_vfr = vfr_score > 0.0
+
+    return int(w), int(h), normalize_fps(fps), duration, is_vfr
 
 def frame_count(video_path: str) -> int:
 
@@ -190,10 +238,10 @@ def frame_count(video_path: str) -> int:
 
 def norm_video(source_video, w = None, h = None, fps = None, progress_prefix: str = "[normalize] ", video_args = None) -> str:
 
-    wi, hi, _, duration = info(source_video)
+    wi, hi, _, duration, is_vfr = info(source_video)
     enc = encoder_args()
 
-    if aorb(video_args.normalize_input, fps):
+    if is_vfr or video_args.normalize_input or fps is not None:
 
         source_path = Path(source_video).expanduser().resolve()
         output_video = str(source_path.with_name(f"{source_path.stem}_normed.mp4"))
@@ -233,7 +281,7 @@ def norm_video(source_video, w = None, h = None, fps = None, progress_prefix: st
 def resize_video(source_video: str, output_video: str, width: int, height: int, progress_prefix: str = "[resize] ") -> str:
 
     enc = encoder_args()
-    fps = info(stereo_video)[2]
+    fps = info(source_video)[2]
 
     os.makedirs(os.path.dirname(os.path.abspath(output_video)) or '.', exist_ok=True)
 
@@ -261,6 +309,7 @@ def resize_video(source_video: str, output_video: str, width: int, height: int, 
 
 def concat_video(video_list: list[str], output_path: str, fps: float | None = None) -> str:
 
+    fps = info(video_list[0])[2]
     BATCH_SIZE = 50
     n = len(video_list)
     enc = encoder_args()
@@ -514,11 +563,11 @@ def overlay_path(source_video: str, output_path: str) -> str:
 def mask_overlay(source_video: str, mask_video: str, output_path: str, background_color: str = '0x00ff00', video_args: argparse.Namespace = None) -> str:
 
     resolved_path = overlay_path(source_video, output_path)
-    src_w, src_h, src_fps, src_duration = info(source_video)
-    mask_w, mask_h, mask_fps, mask_duration = info(mask_video)
-
+    src_w, src_h, src_fps, src_duration, is_vfr = info(source_video)
+    mask_w, mask_h, mask_fps, mask_duration, is_vfr = info(mask_video)
+     
     if src_fps != mask_fps:
-
+        print(f"-- Fps does not match: src_fps={src_fps:.6f} mask_fps={mask_fps:.6f}")
         source_video = norm_video(source_video, fps=src_fps, video_args=video_args)
         mask_video = norm_video(mask_video, fps=src_fps, video_args=video_args)
 
@@ -552,10 +601,11 @@ def mask_overlay(source_video: str, mask_video: str, output_path: str, backgroun
         'ffmpeg', '-y', '-hwaccel', 'auto',
         '-i', source_video,
         '-i', mask_video,
-        '-f', 'lavfi', '-i', f'color=c={background_color}:s={src_w}x{src_h}:d={duration}:r={fps}',
+        '-f', 'lavfi', '-i', f'color=c={background_color}:s={src_w}x{src_h}:d={src_duration}:r={src_fps}',
         '-filter_complex', filter_complex,
         '-map', '[out]',
         '-map', '0:a?',
+     
     ]
 
     cmd.extend(encoder_args())
@@ -827,13 +877,14 @@ def pack_video(
     synced_tmp = None
 
     if sync_frames is not None:
-        _, _, fps, _ = info(mask_path)
+        
+        _, _, fps, duration, is_vfr = info(mask_path)
         print(f"Syncing mask by {sync_frames} frame(s)...")
         synced_tmp = sync_mask_to_video(mask_path, fps=fps, frame_offset=sync_frames)
         actual_mask = synced_tmp
 
-    video_w, video_h, *_ = info(video_path)
-    mask_w, mask_h, *_ = info(actual_mask)
+    video_w, video_h, fps, duration, is_vfr  = info(video_path)
+    mask_w, mask_h, fps, duration, is_vfr  = info(actual_mask)
 
     encoder = "hevc_nvenc"
 
@@ -910,7 +961,7 @@ def fisheye180(input_video: str, mask_path: str | None = None) -> str:
     input_video = str(Path(input_video).expanduser().resolve())
     filename, ext = os.path.splitext(input_video)
     output_video = f'{filename}_FISHEYE180{ext}'
-    target_w, target_h, fps, _ = info(input_video)
+    target_w, target_h, fps, duration, is_vfr  = info(input_video)
     eye_w = target_w // 2
 
     if eye_w <= 0 or target_h <= 0:

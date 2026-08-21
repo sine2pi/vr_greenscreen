@@ -526,7 +526,7 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path, batch_m
     for d in [frames_dir, masks_dir, segments_dir]:
         d.mkdir(parents=True, exist_ok=True)
 
-    orig_w, orig_h, fps, duration = info(video_path)
+    orig_w, orig_h, fps, duration, is_vfr  = info(video_path)
 
     video_args = argparse.Namespace(**vars(args), video=video_path)
 
@@ -796,7 +796,6 @@ def main() -> int:
         print(f'[{index}/{len(video_paths)}] Processing: {video_path}')
 
         video_args = argparse.Namespace(**vars(args), video=video_path)
-
         video_path = norm_video(video_path, video_args=video_args)
         output_mask = process_video(video_path, args, temp_root, batch_mode=batch_mode)
         # packed = packer(video_path, sync_frames=None)
