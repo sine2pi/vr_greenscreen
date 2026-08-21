@@ -19,6 +19,21 @@ VIDEO_EXTENSIONS = ('.mp4', '.mov', '.avi', '.MP4', '.MOV', '.AVI')
 SAM3_MAX = 1008
 BATCH_SIZE = 50
 
+def have(a):
+    if a == bool:
+        if a:
+            return a is not None
+    return a is not None  
+
+def aorb(a, b):
+    return a if have(a) else b
+
+def aborc(a, b, c):
+    return aorb(a, aorb(b, c))
+
+def abcord(a, b, c, d):
+    return aorb(a, aborc(b, c, d))
+
 def _input_videos(input_path: str) -> List[Path]:
     path = Path(input_path).expanduser().resolve()
 
@@ -72,7 +87,6 @@ def encoder_args() -> list[str]:
 
         '-sws_flags', 'lanczos+full_chroma_int+accurate_rnd+full_chroma_inp',
         '-fps_mode', 'cfr',
-        '-r', '60',
         '-c:v', ENCODER,
         '-preset', 'p5',
         '-profile:v', 'main10',
@@ -174,26 +188,17 @@ def frame_count(video_path: str) -> int:
 
     return count
 
-def norm_video(source_video, w = None, h = None, progress_prefix: str = "[normalize] ", video_args = None) -> str:
+def norm_video(source_video, w = None, h = None, fps = None, progress_prefix: str = "[normalize] ", video_args = None) -> str:
 
-    wi, hi, fps, _ = info(source_video)
+    wi, hi, _, duration = info(source_video)
     enc = encoder_args()
 
-    if not video_args.normalize_input:
-        print()
-        print(f"[normalize - skipped], normalize_input = {video_args.normalize_input}")
-        return source_video
+    if aorb(video_args.normalize_input, fps):
 
-    if fps == 60:
-        print()
-        print(f"[normalize - skipped], FPS = {fps}")
-        return source_video
-
-    else:
         source_path = Path(source_video).expanduser().resolve()
         output_video = str(source_path.with_name(f"{source_path.stem}_normed.mp4"))
 
-        fps = 60
+        fps = aorb(fps, 60)
 
         if w is not None:
             wi = w
@@ -220,10 +225,15 @@ def norm_video(source_video, w = None, h = None, progress_prefix: str = "[normal
             raise RuntimeError(f"Normalized video not created: {output_video}")
 
         return output_video
-
+    else:
+        print()
+        print(f"[normalize - skipped], normalize_input = {video_args.normalize_input}")
+        return source_video
+    
 def resize_video(source_video: str, output_video: str, width: int, height: int, progress_prefix: str = "[resize] ") -> str:
 
     enc = encoder_args()
+    fps = info(stereo_video)[2]
 
     os.makedirs(os.path.dirname(os.path.abspath(output_video)) or '.', exist_ok=True)
 
@@ -231,7 +241,7 @@ def resize_video(source_video: str, output_video: str, width: int, height: int, 
 
         'ffmpeg', '-y', '-hwaccel', 'auto',
         '-i', source_video,
-        '-filter_complex', f'[0:v]fps=60,setpts=N/(60*TB),scale={width}:{height}:flags=lanczos:threads=0',
+        '-filter_complex', f'[0:v]fps={fps},setpts=N/({fps}*TB),scale={width}:{height}:flags=lanczos:threads=0',
         *enc,
         output_video,
     ]
@@ -509,11 +519,8 @@ def mask_overlay(source_video: str, mask_video: str, output_path: str, backgroun
 
     if src_fps != mask_fps:
 
-        if src_fps < 60:
-            source_video = norm_video(source_video, video_args=video_args)
-
-        if mask_fps < 60:
-            mask_video = norm_video(mask_video, video_args=video_args)
+        source_video = norm_video(source_video, fps=src_fps, video_args=video_args)
+        mask_video = norm_video(mask_video, fps=src_fps, video_args=video_args)
 
     duration = src_duration
     fps = src_fps
@@ -903,14 +910,14 @@ def fisheye180(input_video: str, mask_path: str | None = None) -> str:
     input_video = str(Path(input_video).expanduser().resolve())
     filename, ext = os.path.splitext(input_video)
     output_video = f'{filename}_FISHEYE180{ext}'
-    target_w, target_h, _, _ = info(input_video)
+    target_w, target_h, fps, _ = info(input_video)
     eye_w = target_w // 2
 
     if eye_w <= 0 or target_h <= 0:
         raise RuntimeError(f'Invalid input dimensions for fisheye conversion: {target_w}x{target_h}')
 
     filter_parts = [
-        '[0:v]fps=60,setpts=N/(60*TB),split=2[left_src][right_src]',
+        f'[0:v]fps={fps},setpts=N/({fps}*TB),split=2[left_src][right_src]',
         f'[left_src]crop=iw/2:ih:0:0,v360=hequirect:fisheye:w={eye_w}:h={target_h}[left]',
         f'[right_src]crop=iw/2:ih:iw/2:0,v360=hequirect:fisheye:w={eye_w}:h={target_h}[right]',
         f'[left][right]hstack,scale=w={target_w}:h={target_h}:flags=bilinear,format=yuv420p[stacked]',
