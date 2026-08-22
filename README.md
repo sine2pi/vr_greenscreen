@@ -8,7 +8,7 @@ python vrmasking.py folder
 
 folder = (path to folder of videos)
 
-Not an all in one script. You need to install your own dependencies. any python cuda pytorch ffmpeg etc etc. 
+Not an all in one script. You need to install your own dependencies. any python cuda pytorch ffmpeg etc etc. All the basics. If you don't already have them installed on your system then go somewhere else.
 
 ```python
 python vrmasking.py (path to folder of videos)
