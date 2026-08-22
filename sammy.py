@@ -81,6 +81,7 @@ class sam3_video_inference:
 
         self.video_path = video_path
         self.prompt = prompt
+        self.max_size = video_args.mask_height
 
         if sam31:
 
@@ -141,7 +142,8 @@ class sam3_video_inference:
                 type="propagate_in_video",
                 session_id=session_id,
                 propagation_direction="forward",
-                output_prob_thresh = 0.4,
+                output_prob_thresh = 0.5,
+                max_frame_num_to_track=100,
 
             )
         ):
@@ -205,6 +207,9 @@ class sam3_video_inference:
             request=dict(
                 type="start_session",
                 resource_path=video_path,
+                start_frame_idx=0,
+                offload_video_to_cpu = True,
+                offload_state_to_cpu = True,
 
             )
         )
@@ -289,6 +294,8 @@ def _extract_sam3_video_mask(outputs, out_h: int, out_w: int) -> np.ndarray | No
 
     else:
         return None
+    
+    best = np.clip((best - 0.5) * 3.0 + 0.5, 0.0, 1.0)
     return best
 
 def _sam3_video_inference(frames_dir: str, output_size: int | None = None, prompt: str = "one woman", sam31: bool = False, video_args: argparse.Namespace = None) -> None:
@@ -319,6 +326,11 @@ def _sam3_video_inference(frames_dir: str, output_size: int | None = None, promp
         image = raw.convert("RGB")
         raw.close()
 
+        if image.height > output_size:
+            full = image
+            image = full.resize((output_size, output_size), Image.Resampling.BICUBIC)
+            full.close()
+
         frame_shapes.append((image.height, image.width))
         image.save(seq_dir / f"{i:06d}.jpg", format="JPEG", quality=100)
         image.close()
@@ -338,6 +350,7 @@ def _sam3_video_inference(frames_dir: str, output_size: int | None = None, promp
             missing += 1
             soft = np.zeros((out_h, out_w), dtype=np.float32)
 
+        soft = np.clip((soft - 0.5) * 3.0 + 0.5, 0.0, 1.0)
         hard = (soft >= 0.5).astype(np.uint8) * 255
 
         Image.fromarray(hard, mode='L').save(out_path)
@@ -434,6 +447,11 @@ def _sam3_inference(frames_dir: str, output_size: int | None = None, prompt: str
             image = raw.convert("RGB")
             raw.close()
 
+            if image.height > output_size:
+                full = image
+                image = full.resize((output_size, output_size), Image.Resampling.BICUBIC)
+                full.close()
+
             width, height = image.width, image.height
 
             inference_state = processor.set_text_prompt(state=processor.set_image(image), prompt=prompt)
@@ -475,6 +493,7 @@ def _sam3_inference(frames_dir: str, output_size: int | None = None, prompt: str
                     best_soft = best_soft[0]
 
                 best_soft = np.asarray(best_soft, dtype=np.float32)
+                best_soft = np.clip((best_soft - 0.5) * 3.0 + 0.5, 0.0, 1.0)
 
                 print("Confidence:", scores[best_idx])
 
