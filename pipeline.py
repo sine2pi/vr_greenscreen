@@ -373,7 +373,6 @@ def matanyone_inference(jobs: list[dict], on_segment_done: Callable[[str], None]
         except Exception as exc:
 
             completed_paths.extend(batch_completed)
-
             remaining_jobs = remaining_jobs[len(batch_completed):]
 
             if not remaining_jobs:
@@ -386,6 +385,7 @@ def matanyone_inference(jobs: list[dict], on_segment_done: Callable[[str], None]
 
                 for i, job in enumerate(remaining_jobs):
                     job['op_num'] = start_op + i
+
                 time.sleep(3.0)
 
                 continue
@@ -532,6 +532,7 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path, batch_m
 
     print(f'Specs: {orig_w}x{orig_h}, {fps:.2f}fps, {format_timestamp(duration)}')
     print(f'Mask height: {video_args.mask_height}px')
+    print(f'Please hold... ♩ ♪ ♫ ♬')
     print()
 
     mask_square = video_args.mask_height
@@ -647,15 +648,17 @@ def calculate_segments(video_duration: float, max_segment_length: float = 5.0) -
     return segments
 
 def extract_segments(
+        
     args: argparse.Namespace,
     segments: List[SegmentInfo],
     mask_segments: List[SegmentInfo],
     orig_h: int,
     frames_dir: Path,
     segments_dir: Path,
+
 ) -> List[SegmentInfo]:
 
-    print(f'Total: {len(segments)} segments')
+    print(f'Creating: {len(segments)} video segments')
 
     for seg in segments:
 
