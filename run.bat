@@ -1,1 +1,1 @@
-python pipeline.py ./videos --overlay-output ./videos --segment-length 2 --erode 0 --dilate 0 --overlay-color "0x00ff00" --mask-height 1008 --seed-model sam3 --warmup 6 --ma2-mem-every 32 --ma2-max-mem-frames 2 --temporal-median-window 0 --no-normalize-input
+python pipeline.py ./videos --overlay-output ./videos --segment-length 2 --erode 6 --dilate 0 --overlay-color "0x00ff00" --mask-height 1008 --seed-model sam3video --warmup 6 --ma2-mem-every 32 --ma2-max-mem-frames 2
