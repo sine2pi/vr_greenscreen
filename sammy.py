@@ -44,6 +44,7 @@ SAM3_REPO_ID = "sin2piusc/sam3_fta"
 SAM3_MAX = 1008
 SAM3_BOX_CXCYWH_NORM = (0.5, 0.4, 0.5, 0.5)
 SAM3_BOX2_CXCYWH_NORM = (0.5, 0.9, 0.9, 0.18)
+# SAM3_BOX3_CXCYWH_NORM = (0.1, 0.9, 0.9, 0.18)
 
 SAPIENS_REPO_ID = "facebook/sapiens2-matting-1b"
 SAPIENS_CHECKPOINT = "sapiens2_1b_matting.safetensors"
@@ -107,7 +108,7 @@ class sam3_video_inference:
                 compile = False,
                 warm_up = False,
                 default_output_prob_thresh  = 0.5,
-                async_loading_frames  = False,
+                async_loading_frames  = True,
                 num_obj_for_compile=1
                 )
 
@@ -115,7 +116,7 @@ class sam3_video_inference:
 
             self.predictor = build_sam3_video_predictor(
 
-                bpe_path=None,
+                bpe_path = None,
                 gpus_to_use = None,
                 has_presence_token = False,
                 geo_encoder_use_img_cross_attn = False,
@@ -124,7 +125,7 @@ class sam3_video_inference:
                 video_loader_type = "cv2",
                 apply_temporal_disambiguation = True,
                 compile = False,
-                is_sbs=None,
+                is_sbs = None,
                 max_num_objects=1,
                 num_obj_for_compile=1,
                 use_fa3 = False
@@ -140,10 +141,11 @@ class sam3_video_inference:
             ]
         )
 
-    def propagate_in_video(self, predictor=None, session_id=None):
+    def propagate_in_video(self, predictor=None, session_id=None, max_frame_num_to_track=None):
 
+        max_frame_num_to_track=int(self.seg_length * 60) # assumes 60 fps
         predictor=self.predictor
-        outputs_per_frame = {}
+        outputs = {}
 
         if self.sam31:
             for response in predictor.handle_stream_request(
@@ -152,11 +154,11 @@ class sam3_video_inference:
                         type="propagate_in_video",
                         session_id=session_id,
                         propagation_direction="forward",
-                        output_prob_thresh = 0.5,
+                        output_prob_thresh = 0.4,
 
                     )):
                 
-                outputs_per_frame[response["frame_idx"]] = response["outputs"]
+                outputs[response["frame_idx"]] = response["outputs"]
         else:
             for response in predictor.handle_stream_request(
 
@@ -164,14 +166,14 @@ class sam3_video_inference:
                         type="propagate_in_video",
                         session_id=session_id,
                         propagation_direction="forward",
-                        output_prob_thresh = 0.5,
-                        max_frame_num_to_track = int(self.seg_length * 60),
-
+                        output_prob_thresh = 0.4,
+                        max_frame_num_to_track = max_frame_num_to_track if max_frame_num_to_track != -1 else None,
+                        
                     )):
                 
-                outputs_per_frame[response["frame_idx"]] = response["outputs"]
+                outputs[response["frame_idx"]] = response["outputs"]
 
-        return outputs_per_frame
+        return outputs
 
     def abs_to_rel_coords(self, coords=None, IMG_WIDTH=None, IMG_HEIGHT=None, coord_type="box"):
 
@@ -189,9 +191,10 @@ class sam3_video_inference:
         else:
             raise ValueError(f"Unknown coord_type: {coord_type}")
 
-    def track(self, video_path = None, remove=False, refine_object=0):
+    def track(self, video_path = None, remove = False, add_box = True, sub_box = True, add_point = 0, show_plots = True):
 
-        predictor, video_path, prompt  = self.predictor, self.video_path, self.prompt
+        predictor, video_path, prompt = self.predictor, self.video_path, self.prompt
+
         if video_path is None:
             video_path = self.video_path
 
@@ -253,20 +256,38 @@ class sam3_video_inference:
             )
         )
 
-        box = np.array([[252, 252, 504, 504]])
-        prompt_text = prompt
         frame_idx = 0
-        boxes = torch.tensor(self.abs_to_rel_coords(box, IMG_WIDTH, IMG_HEIGHT, coord_type="box"), dtype=torch.float32)
-        labels = torch.tensor(np.array([1]), dtype=torch.int32)
-
         response = predictor.handle_request(
 
             request=dict(
                 type="add_prompt",
                 session_id=session_id,
                 frame_idx=frame_idx,
-                text=prompt_text,
-                bounding_boxes= boxes,
+                text=prompt,
+             
+            )
+        )
+
+        out = response["outputs"]
+        outputs = self.propagate_in_video(predictor, session_id)
+
+        if add_box:
+
+            boxes = torch.tensor(self.abs_to_rel_coords(np.array([[252, 152, 704, 704]]), IMG_WIDTH, IMG_HEIGHT, coord_type="box"), dtype=torch.float32)
+            labels = torch.tensor(np.array([1]), dtype=torch.int32)
+
+        else:
+            boxes, labels = None, None
+
+        frame_idx = 0
+        response = predictor.handle_request(
+
+            request=dict(
+                type="add_prompt",
+                session_id=session_id,
+                frame_idx=frame_idx,
+                text=prompt,
+                bounding_boxes = boxes,
                 bounding_box_labels = labels,
              
             )
@@ -274,7 +295,119 @@ class sam3_video_inference:
 
         out = response["outputs"]
         outputs = self.propagate_in_video(predictor, session_id)
-   
+
+        if add_point == 1:
+
+            frame_idx = 0
+            obj_id = 0
+            points_abs = np.array(
+
+                [
+                    [350, 350], 
+                ]
+            )
+
+            labels = np.array([1])
+            points_tensor = torch.tensor(self.abs_to_rel_coords(points_abs, IMG_WIDTH, IMG_HEIGHT, coord_type="point"), dtype=torch.float32)
+            points_labels_tensor = torch.tensor(labels, dtype=torch.int32)
+
+            response = predictor.handle_request(
+                request=dict(
+                    type="add_prompt",
+                    session_id=session_id,
+                    frame_idx=frame_idx,
+                    points=points_tensor,
+                    point_labels=points_labels_tensor,
+                    obj_id=obj_id,
+                )
+            )
+            
+            out = response["outputs"]
+            outputs = self.propagate_in_video(predictor, session_id)
+
+        if add_point == 4:
+            
+            frame_idx = 0
+            obj_id = 0
+            points_abs = np.array(
+
+                [
+                    [740, 450],  # +
+                    [760, 630],  # -
+                    [840, 640],  # -
+                    [760, 550],  # +
+                ]
+            )
+
+            labels = np.array([1, 0, 0, 1])
+            points_tensor = torch.tensor(self.abs_to_rel_coords(points_abs, IMG_WIDTH, IMG_HEIGHT, coord_type="point"), dtype=torch.float32)
+            points_labels_tensor = torch.tensor(labels, dtype=torch.int32)
+
+            response = predictor.handle_request(
+
+                request=dict(
+
+                    type="add_prompt",
+                    session_id=session_id,
+                    frame_idx=frame_idx,
+                    points=points_tensor,
+                    point_labels=points_labels_tensor,
+                    obj_id=obj_id,
+                )
+            )
+
+            out = response["outputs"]
+            outputs = self.propagate_in_video(predictor, session_id)
+
+        if sub_box:
+
+            box = np.array([[800, 552, 180, 280]])
+            frame_idx = 0
+            boxes = torch.tensor(self.abs_to_rel_coords(box, IMG_WIDTH, IMG_HEIGHT, coord_type="box"), dtype=torch.float32)
+            labels = torch.tensor(np.array([0]), dtype=torch.int32)
+
+            response = predictor.handle_request(
+
+                request=dict(
+                    type = "add_prompt",
+                    session_id = session_id,
+                    frame_idx = frame_idx,
+                    text = prompt if prompt else None,
+                    bounding_boxes = boxes,
+                    bounding_box_labels = labels,
+                
+                )
+            )
+
+            out = response["outputs"]
+            outputs = self.propagate_in_video(predictor, session_id)
+
+        if remove:
+
+            obj_id = 0
+            response = predictor.handle_request(
+
+                request=dict(
+                    type="remove_object",
+                    session_id=session_id,
+                    obj_id=obj_id,
+                )
+            )
+
+            out = response["outputs"]
+            outputs = self.propagate_in_video(predictor, session_id)
+
+        if show_plots:
+
+            plt.close("all")
+            visualize_formatted_frame_output(
+                frame_idx,
+                frames,
+                outputs_list=[prepare_masks_for_visualization({frame_idx: out})],
+                titles=["SAM 3 Dense Tracking outputs"],
+                figsize=(6, 4),
+            )
+
         _ = predictor.handle_request(
 
             request=dict(
@@ -285,50 +418,6 @@ class sam3_video_inference:
 
         predictor.shutdown()
         return outputs
-
-def _extract_sam3_video_mask(outputs, out_h: int, out_w: int) -> np.ndarray | None:
-
-    if not isinstance(outputs, dict):
-        return None
-
-    masks = outputs.get("out_binary_masks", None)
-
-    if masks is None:
-        return None
-
-    masks = np.asarray(masks)
-
-    if masks.size == 0:
-        return None
-
-    if masks.ndim == 2:
-        best = masks.astype(np.float32)
-
-    elif masks.ndim == 3:
-
-        if masks.shape[0] == 1:
-            best = masks[0].astype(np.float32)
-
-        else:
-            probs = outputs.get("out_probs", None)
-
-            if probs is not None:
-                probs = np.asarray(probs)
-
-                if probs.size == masks.shape[0]:
-                    best = masks[int(np.argmax(probs))].astype(np.float32)
-
-                else:
-                    best = masks[0].astype(np.float32)
-
-            else:
-                best = masks[0].astype(np.float32)
-
-    else:
-        return None
-    
-    best = np.clip((best - 0.5) * 3.0 + 0.5, 0.0, 1.0)
-    return best
 
 def _sam3_video_inference(frames_dir, prompt, sam31, output_size, video_args) -> None:
 
@@ -353,7 +442,7 @@ def _sam3_video_inference(frames_dir, prompt, sam31, output_size, video_args) ->
    
     soft_masks: list[np.ndarray] = []
     valid_flags: list[bool] = []
-    
+
     min_valid_pixels = int(output_size * 0.8)
 
     for i, frame_path in enumerate(image_files):
@@ -385,19 +474,53 @@ def _sam3_video_inference(frames_dir, prompt, sam31, output_size, video_args) ->
             out_h, out_w = frame_shapes[i]
             outputs = inference_state.get(i)
 
-            soft = _extract_sam3_video_mask(outputs, out_h, out_w)
-            soft_masks.append(soft)
+            masks = outputs.get("out_binary_masks", None)
+            scores = outputs.get("out_probs", None)
 
-            valid_flags.append(np.count_nonzero(soft >= 0.5) >= min_valid_pixels)
+            if masks is None:
+                return None
 
-    filled_soft_masks, filled_count = _fill_soft_mask_gaps(soft_masks, valid_flags, max_interp_gap=6)
+            if isinstance(scores, torch.Tensor):
+                scores = scores.cpu().numpy()
+
+            else:
+                scores = np.asarray(scores)
+
+            if isinstance(masks, torch.Tensor):
+                masks = masks.cpu().numpy()
+
+            else:
+                masks = np.asarray(masks)
+
+            if len(masks) == 0 or scores.size == 0:
+                best_soft = np.zeros((image.height, image.width), dtype=np.float32)
+
+                print(f"No SAM3 masks/scores for {frame_path.name}; marking as missing for temporal fill")
+
+            else:
+                best_idx = int(np.argmax(scores))
+                best_soft = masks[best_idx]
+
+                if len(best_soft.shape) == 3:
+                    best_soft = best_soft[0]
+
+                best_soft = np.asarray(best_soft, dtype=np.float32)
+
+                print("Confidence:", scores[best_idx])
+
+            best_soft = np.clip((best_soft - 0.5) * 3.0 + 0.5, 0.0, 1.0)
+
+            soft_masks.append(best_soft)
+            valid_flags.append(min_valid_pixels <= np.count_nonzero(best_soft) <= output_size)
+
+    filled_soft_masks, filled_count = _fill_soft_mask_gaps(soft_masks, valid_flags, max_interp_gap=2)
 
     if filled_count > 0:
         print(f"Filled {filled_count} missing/weak SAM3 masks using temporal soft-mask interpolation")
 
     for out_path, soft_mask in zip(output_paths, filled_soft_masks):
 
-        hard_mask = (soft_mask >= 0.5).astype(np.uint8) * 255
+        hard_mask = (soft_mask).astype(np.uint8) * 255
         Image.fromarray(hard_mask, mode='L').save(out_path)
 
     if seq_dir.exists():
@@ -408,9 +531,11 @@ def _sam3_video_inference(frames_dir, prompt, sam31, output_size, video_args) ->
     torch.cuda.empty_cache()
 
 def _fill_soft_mask_gaps(
+        
     soft_masks: list[np.ndarray],
     valid_flags: list[bool],
     max_interp_gap: int = 6,
+
 ) -> tuple[list[np.ndarray], int]:
 
     if not soft_masks:
@@ -469,6 +594,18 @@ def _sam3_inference(frames_dir, prompt, sam31, output_size, video_args, show_plo
     model.load_state_dict(checkpoint["model_state_dict"])
 
     processor = Sam3Processor(model, confidence_threshold=0.4, device="cuda" if torch.cuda.is_available() else "cpu")
+
+    # model = build_sam3_image_model(
+    #     bpe_path=None,
+    #     device = "cuda" if torch.cuda.is_available() else "cpu",
+    #     eval_mode = True,
+    #     checkpoint_path = None,
+    #     load_from_HF= True,
+    #     enable_segmentation = True,
+    #     enable_inst_interactivity = False,
+    #     compile = False,
+    #     use_fa3 = False,
+    # )
 
     if not image_files:
         return
@@ -534,7 +671,8 @@ def _sam3_inference(frames_dir, prompt, sam31, output_size, video_args, show_plo
                 print("Confidence:", scores[best_idx])
 
             soft_masks.append(best_soft)
-            valid_flags.append(np.count_nonzero(best_soft >= 0.5) >= min_valid_pixels)
+            valid_flags.append(min_valid_pixels <= np.count_nonzero(best_soft) <= output_size)
+            # valid_flags.append(np.count_nonzero(best_soft >= 0.5) >= min_valid_pixels)
 
             del inference_state
             image.close()
@@ -674,7 +812,7 @@ def _sam_sapiens(
     gc.collect()
     torch.cuda.empty_cache()
 
-def _sapiens_inference(frames_dir: str, prompt: str = "one woman", output_size: int | None = None, video_args: argparse.Namespace = None, threshold: float = 0.5, gate_dilate: int = 5) -> None:
+def _sapiens_inference(frames_dir: str, prompt: str = "one woman", sam31:bool = False, output_size: int | None = None, video_args: argparse.Namespace = None, threshold: float = 0.5, gate_dilate: int = 5) -> None:
 
     from huggingface_hub import hf_hub_download
     from sapiens.dense.src.models.core.matting_estimator import MattingEstimator
