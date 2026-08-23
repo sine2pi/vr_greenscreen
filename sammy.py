@@ -167,7 +167,7 @@ class sam3_video_inference:
                         session_id=session_id,
                         propagation_direction="forward",
                         output_prob_thresh = 0.4,
-                        max_frame_num_to_track = max_frame_num_to_track if max_frame_num_to_track != -1 else None,
+                        max_frame_num_to_track = None, #max_frame_num_to_track if max_frame_num_to_track != -1 else None,
                         
                     )):
                 
@@ -191,7 +191,7 @@ class sam3_video_inference:
         else:
             raise ValueError(f"Unknown coord_type: {coord_type}")
 
-    def track(self, video_path = None, remove = False, add_box = False, sub_box = False, add_point = 0, show_plots = False):
+    def track(self, video_path = None, remove = False, add_box = True, sub_box = False, add_point = 0, show_plots = True):
 
         predictor, video_path, prompt = self.predictor, self.video_path, self.prompt
 
@@ -273,7 +273,7 @@ class sam3_video_inference:
 
         if add_box:
 
-            boxes = torch.tensor(self.abs_to_rel_coords(np.array([[252, 152, 704, 704]]), IMG_WIDTH, IMG_HEIGHT, coord_type="box"), dtype=torch.float32)
+            boxes = torch.tensor(np.array([[0.1, 0.1, 0.8, 0.7]]), dtype=torch.float32)
             labels = torch.tensor(np.array([1]), dtype=torch.int32)
 
         else:
@@ -361,11 +361,11 @@ class sam3_video_inference:
 
         if sub_box:
 
-            box = np.array([[800, 552, 180, 280]])
-            frame_idx = 0
-            boxes = torch.tensor(self.abs_to_rel_coords(box, IMG_WIDTH, IMG_HEIGHT, coord_type="box"), dtype=torch.float32)
+            box = [[0.1, 0.8, 0.8, 0.2]]
+            boxes = torch.tensor(np.array(box), dtype=torch.float32)
             labels = torch.tensor(np.array([0]), dtype=torch.int32)
 
+            frame_idx = 0
             response = predictor.handle_request(
 
                 request=dict(
@@ -589,11 +589,13 @@ def _sam3_inference(frames_dir, prompt, sam31, output_size, video_args, show_plo
     repo_path = snapshot_download(repo_id=SAM3_REPO_ID, local_files_only=False)
     model_path = os.path.join(repo_path, "sam3.pth")
 
-    model = build_sam3_image_model(load_from_HF = False, enable_inst_interactivity = False, enable_segmentation = True, compile = False)
-    checkpoint = torch.load(model_path, weights_only=False, map_location='cpu')
-    model.load_state_dict(checkpoint["model_state_dict"])
+    model = build_sam3_image_model(load_from_HF = True, enable_inst_interactivity = False, enable_segmentation = True, compile = False)
+    # checkpoint = torch.load(model_path, weights_only=True, map_location='cpu')
+    # model.load_state_dict(checkpoint["model_state_dict"])
 
-    processor = Sam3Processor(model, confidence_threshold=0.4, device="cuda" if torch.cuda.is_available() else "cpu")
+    model.load_state_dict(torch.load(model_path, weights_only=True, map_location='cpu'), strict=False)
+
+    processor = Sam3Processor(model, confidence_threshold=0.2, device="cuda" if torch.cuda.is_available() else "cpu")
 
     # model = build_sam3_image_model(
     #     bpe_path=None,
@@ -686,7 +688,7 @@ def _sam3_inference(frames_dir, prompt, sam31, output_size, video_args, show_plo
         hard_mask = (soft_mask >= 0.5).astype(np.uint8) * 255
         Image.fromarray(hard_mask, mode='L').save(out_path)
 
-    del processor, model, checkpoint
+    del processor, model
 
     gc.collect()
     torch.cuda.empty_cache()
@@ -742,16 +744,17 @@ def seed_mask_batch(
 def _sam_sapiens(
         
         frames_dir: str, 
-        prompt: str = "one woman", 
-        sam31: bool = False,
-        output_size: int | None = None, 
-        video_args: argparse.Namespace = None, 
-        threshold: float = 0.5, 
-        gate_dilate: int = 5
+        prompt: str, 
+        sam31: bool,
+        output_size: int | None, 
+        video_args: argparse.Namespace, 
+        threshold: float, 
+        gate_dilate: int,
 
         ) -> None:
 
-    _sam3_inference(frames_dir, prompt=prompt, sam31=sam31, output_size=output_size, video_args=video_args)
+    _sam3_video_inference(frames_dir, prompt=prompt, sam31=False, output_size=output_size, video_args=video_args)
+    # _sam3_inference(frames_dir, prompt=prompt, sam31=sam31, output_size=output_size, video_args=video_args)
 
     folder = Path(frames_dir)
     image_files = list(folder.glob("*.png")) + list(folder.glob("*.jpg"))
