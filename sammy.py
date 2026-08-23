@@ -672,7 +672,6 @@ def _sam3_inference(frames_dir, prompt, sam31, output_size, video_args, show_plo
 
             soft_masks.append(best_soft)
             valid_flags.append(min_valid_pixels <= np.count_nonzero(best_soft) <= output_size)
-            # valid_flags.append(np.count_nonzero(best_soft >= 0.5) >= min_valid_pixels)
 
             del inference_state
             image.close()
@@ -729,6 +728,7 @@ def seed_mask_batch(
 
             frames_dir,
             prompt=prompt,
+            sam31=sam31,
             output_size=output_size,
             video_args=video_args,            
             threshold=sapiens_threshold,
@@ -743,6 +743,7 @@ def _sam_sapiens(
         
         frames_dir: str, 
         prompt: str = "one woman", 
+        sam31: bool = False,
         output_size: int | None = None, 
         video_args: argparse.Namespace = None, 
         threshold: float = 0.5, 
@@ -750,7 +751,7 @@ def _sam_sapiens(
 
         ) -> None:
 
-    _sam3_inference(frames_dir, prompt=prompt, output_size=output_size, video_args=video_args)
+    _sam3_inference(frames_dir, prompt=prompt, sam31=sam31, output_size=output_size, video_args=video_args)
 
     folder = Path(frames_dir)
     image_files = list(folder.glob("*.png")) + list(folder.glob("*.jpg"))
@@ -900,6 +901,7 @@ def sam3_masks(
     sapiens_threshold: float,
     gate_dilate: int,
     video_args: argparse.Namespace,
+    sam31: bool = False,
 
     ) -> List[SegmentInfo]:
 
@@ -910,6 +912,7 @@ def sam3_masks(
         str(frames_dir),
         output_size=mask_square,
         prompt=prompt,
+        sam31=sam31,
         seed_model=seed_model,
         sapiens_threshold=sapiens_threshold,
         gate_dilate=gate_dilate,
