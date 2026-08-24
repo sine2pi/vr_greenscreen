@@ -1,4 +1,4 @@
-import re, subprocess, os, torch, av, numpy as np, argparse
+import re, subprocess, os, json, torch, av, numpy as np, argparse
 from pathlib import Path
 from typing import Tuple, List
 from PIL import Image, ImageDraw, ImageFilter
@@ -15,15 +15,16 @@ _setup_tf32()
 ENCODER = 'hevc_nvenc'
 IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.JPG', '.JPEG', '.PNG')
 VIDEO_EXTENSIONS = ('.mp4', '.mov', '.avi', '.MP4', '.MOV', '.AVI')
-
-SAM3_MAX = 1008
 BATCH_SIZE = 50
+
+_PROBE_CACHE: dict[tuple[str, int, int], dict] = {}
+_FRAME_SCAN_CACHE: dict[tuple[str, int, int, str], int] = {}
 
 def have(a):
     if a == bool:
         if a:
             return a is not None
-    return a is not None  
+    return a is not None
 
 def aorb(a, b):
     return a if have(a) else b
@@ -35,12 +36,12 @@ def abcord(a, b, c, d):
     return aorb(a, aborc(b, c, d))
 
 def normalize_fps(fps: float) -> float:
-    
+
     rounded = round(fps, 2)
 
     if abs(rounded - round(rounded)) < 0.05:
         return float(round(rounded))
-        
+
     return rounded
 
 def _input_videos(input_path: str) -> List[Path]:
@@ -90,13 +91,14 @@ def format_timestamp(seconds: float) -> str:
 
     return f"{h:02d}:{m:02d}:{s:06.3f}"
 
-def encoder_args() -> list[str]:
+def encoder_args(fps: float) -> list[str]:
 
     return [
 
         '-sws_flags', 'lanczos+full_chroma_int+accurate_rnd+full_chroma_inp',
-        '-fps_mode', 'cfr',
         '-c:v', ENCODER,
+        '-fps_mode', 'cfr',
+        '-r', str(fps),
         '-preset', 'p5',
         '-profile:v', 'main10',
         '-pix_fmt', 'p010le',
@@ -145,15 +147,64 @@ def ffmpeg_progress(cmd: list[str], progress_prefix: str = "", cwd: str | None =
 
     return process.returncode, "".join(stderr_lines)
 
-def info(video_path: str) -> Tuple[int, int, float, float]:
+def _safe_float(value, default: float = 0.0) -> float:
+
+    try:
+        return float(value)
+
+    except Exception:
+        return default
+
+
+def _ratio_to_float(value: str) -> float:
+
+    if not value or value == '0/0':
+        return 0.0
+
+    try:
+        if '/' in value:
+            num, den = value.split('/', 1)
+            den_f = float(den)
+
+            if den_f == 0.0:
+                return 0.0
+
+            return float(num) / den_f
+
+        return float(value)
+
+    except Exception:
+        return 0.0
+
+
+def _probe_cache_key(video_path: str) -> tuple[str, int, int]:
+
+    p = Path(video_path).expanduser().resolve()
+
+    try:
+        st = p.stat()
+
+    except FileNotFoundError:
+        raise RuntimeError(f"Video not found: {video_path}")
+
+    return str(p), int(st.st_mtime_ns), int(st.st_size)
+
+
+def _probe_payload(video_path: str) -> dict:
+
+    key = _probe_cache_key(video_path)
+    cached = _PROBE_CACHE.get(key)
+
+    if cached is not None:
+        return cached
 
     cmd = [
 
         'ffprobe', '-v', 'error',
         '-select_streams', 'v:0',
-        '-show_entries', 'stream=width,height,r_frame_rate,avg_frame_rate:format=duration',
-        '-of', 'csv=p=0',
-        video_path
+        '-show_entries', 'stream=width,height,r_frame_rate,avg_frame_rate,start_time,duration,nb_frames:format=duration',
+        '-of', 'json',
+        video_path,
     ]
 
     result = subprocess.run(cmd, capture_output=True, text=True)
@@ -161,73 +212,196 @@ def info(video_path: str) -> Tuple[int, int, float, float]:
     if result.returncode != 0:
         raise RuntimeError(f"ffprobe failed: {result.stderr}")
 
-    lines = result.stdout.strip().split('\n')
+    payload = json.loads(result.stdout or '{}')
+    _PROBE_CACHE[key] = payload
 
-    w, h, fps_str,fps_avg = lines[0].split(',')
+    return payload
 
-    cmd2 = ['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', video_path]
-    duration = float(subprocess.check_output(cmd2).decode().strip())
 
-#     vfr_cmd = [
-#         'ffmpeg', '-i', video_path, 
-#         '-vf', 'vfrdet', 
-#         '-f', 'null', '-'
-#     ]
-#     vfr_result = subprocess.run(vfr_cmd, capture_output=True, text=True)
-    
-#     is_vfr = False
-#     vfr_match = re.search(r'VFR:(\d+\.\d+)', vfr_result.stderr)
-#     if vfr_match:
-#         vfr_score = float(vfr_match.group(1))
-  
-#         is_vfr = vfr_score > 0.0
+def _probe_stream_and_format(video_path: str) -> tuple[dict, dict]:
 
-    is_vfr = False
-    if fps_str != fps_avg:
-        is_vfr = True
+    payload = _probe_payload(video_path)
+    streams = payload.get('streams', [])
 
-    if '/' in fps_str:
-        num, den = fps_str.split('/')
-        fps = float(num) / float(den)
+    if not streams:
+        raise RuntimeError(f"No video stream found: {video_path}")
 
+    stream = streams[0]
+    fmt = payload.get('format', {})
+
+    return stream, fmt
+
+
+def _parse_nb_frames(stream: dict) -> int | None:
+
+    nb_frames_raw = stream.get('nb_frames', None)
+
+    try:
+        nb_frames = int(nb_frames_raw) if nb_frames_raw not in (None, 'N/A') else None
+
+    except Exception:
+        nb_frames = None
+
+    if nb_frames is None or nb_frames <= 0:
+        return None
+
+    return nb_frames
+
+
+def _compute_stream_duration(stream: dict, fmt: dict, fps: float) -> float:
+
+    stream_start = _safe_float(stream.get('start_time', 0.0), 0.0)
+    stream_duration = _safe_float(stream.get('duration', 0.0), 0.0)
+    format_duration = _safe_float(fmt.get('duration', 0.0), 0.0)
+    nb_frames = _parse_nb_frames(stream)
+
+    if nb_frames is not None and fps > 0:
+        return nb_frames / fps
+
+    if stream_duration > 0.0:
+        return stream_duration
+
+    if format_duration > 0.0 and stream_start > 0.0:
+        return max(0.0, format_duration - stream_start)
+
+    return format_duration
+
+
+def info(video_path: str) -> Tuple[int, int, float, float, bool]:
+
+    stream, fmt = _probe_stream_and_format(video_path)
+
+    w = int(stream.get('width', 0) or 0)
+    h = int(stream.get('height', 0) or 0)
+
+    fps_str = str(stream.get('r_frame_rate', '0/0'))
+    fps_avg_str = str(stream.get('avg_frame_rate', '0/0'))
+
+    fps_r = _ratio_to_float(fps_str)
+    fps_avg = _ratio_to_float(fps_avg_str)
+    fps = fps_r if fps_r > 0 else fps_avg
+
+    is_vfr = fps_str != fps_avg_str
+    duration = _compute_stream_duration(stream, fmt, fps)
+
+    return w, h, normalize_fps(fps), duration, is_vfr
+
+def _video_stream_start_time(video_path: str) -> float:
+
+    stream, _ = _probe_stream_and_format(video_path)
+
+    return _safe_float(stream.get('start_time', 0.0), 0.0)
+
+
+def _scan_frame_count(video_path: str, mode: str) -> int | None:
+
+    path_key, mtime_ns, size = _probe_cache_key(video_path)
+    cache_key = (path_key, mtime_ns, size, mode)
+    cached = _FRAME_SCAN_CACHE.get(cache_key)
+
+    if cached is not None:
+        return cached
+
+    if mode == 'packets':
+        cmd = [
+            'ffprobe', '-v', 'error',
+            '-count_packets',
+            '-select_streams', 'v:0',
+            '-show_entries', 'stream=nb_read_packets',
+            '-of', 'default=noprint_wrappers=1:nokey=1',
+            video_path,
+        ]
+    elif mode == 'frames':
+        cmd = [
+            'ffprobe', '-v', 'error',
+            '-count_frames',
+            '-select_streams', 'v:0',
+            '-show_entries', 'stream=nb_read_frames',
+            '-of', 'default=noprint_wrappers=1:nokey=1',
+            video_path,
+        ]
     else:
-        fps = float(fps_str)
-
-    return int(w), int(h), normalize_fps(fps), duration, is_vfr
-
-def frame_count(video_path: str) -> int:
-
-    cmd = [
-
-        'ffprobe', '-v', 'error',
-        '-count_frames',
-        '-select_streams', 'v:0',
-        '-show_entries', 'stream=nb_read_frames',
-        '-of', 'default=noprint_wrappers=1:nokey=1',
-        video_path,
-    ]
+        raise RuntimeError(f"Unsupported frame scan mode: {mode}")
 
     result = subprocess.run(cmd, capture_output=True, text=True)
 
     if result.returncode != 0:
-        raise RuntimeError(f"ffprobe frame count failed: {result.stderr}")
+        return None
 
     raw = (result.stdout or '').strip()
-    count = int(raw)
+
+    try:
+        count = int(raw)
+
+    except Exception:
+        return None
+
+    if count <= 0:
+        return None
+
+    _FRAME_SCAN_CACHE[cache_key] = count
 
     return count
 
+
+def frame_count(video_path: str, strict: bool = False) -> int:
+
+    stream, fmt = _probe_stream_and_format(video_path)
+    nb_frames = _parse_nb_frames(stream)
+
+    if nb_frames is not None:
+        return nb_frames
+
+    fps_str = str(stream.get('r_frame_rate', '0/0'))
+    fps_avg_str = str(stream.get('avg_frame_rate', '0/0'))
+    is_vfr = fps_str != fps_avg_str
+
+    fps_r = _ratio_to_float(fps_str)
+    fps_avg = _ratio_to_float(fps_avg_str)
+    fps = fps_r if fps_r > 0 else fps_avg
+    duration = _compute_stream_duration(stream, fmt, fps)
+
+    if not strict and not is_vfr and duration > 0.0 and fps > 0.0:
+        est = int(round(duration * fps))
+
+        if est > 0:
+            return est
+
+    packet_count = _scan_frame_count(video_path, mode='packets')
+
+    if packet_count is not None:
+        return packet_count
+
+    frame_scan_count = _scan_frame_count(video_path, mode='frames')
+
+    if frame_scan_count is not None:
+        return frame_scan_count
+
+    if duration > 0.0 and fps > 0.0:
+        est = int(round(duration * fps))
+
+        if est > 0:
+            return est
+
+    raise RuntimeError(f"Unable to determine frame count for: {video_path}")
+
 def norm_video(source_video, w = None, h = None, fps = None, progress_prefix: str = "[normalize] ", video_args = None) -> str:
 
-    wi, hi, _, duration, is_vfr = info(source_video)
-    enc = encoder_args()
+    wi, hi, ifps, duration, is_vfr = info(source_video)
+
+
+    if ifps == 60:
+        print()
+        print(f"[normalize - skipped], Fps = {ifps}")
+        return source_video
 
     if is_vfr or video_args.normalize_input or fps is not None:
-        print(f"-- norm_video: VRF = {is_vfr} - {fps}, normalize_input = {video_args.normalize_input}")
+        print(f" -- VFR = {is_vfr}, normalize_input = {video_args.normalize_input}")
         source_path = Path(source_video).expanduser().resolve()
         output_video = str(source_path.with_name(f"{source_path.stem}_normed.mp4"))
 
         fps = aorb(fps, 60)
+        enc = encoder_args(fps)
 
         if w is not None:
             wi = w
@@ -238,6 +412,7 @@ def norm_video(source_video, w = None, h = None, fps = None, progress_prefix: st
             'ffmpeg', '-y', '-hwaccel', 'auto',
             '-i', source_video,
             '-filter_complex', f'[0:v]fps={fps},setpts=N/({fps}*TB),scale=w={wi}:h={hi}:flags=lanczos:threads=0',
+            '-r', str(fps),
             *enc,
             output_video,
         ]
@@ -246,8 +421,10 @@ def norm_video(source_video, w = None, h = None, fps = None, progress_prefix: st
 
         if rc != 0:
             raise RuntimeError(
+
                 "Input normalization failed.\n\nFFmpeg tail:\n"
                 + ''.join(stderr_text.splitlines(True)[-40:])
+
             )
 
         if not os.path.exists(output_video):
@@ -258,11 +435,11 @@ def norm_video(source_video, w = None, h = None, fps = None, progress_prefix: st
         print()
         print(f"[normalize - skipped], normalize_input = {video_args.normalize_input}")
         return source_video
-    
+
 def resize_video(source_video: str, output_video: str, width: int, height: int, progress_prefix: str = "[resize] ") -> str:
 
-    enc = encoder_args()
     fps = info(source_video)[2]
+    enc = encoder_args(fps)
 
     os.makedirs(os.path.dirname(os.path.abspath(output_video)) or '.', exist_ok=True)
 
@@ -279,6 +456,7 @@ def resize_video(source_video: str, output_video: str, width: int, height: int, 
 
     if rc != 0:
         raise RuntimeError(
+
             "Video resize failed.\n\nFFmpeg tail:\n"
             + ''.join(stderr_text.splitlines(True)[-40:])
         )
@@ -290,10 +468,10 @@ def resize_video(source_video: str, output_video: str, width: int, height: int, 
 
 def concat_video(video_list: list[str], output_path: str, fps: float | None = None) -> str:
 
-    fps = info(video_list[0])[2]
+    fps = aorb(fps, info(video_list[0])[2])
     BATCH_SIZE = 50
     n = len(video_list)
-    enc = encoder_args()
+    enc = encoder_args(fps)
 
     if n > BATCH_SIZE:
 
@@ -308,6 +486,7 @@ def concat_video(video_list: list[str], output_path: str, fps: float | None = No
                 concat_video(batch_files, batch_out, fps=fps)
 
             return concat_video(temp_batches, output_path, fps=fps)
+
         finally:
             for tb in temp_batches:
                 if os.path.exists(tb):
@@ -340,10 +519,11 @@ def concat_video(video_list: list[str], output_path: str, fps: float | None = No
     filter_parts = []
 
     for i in range(n):
-        filter_parts.append(f"[{i}:v]format=yuv420p[v{i}]")
+        filter_parts.append(f"[{i}:v]setpts=PTS-STARTPTS,fps={fps},format=yuv420p[v{i}]")
 
     concat_inputs = "".join(f"[v{i}]" for i in range(n))
-    filter_parts.append(f"{concat_inputs}concat=n={n}:v=1:a=0[outv]")
+    filter_parts.append(f"{concat_inputs}concat=n={n}:v=1:a=0,setpts=PTS-STARTPTS[outv]")
+
     filter_complex = ";".join(filter_parts)
     filter_file = os.path.join(common_dir, "_concat_filter.txt")
 
@@ -355,7 +535,9 @@ def concat_video(video_list: list[str], output_path: str, fps: float | None = No
         '-map', '[outv]',
         *enc,
         rel_output,
+
     ]
+
     rc, stderr_text = ffmpeg_progress(cmd_inline, cwd=common_dir)
 
     if rc != 0 and ('The filename or extension is too long' in stderr_text or 'WinError 206' in stderr_text):
@@ -381,6 +563,15 @@ def concat_video(video_list: list[str], output_path: str, fps: float | None = No
 
     if not os.path.exists(abs_output):
         raise RuntimeError(f"Concat output not created: {output_path}")
+
+    expected_frames = sum(frame_count(v, strict=True) for v in abs_vid)
+    output_frames = frame_count(abs_output, strict=True)
+
+    if output_frames != expected_frames:
+        raise RuntimeError(
+            "Concat frame drift detected. "
+            f"expected={expected_frames}, got={output_frames}"
+        )
 
     if os.path.exists(filter_file):
         os.remove(filter_file)
@@ -420,6 +611,7 @@ def eye_frames(video_path: str, timestamps: list[float], output_dir: str, height
     return output_paths
 
 def extract_segment_frames(
+
     stereo_video: str,
     start: float,
     end: float,
@@ -430,11 +622,10 @@ def extract_segment_frames(
     left_video_out: str,
     right_video_out: str,
     progress_prefix: str = "",
+
 ) -> tuple[str, str, str, str]:
 
     fps = info(stereo_video)[2]
-
-    enc = encoder_args()
 
     start_frame = round(start * fps)
     end_frame = round(end * fps)
@@ -447,6 +638,13 @@ def extract_segment_frames(
     keyframe_seek = max(0.0, aligned_start - 2.0)
     fine_seek = aligned_start - keyframe_seek
     seg_dur = frames / fps
+
+    stream_start = _video_stream_start_time(stereo_video)
+
+    if keyframe_seek > 0.0:
+        input_seek = keyframe_seek + max(0.0, stream_start)
+    else:
+        input_seek = 0.0
 
     orig_eye = height
     target_eye = target_height
@@ -462,7 +660,7 @@ def extract_segment_frames(
 
     filter_complex = (
 
-        f"[0:v]trim=start={fine_seek}:duration={seg_dur},setpts=PTS-STARTPTS,split=2[full][toscale];"
+        f"[0:v]setpts=PTS-STARTPTS,trim=start={fine_seek}:duration={seg_dur},setpts=PTS-STARTPTS,fps={fps},split=2[full][toscale];"
         f"[full]split=2[fullL][fullR];"
         f"[fullL]select=eq(n\\,0),{frame_left}[frame_left];"
         f"[fullR]select=eq(n\\,0),{frame_right}[frame_right];"
@@ -476,26 +674,38 @@ def extract_segment_frames(
         "-hide_banner",
     ]
 
+    segment_encode_args = [
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-pix_fmt", "yuv420p",
+        "-r", f"{fps:.6f}",
+        "-fps_mode", "cfr",
+        "-movflags", "+faststart",
+        "-an",
+    ]
+
     left_output_args = [
         "-map", "[video_left]", "-frames:v", str(frames),
+        *segment_encode_args,
         left_video_out,
     ]
     right_output_args = [
         "-map", "[video_right]", "-frames:v", str(frames),
+        *segment_encode_args,
         right_video_out,
     ]
 
     cmd.extend([
 
-        "-ss", str(keyframe_seek),
+        "-ss", str(input_seek),
         "-i", stereo_video,
         "-filter_complex", filter_complex,
         "-map", "[frame_left]", "-frames:v", "1", "-compression_level", "1", left_frame_out,
         "-map", "[frame_right]", "-frames:v", "1", "-compression_level", "1", right_frame_out,
         *left_output_args,
         *right_output_args,
-        *enc,
     ])
+
     process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
     stderr_lines = []
@@ -512,8 +722,8 @@ def extract_segment_frames(
         tail = "".join(stderr_lines[-60:])
         raise RuntimeError(f"Segment extraction failed.\n\nFFmpeg tail:\n{tail}")
 
-    left_count = frame_count(left_video_out)
-    right_count = frame_count(right_video_out)
+    left_count = frame_count(left_video_out, strict=True)
+    right_count = frame_count(right_video_out, strict=True)
 
     print(f"{progress_prefix} Frame check: left={left_count} right={right_count} fps={fps:.6f}")
 
@@ -522,6 +732,13 @@ def extract_segment_frames(
         raise RuntimeError(
             "Segment frame-count mismatch detected. "
             f"left={left_count}, right={right_count}, "
+            f"start={start:.6f}, end={end:.6f}, fps={fps:.6f}"
+        )
+
+    if left_count != frames or right_count != frames:
+        raise RuntimeError(
+            "Segment frame drift detected. "
+            f"expected={frames}, left={left_count}, right={right_count}, "
             f"start={start:.6f}, end={end:.6f}, fps={fps:.6f}"
         )
 
@@ -546,34 +763,74 @@ def mask_overlay(source_video: str, mask_video: str, output_path: str, backgroun
     resolved_path = overlay_path(source_video, output_path)
     src_w, src_h, src_fps, src_duration, is_vfr = info(source_video)
     mask_w, mask_h, mask_fps, mask_duration, is_vfr = info(mask_video)
-     
+
     if src_fps != mask_fps:
         print(f"-- Fps does not match: src_fps={src_fps:.6f} mask_fps={mask_fps:.6f}")
         source_video = norm_video(source_video, fps=src_fps, video_args=video_args)
         mask_video = norm_video(mask_video, fps=src_fps, video_args=video_args)
 
-    duration = src_duration
+        src_w, src_h, src_fps, src_duration, is_vfr = info(source_video)
+        mask_w, mask_h, mask_fps, mask_duration, is_vfr = info(mask_video)
+
+    duration = min(src_duration, mask_duration)
     fps = src_fps
 
     if (src_w, src_h) != (mask_w, mask_h):
 
-        orig_filter = f"format=rgba,scale={src_w}:{src_h}:flags=lanczos"
-        mask_filter = f"format=gray,scale={src_w}:{src_h}:flags=lanczos,lut=a=val/255"
-        bg_filter = f"format=rgba,scale={src_w}:{src_h}:flags=lanczos"
+        orig_filter = f"setpts=PTS-STARTPTS,format=rgb24,scale={src_w}:{src_h}:flags=lanczos"
+        mask_filter = f"setpts=PTS-STARTPTS,format=gray,scale={src_w}:{src_h}:flags=lanczos"
+        bg_filter = f"setpts=PTS-STARTPTS,format=rgba,scale={src_w}:{src_h}:flags=lanczos"
 
     else:
-        orig_filter = 'format=rgba'
-        mask_filter = 'format=gray,lut=a=val/255'
-        bg_filter = 'format=rgba'
+        orig_filter = 'setpts=PTS-STARTPTS,format=rgb24'
+        mask_filter = 'setpts=PTS-STARTPTS,format=gray'
+        bg_filter = 'setpts=PTS-STARTPTS,format=rgba'
 
-    filter_complex = (
+    despill_mode = str(getattr(video_args, 'despill_mode', 'off') if video_args is not None else 'off').lower()
+    despill_strength = float(getattr(video_args, 'despill_strength', 1.0) if video_args is not None else 1.0)
+    despill_edge_threshold = float(getattr(video_args, 'despill_edge_threshold', 0.35) if video_args is not None else 0.35)
 
-        f"[0:v]{orig_filter}[orig];"
-        f"[1:v]{mask_filter}[mask_alpha];"
-        f"[orig][mask_alpha]alphamerge[alphaed];"
-        f"[2:v]{bg_filter}[bg];"
-        f"[bg][alphaed]overlay=shortest=1:format=auto[out]"
-    )
+    despill_strength = max(0.0, min(1.0, despill_strength))
+    despill_edge_threshold = max(0.0, min(1.0, despill_edge_threshold))
+
+    if despill_mode in {'edge', 'subject'} and despill_strength > 0.0:
+
+        edge_luma = int(round(despill_edge_threshold * 255.0))
+        edge_luma = max(1, min(254, edge_luma))
+
+        if despill_strength >= 1.0:
+            g_expr = "min(g(X,Y)\\,(r(X,Y)+b(X,Y))/2)"
+        else:
+            keep = 1.0 - despill_strength
+            g_expr = (
+                f"g(X,Y)*{keep:.6f}+"
+                f"min(g(X,Y)\\,(r(X,Y)+b(X,Y))/2)*{despill_strength:.6f}"
+            )
+
+        if despill_mode == 'edge':
+            gate_expr = f"if(between(val\\,1\\,{edge_luma})\\,255\\,0)"
+        else:
+            gate_expr = "if(gt(val\\,0)\\,255\\,0)"
+
+        filter_complex = (
+            f"[0:v]{orig_filter}[orig_rgb];"
+            f"[orig_rgb]geq=r='r(X,Y)':g='{g_expr}':b='b(X,Y)'[orig_despill];"
+            f"[1:v]{mask_filter},split=2[mask_alpha][mask_gate_src];"
+            f"[mask_gate_src]lut=y='{gate_expr}'[mask_gate];"
+            f"[orig_rgb][orig_despill][mask_gate]maskedmerge[orig_clean];"
+            f"[orig_clean][mask_alpha]alphamerge[alphaed];"
+            f"[2:v]{bg_filter}[bg];"
+            f"[bg][alphaed]overlay=shortest=1:format=auto[out]"
+        )
+
+    else:
+        filter_complex = (
+            f"[0:v]{orig_filter}[orig_rgb];"
+            f"[1:v]{mask_filter}[mask_alpha];"
+            f"[orig_rgb][mask_alpha]alphamerge[alphaed];"
+            f"[2:v]{bg_filter}[bg];"
+            f"[bg][alphaed]overlay=shortest=1:format=auto[out]"
+        )
 
     os.makedirs(os.path.dirname(os.path.abspath(resolved_path)) or '.', exist_ok=True)
 
@@ -582,14 +839,14 @@ def mask_overlay(source_video: str, mask_video: str, output_path: str, backgroun
         'ffmpeg', '-y', '-hwaccel', 'auto',
         '-i', source_video,
         '-i', mask_video,
-        '-f', 'lavfi', '-i', f'color=c={background_color}:s={src_w}x{src_h}:d={src_duration}:r={src_fps}',
+        '-f', 'lavfi', '-i', f'color=c={background_color}:s={src_w}x{src_h}:d={duration}:r={src_fps}',
         '-filter_complex', filter_complex,
         '-map', '[out]',
-        '-map', '0:a?',
-     
+        '-t', str(duration),
+
     ]
 
-    cmd.extend(encoder_args())
+    cmd.extend(encoder_args(src_fps))
     cmd.append(resolved_path)
 
     rc, stderr_text = ffmpeg_progress(cmd)
@@ -601,9 +858,34 @@ def mask_overlay(source_video: str, mask_video: str, output_path: str, backgroun
 
 def stereo_video(left_video: str, right_video: str, output_path: str) -> str:
 
-    enc = encoder_args()
+    _, _, left_fps, left_duration, _ = info(left_video)
+    _, _, right_fps, right_duration, _ = info(right_video)
 
-    filter_complex = "[0:v][1:v]hstack=inputs=2[out]"
+    left_frames = frame_count(left_video, strict=True)
+    right_frames = frame_count(right_video, strict=True)
+
+    if left_frames != right_frames:
+        raise RuntimeError(
+            "Stereo input frame-count mismatch. "
+            f"left={left_frames}, right={right_frames}"
+        )
+
+    if abs(left_fps - right_fps) > 1e-6:
+        raise RuntimeError(
+            "Stereo input fps mismatch. "
+            f"left={left_fps:.6f}, right={right_fps:.6f}"
+        )
+
+    fps = left_fps
+    duration = min(left_duration, right_duration)
+
+    enc = encoder_args(fps)
+
+    filter_complex = (
+        f"[0:v]setpts=PTS-STARTPTS,fps={fps},format=yuv420p[left];"
+        f"[1:v]setpts=PTS-STARTPTS,fps={fps},format=yuv420p[right];"
+        "[left][right]hstack=inputs=2,setpts=PTS-STARTPTS[out]"
+    )
 
     cmd = [
 
@@ -612,20 +894,35 @@ def stereo_video(left_video: str, right_video: str, output_path: str) -> str:
         '-i', right_video,
         '-filter_complex', filter_complex,
         '-map', '[out]',
+        '-frames:v', str(left_frames),
+        '-t', str(duration),
         *enc,
         output_path,
     ]
 
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    rc, stderr_text = ffmpeg_progress(cmd)
 
-    if result.returncode != 0:
-        raise RuntimeError(f"Stereo stitching failed: {result.stderr}")
+    if rc != 0:
+        tail = ''.join(stderr_text.splitlines(True)[-60:])
+        raise RuntimeError(f"Stereo stitching failed.\n\nFFmpeg tail:\n{tail}")
+
+    if not os.path.exists(output_path):
+        raise RuntimeError(f"Stereo output not created: {output_path}")
+
+    out_frames = frame_count(output_path, strict=True)
+
+    if out_frames != left_frames:
+        raise RuntimeError(
+            "Stereo frame drift detected. "
+            f"expected={left_frames}, got={out_frames}"
+        )
 
     return output_path
 
 def read_frame_from_videos(frame_root):
 
     if frame_root.endswith(VIDEO_EXTENSIONS):
+
         video_name = os.path.basename(frame_root)[:-4]
         container = av.open(frame_root)
         stream = container.streams.video[0]
@@ -656,7 +953,7 @@ def _ceil_to(n: int, base: int) -> int:
     return ((n + base - 1) // base) * base
 
 def get_circle_mask(size: int) -> str:
-    
+
     import tempfile
     from pathlib import Path
 
@@ -672,12 +969,11 @@ def get_circle_mask(size: int) -> str:
         draw = ImageDraw.Draw(circle_img)
         draw.ellipse([0, 0, size_hr - 1, size_hr - 1], fill=255)
 
-        circle_img = circle_img.resize((size, size), Image.Resampling.BILINEAR)
+        circle_img = circle_img.resize((size, size), Image.Resampling.LANCZOS)
         circle_img = circle_img.filter(ImageFilter.GaussianBlur(radius=1))
         circle_img.save(str(mask_path))
 
     except ImportError:
-
         cmd = [
 
             "ffmpeg", "-y", "-f", "lavfi", "-i",
@@ -686,21 +982,19 @@ def get_circle_mask(size: int) -> str:
             "geq=lum='if(lte(pow(X-W/2,2)+pow(Y-H/2,2),pow(min(W,H)/2,2)),255,0)'",
             "-frames:v", "1",
             str(mask_path),
-            
         ]
+
         subprocess.run(cmd, capture_output=True, text=True)
 
     return str(mask_path)
 
 def discover_input_pairs(input_path: str) -> list[tuple[Path, Path]]:
-
     path = Path(input_path).expanduser().resolve()
 
     if not path.exists():
         raise FileNotFoundError(f"Input path not found: {input_path}")
 
     if path.is_file():
-
         if path.suffix.lower() not in VIDEO_EXTENSIONS:
             raise RuntimeError(f"Unsupported video file: {path}")
 
@@ -708,16 +1002,14 @@ def discover_input_pairs(input_path: str) -> list[tuple[Path, Path]]:
 
         if not mask_path.exists():
             raise FileNotFoundError(f"Mask not found for {path}: expected {mask_path}")
-        
+
         return [(path, mask_path)]
 
     if not path.is_dir():
         raise RuntimeError(f"Input path is not a file or folder: {input_path}")
 
     pairs: list[tuple[Path, Path]] = []
-
     for candidate in sorted(path.rglob('*')):
-
         if not candidate.is_file() or candidate.suffix.lower() not in VIDEO_EXTENSIONS:
             continue
 
@@ -725,7 +1017,6 @@ def discover_input_pairs(input_path: str) -> list[tuple[Path, Path]]:
             continue
 
         mask_path = candidate.with_name(f"{candidate.stem}_mask{candidate.suffix}")
-
         if mask_path.exists():
             pairs.append((candidate.resolve(), mask_path.resolve()))
 
@@ -741,12 +1032,12 @@ def create_alpha_pack_command(
     video_dims: tuple[int, int],
 ) -> list[str]:
 
+    src_fps = info(video_path)[2]
     video_w, video_h = video_dims
     out_h = _ceil_to(video_h, 32)
 
     if video_w == 2 * video_h:
         out_w = 2 * out_h
-
     else:
         out_w = _ceil_to(video_w, 32)
 
@@ -761,7 +1052,6 @@ def create_alpha_pack_command(
         erosion_threshold = 32768
         contrast = 2.0
         gamma = 1.2
-
     else:
         erosion_threshold = 65535
         contrast = 2.5
@@ -821,7 +1111,7 @@ def create_alpha_pack_command(
 
     cmd: list[str] = [
 
-        'ffmpeg', '-y', '-hwaccel', 'auto',
+        'ffmpeg', '-y', '-hide_banner',
         "-filter_threads", "0",
         "-threads", "0",
         "-i", video_path,
@@ -831,29 +1121,20 @@ def create_alpha_pack_command(
         "-filter_complex", filter_complex,
         "-map", "[out]",
         "-map", "0:a?",
+        "-shortest",
+        *encoder_args(src_fps),
+        output_path,
     ]
 
-    cmd.extend(encoder_args())
-    cmd.append(output_path)
-
-    rc, stderr_text = ffmpeg_progress(cmd)
-
-    if rc != 0:
-        raise RuntimeError(f"Mask overlay failed.\n\nFFmpeg tail:\n{''.join(stderr_text.splitlines(True)[-40:])}")
-
-    return output_path
-
-    #     *encoder_args(),
-    #     output_path,
-    # ]
-
-    # return cmd
+    return cmd
 
 def pack_video(
+
     video_path: str,
     mask_path: str,
     output_path: str | None = None,
     sync_frames = None,
+    progress_prefix: str = "[ALPHA] "
 
 ) -> int:
 
@@ -869,14 +1150,13 @@ def pack_video(
     synced_tmp = None
 
     if sync_frames is not None:
-        
-        _, _, fps, duration, is_vfr = info(mask_path)
+        fps = info(mask_path)[2]
         print(f"Syncing mask by {sync_frames} frame(s)...")
         synced_tmp = sync_mask_to_video(mask_path, fps=fps, frame_offset=sync_frames)
         actual_mask = synced_tmp
 
-    video_w, video_h, fps, duration, is_vfr  = info(video_path)
-    mask_w, mask_h, fps, duration, is_vfr  = info(actual_mask)
+    video_w, video_h, *_ = info(video_path)
+    mask_w, mask_h, *_ = info(actual_mask)
 
     encoder = "hevc_nvenc"
 
@@ -884,19 +1164,36 @@ def pack_video(
     print(f"Encoder: {encoder}")
     print(f"Mask: {mask_w}x{mask_h}")
 
-    output_path = create_alpha_pack_command(video_path, actual_mask, output_path, (video_w, video_h))
+    cmd = create_alpha_pack_command(video_path, actual_mask, output_path, (video_w, video_h))
+    rc, stderr_text = ffmpeg_progress(cmd, progress_prefix=progress_prefix)
+
+    if rc != 0:
+        raise RuntimeError(
+
+            "Alpha failed.\n\nFFmpeg tail:\n"
+            + ''.join(stderr_text.splitlines(True)[-40:])
+        )
+
+    if not os.path.exists(output_path):
+        raise RuntimeError(f"Alpha failed: {output_path}")
+
+    if synced_tmp and os.path.exists(synced_tmp):
+        os.remove(synced_tmp)
+
+    print(f" Failed to pack {video_path}")
 
     return output_path
-
-ALPHA_PACKER_PIPELINE_MODE = '__PIPELINE__'
 
 def packer(input_path: str, sync_frames=None) -> int:
     input_pairs = discover_input_pairs(input_path)
 
     processed = []
+
     for index, (video_path, mask_path) in enumerate(input_pairs, 1):
+
         print(f"[{index}/{len(input_pairs)}] Processing: {video_path.name} <- {mask_path.name}")
-        rc = pack_video(str(video_path), str(mask_path), sync_frames=sync_frames)
+        rc = pack_video(str(video_path), str(mask_path), sync_frames=None)
+
         if rc == 0:
             processed.append((str(video_path), str(mask_path)))
         print()
@@ -905,9 +1202,6 @@ def packer(input_path: str, sync_frames=None) -> int:
         print(" No files were packed successfully")
         return 1
 
-    print("=" * 60)
-    print("Batch packing complete")
-    print("=" * 60)
     for video_path, mask_path in processed:
         print(f"{video_path} <- {mask_path}")
 
@@ -930,19 +1224,17 @@ def sync_mask_to_video(mask_path: str, fps: float, frame_offset: int = 0) -> str
     synced_path = f"{base}_synced{ext}"
 
     cmd = [
+
         'ffmpeg', '-y',
         '-i', mask_path,
         '-vf', vf,
-
-        *encoder_args(),
+        *encoder_args(fps),
         synced_path,
     ]
 
     ffmpeg_progress(cmd)
 
     return synced_path
-
-######################## fisheye180
 
 FISHEYE180_PIPELINE_MODE = '__NO_MASK__'
 
@@ -995,7 +1287,7 @@ def fisheye180(input_video: str, mask_path: str | None = None) -> str:
         '-filter_complex', filter_complex,
         '-map', '[out]',
         '-map', '0:a?',
-        *encoder_args(),
+        *encoder_args(fps),
         output_video,
     ])
 
@@ -1008,6 +1300,7 @@ def fisheye180(input_video: str, mask_path: str | None = None) -> str:
     return output_video
 
 def run_fisheye180_mode(input_path: str, mask_path: str | None = None) -> int:
+
     video_paths = _input_videos(input_path)
     outputs: list[str] = []
 

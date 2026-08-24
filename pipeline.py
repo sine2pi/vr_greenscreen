@@ -1,53 +1,27 @@
-import argparse, shutil, gc, os, sys, functools, time, torch, cv2, imageio, numpy as np, tqdm, random
-from dataclasses import dataclass
-from enum import Enum
-from pathlib import Path
-from PIL import Image
-from typing import List
-import torch.nn.functional as F
-from ffmpeg import  norm_video, info, concat_video, extract_segment_frames, mask_overlay, stereo_video, read_frame_from_videos, timestamp, format_timestamp, FISHEYE180_PIPELINE_MODE, ALPHA_PACKER_PIPELINE_MODE, packer, run_fisheye180_mode, pack_video
-from sammy import sam3_masks
-
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-def _setup_tf32() -> None:
-    if torch.cuda.is_available():
-        device_props = torch.cuda.get_device_properties(0)
-        if device_props.major >= 8:
-            torch.backends.cuda.matmul.allow_tf32 = True
-            torch.backends.cudnn.allow_tf32 = True
-_setup_tf32()
-
-class SegmentType(Enum):
-    MASK = 'mask'
-
-@dataclass
-class SegmentInfo:
-    index: int
-    start_time: float
-    end_time: float
-    seg_type: SegmentType
-    left_frame_path: str = ''
-    right_frame_path: str = ''
-    left_mask_path: str = ''
-    right_mask_path: str = ''
-    video_path: str = ''
-
-ENCODER = 'hevc_nvenc'
-IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.JPG', '.JPEG', '.PNG')
-VIDEO_EXTENSIONS = ('.mp4', '.mov', '.avi', '.MP4', '.MOV', '.AVI')
-
-SAM3_MAX = 1008
-BATCH_SIZE = 50
-
-import gc, argparse, os, sys, functools, time, torch, cv2, imageio, numpy as np, tqdm, random
+import gc, argparse, os, sys, functools, time, torch, cv2, imageio, numpy as np, tqdm, random, shutil, torch.nn.functional as F
 from pathlib import Path
 from PIL import Image
 from typing import Callable, List
-import torch.nn.functional as F
 from dataclasses import dataclass
 from enum import Enum
 from omegaconf import open_dict
-from ffmpeg import stereo_video, read_frame_from_videos
+from sammy import sam3_masks
+from scipy.ndimage import median_filter, binary_fill_holes
+from ffmpeg import (
+    stereo_video,
+    read_frame_from_videos,
+    FISHEYE180_PIPELINE_MODE,
+    norm_video,
+    info,
+    format_timestamp,
+    frame_count,
+    extract_segment_frames,
+    concat_video,
+    packer,
+    mask_overlay,
+    run_fisheye180_mode,
+    frame_count
+)
 
 class SegmentType(Enum):
     MASK = 'mask'
@@ -70,8 +44,6 @@ _matanyone_tqdm_lines = 1
 ENCODER = 'hevc_nvenc'
 IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.JPG', '.JPEG', '.PNG')
 VIDEO_EXTENSIONS = ('.mp4', '.mov', '.avi', '.MP4', '.MOV', '.AVI')
-
-SAM3_MAX = 1008
 BATCH_SIZE = 50
 
 MATANYONE_V1 = "https://github.com/pq-yang/MatAnyone/releases/download/v1.0.0/matanyone.pth"
@@ -80,12 +52,10 @@ MATANYONE_V2 = "https://github.com/pq-yang/MatAnyone2/releases/download/v1.0.0/m
 def _update_status(op_num: int, total_ops: int, label: str, duration: float) -> None:
 
     global _matanyone_is_first_status
-
     if not _matanyone_is_first_status:
         sys.stderr.write(f"\033[{1 + _matanyone_tqdm_lines}A")
 
     sys.stderr.write(f"\r[{op_num}/{total_ops}] {label} ({duration:.1f}s)\033[K\n")
-
     for i in range(_matanyone_tqdm_lines):
         sys.stderr.write("\r\033[K")
 
@@ -148,7 +118,6 @@ def _load_matanyone_runtime(version: str = 'v2'):
             torch.hub.download_url_to_file(pretrain_model_url, str(ckpt_path), progress=False)
 
         model = get_matanyone2_model(str(ckpt_path), device)
-
         return model, device, InferenceCore, 'v2'
 
     raise ValueError(f"Unsupported MatAnyone version: {version}")
@@ -177,7 +146,6 @@ def _apply_matanyone_config_overrides(matanyone_model, job: dict, *, verbose: bo
 
             if cfg.long_term.min_mem_frames > max_mem_frames:
                 cfg.long_term.min_mem_frames = max_mem_frames
-
             cfg.long_term.max_mem_frames = max_mem_frames
 
     if verbose:
@@ -195,43 +163,144 @@ def _apply_temporal_median_filter(phas: np.ndarray, window: int) -> np.ndarray:
 
     if window <= 1:
         return phas
-
-    try:
-        from scipy.ndimage import median_filter
-
-    except Exception as exc:
-        raise RuntimeError(
-            "Temporal median filtering requires scipy. "
-            "Install scipy or set --temporal-median-window 0."
-        ) from exc
-
     return median_filter(phas, size=(window, 1, 1, 1), mode='nearest-exact').astype(np.uint8)
 
 def str_to_list(value):
     return list(map(int, value.split(',')))
 
+def _normalize_kernel_size(size: int) -> int:
+    size = max(1, int(size))
+
+    if size % 2 == 0:
+        size += 1
+
+    return size
+
+def _morph_kernel(size: int, shape: str) -> np.ndarray:
+    size = _normalize_kernel_size(size)
+    shape = str(shape or 'ellipse').lower()
+
+    if shape == 'cross':
+        shape_flag = cv2.MORPH_CROSS
+
+    elif shape == 'rect':
+        shape_flag = cv2.MORPH_RECT
+
+    else:
+        shape_flag = cv2.MORPH_ELLIPSE
+
+    return cv2.getStructuringElement(shape_flag, (size, size))
+
+def expand_mask(mask: np.ndarray, expand: int, tapered_corners: bool, flip_input: bool, blur_radius: float, incremental_expandrate: float, lerp_alpha: float, decay_factor: float, fill_holes: bool = False) -> np.ndarray:
+
+    _ = incremental_expandrate
+    _ = lerp_alpha
+    _ = decay_factor
+
+    mask_f = np.asarray(mask, dtype=np.float32)
+
+    if flip_input:
+        mask_f = 255.0 - mask_f
+
+    binary = (mask_f > 127).astype(np.uint8) * 255
+
+    if int(expand) != 0 and binary.max() > 0:
+        kernel = _morph_kernel(3, 'cross' if tapered_corners else 'rect')
+
+        if expand > 0:
+            binary = cv2.dilate(binary, kernel, iterations=int(abs(expand)))
+        else:
+            binary = cv2.erode(binary, kernel, iterations=int(abs(expand)))
+
+    if fill_holes:
+        binary = (binary_fill_holes(binary > 127).astype(np.uint8) * 255)
+
+    output = binary.astype(np.float32)
+
+    if blur_radius > 0:
+        output = cv2.GaussianBlur(output, (0, 0), sigmaX=float(blur_radius), sigmaY=float(blur_radius))
+
+    return np.clip(output, 0.0, 255.0).astype(np.float32)
+
 def gen_dilate(alpha, min_kernel_size, max_kernel_size):
     kernel_size = random.randint(min_kernel_size, max_kernel_size)
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size,kernel_size))
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
     fg_and_unknown = np.array(np.not_equal(alpha, 0).astype(np.float32))
-    dilate = cv2.dilate(fg_and_unknown, kernel, iterations=1)*255
+    dilate = cv2.dilate(fg_and_unknown, kernel, iterations=1) * 255
     return dilate.astype(np.float32)
 
 def gen_erosion(alpha, min_kernel_size, max_kernel_size):
     kernel_size = random.randint(min_kernel_size, max_kernel_size)
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size,kernel_size))
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
     fg = np.array(np.equal(alpha, 255).astype(np.float32))
-    erode = cv2.erode(fg, kernel, iterations=1)*255
+    erode = cv2.erode(fg, kernel, iterations=1) * 255
     return erode.astype(np.float32)
+
+def refine_mask(mask: np.ndarray, dilate_px: int, erode_px: int, args: argparse.Namespace) -> np.ndarray:
+    mode = str(getattr(args, 'mask_refine_mode', 'legacy')).lower()
+    mask_u8 = np.clip(np.asarray(mask), 0, 255).astype(np.uint8)
+
+    if mode == 'legacy':
+
+        output = mask_u8.astype(np.float32)
+
+        if dilate_px > 0:
+            output = gen_dilate(output, dilate_px, dilate_px)
+
+        if erode_px > 0:
+            output = gen_erosion(output, erode_px, erode_px)
+
+        return output.astype(np.float32)
+
+    kernel_shape = str(getattr(args, 'mask_kernel_shape', 'ellipse')).lower()
+    close_px = int(getattr(args, 'mask_close_kernel', 0))
+    fill_holes = bool(getattr(args, 'mask_fill_holes', False))
+    feather_radius = float(getattr(args, 'mask_feather_radius', 0.0))
+
+    if mode == 'expand_static':
+        expand = int(dilate_px) - int(erode_px)
+
+        return expand_mask(
+            mask_u8,
+            expand=expand,
+            tapered_corners=(kernel_shape == 'cross'),
+            flip_input=False,
+            blur_radius=feather_radius,
+            incremental_expandrate=0.0,
+            lerp_alpha=1.0,
+            decay_factor=1.0,
+            fill_holes=fill_holes,
+        )
+
+    output = ((mask_u8 > 127).astype(np.uint8) * 255)
+
+    if dilate_px > 0:
+        output = cv2.dilate(output, _morph_kernel(dilate_px, kernel_shape), iterations=1)
+
+    if erode_px > 0:
+        output = cv2.erode(output, _morph_kernel(erode_px, kernel_shape), iterations=1)
+
+    if close_px > 0:
+        output = cv2.morphologyEx(output, cv2.MORPH_CLOSE, _morph_kernel(close_px, kernel_shape), iterations=1)
+
+    if fill_holes:
+        output = (binary_fill_holes(output > 127, size=3).astype(np.uint8) * 255)
+
+    output = output.astype(np.float32)
+
+    if feather_radius > 0:
+        output = cv2.GaussianBlur(output, (0, 0), sigmaX=feather_radius, sigmaY=feather_radius)
+
+    return np.clip(output, 0.0, 255.0).astype(np.float32)
 
 @torch.inference_mode()
 
-def _matanyone_process_segment(matanyone_model, device, inference_core_cls, job: dict) -> str:
+def _matanyone_process_segment(matanyone_model, device, inference_core_cls, job: dict, video_args) -> str:
 
     n_warmup = int(job.get('warmup', 6))
     input_path = job['input_path']
     mask_path = job['mask_path']
-    max_size = int(job.get('mask_height', 1008))
+    max_size = int(job.get('mask_height', video_args.mask_height))
     output_path = job['output_path']
     r_erode = int(job.get('erode', 0))
     r_dilate = int(job.get('dilate', 0))
@@ -240,15 +309,8 @@ def _matanyone_process_segment(matanyone_model, device, inference_core_cls, job:
 
     _apply_matanyone_config_overrides(matanyone_model, job, verbose=(job.get('op_num', 1) == 1))
     processor = inference_core_cls(matanyone_model, cfg=matanyone_model.cfg)
-
     frames, fps, length, video_name = read_frame_from_videos(input_path)
     frames = frames.float()
-
-    frames = F.interpolate(
-        frames,
-        size=(max_size, max_size),
-        mode="area"
-    )
 
     repeated_frames = frames[0].unsqueeze(0).repeat(n_warmup, 1, 1, 1)
     frames = torch.cat([repeated_frames, frames], dim=0).float()
@@ -262,21 +324,16 @@ def _matanyone_process_segment(matanyone_model, device, inference_core_cls, job:
     mask = Image.open(mask_path).convert('L')
     mask = np.array(mask)
 
-    if r_dilate > 0:
-        mask = gen_dilate(mask, r_dilate, r_dilate)
+    refine_mode = str(getattr(video_args, 'mask_refine_mode', 'legacy')).lower()
 
-    if r_erode > 0:
-        mask = gen_erosion(mask, r_erode, r_erode)
+    if refine_mode != 'legacy' or r_dilate > 0 or r_erode > 0:
+        mask = refine_mask(mask, r_dilate, r_erode, video_args)
+
+    if mask.shape != (max_size, max_size):
+        print(f"Mask shape {mask.shape} does not match output size {max_size}. Resizing...")
+        mask = cv2.resize(mask.astype(np.uint8), (max_size, max_size), interpolation=cv2.INTER_AREA).astype(np.float32)
 
     mask = torch.from_numpy(mask).float().to(device)
-
-    mask = F.interpolate(
-
-        mask.unsqueeze(0).unsqueeze(0),
-        size=(max_size, max_size),
-        mode="nearest-exact"
-
-    )[0][0]
 
     objects = [1]
     phas = []
@@ -286,7 +343,6 @@ def _matanyone_process_segment(matanyone_model, device, inference_core_cls, job:
         image = (image / 255.).float().to(device)
 
         if ti == 0:
-
             output_prob = processor.step(image, mask, objects=objects)
             output_prob = processor.step(image, first_frame_pred=True)
 
@@ -300,7 +356,6 @@ def _matanyone_process_segment(matanyone_model, device, inference_core_cls, job:
         pha = mask.unsqueeze(2).cpu().numpy()
 
         if ti > (n_warmup-1):
-
             pha = np.round(np.clip(pha * 255.0, 0, 255)).astype(np.uint8)
             phas.append(pha)
 
@@ -310,7 +365,6 @@ def _matanyone_process_segment(matanyone_model, device, inference_core_cls, job:
         phas_np = _apply_temporal_median_filter(phas_np, temporal_median_window)
 
     output_file = os.path.join(output_path, f'{video_name}_pha.mp4')
-
     imageio.mimwrite(output_file, phas_np, fps=fps, quality=7)
 
     del processor, frames, phas, phas_np, mask
@@ -319,7 +373,7 @@ def _matanyone_process_segment(matanyone_model, device, inference_core_cls, job:
     gc.collect()
     return output_file
 
-def matanyone_inference(jobs: list[dict], on_segment_done: Callable[[str], None] = None) -> list[str]:
+def matanyone_inference(jobs: list[dict], on_segment_done=None, video_args=None) -> list[str]:
     global _matanyone_is_first_status
 
     max_retries = 1
@@ -358,6 +412,7 @@ def matanyone_inference(jobs: list[dict], on_segment_done: Callable[[str], None]
                     device,
                     inference_core_cls,
                     job,
+                    video_args,
                 )
 
                 batch_completed.append(output_file)
@@ -397,8 +452,8 @@ def matanyone_inference(jobs: list[dict], on_segment_done: Callable[[str], None]
 
     return completed_paths
 
-def matanyone(segments: List[SegmentInfo], segments_dir: Path, mask_square: int, args: argparse.Namespace) -> List[SegmentInfo]:
-    print(f"MatAnyone model: {args.matanyone_version}")
+def matanyone(segments: List[SegmentInfo], segments_dir: Path, mask_square: int, video_args: argparse.Namespace) -> List[SegmentInfo]:
+    print(f"MatAnyone model: {video_args.matanyone_version}")
 
     matanyout = str(segments_dir / 'matanyone_output')
     os.makedirs(matanyout, exist_ok=True)
@@ -420,19 +475,20 @@ def matanyone(segments: List[SegmentInfo], segments_dir: Path, mask_square: int,
             'input_path': seg_left_video,
             'mask_path': seg.left_mask_path,
             'output_path': matanyout,
-            'max_size': args.mask_height,
-            'erode': args.erode,
-            'warmup': args.warmup,
-            'dilate': args.dilate,
-            'matanyone_version': args.matanyone_version,
-            'ma2_mem_every': args.ma2_mem_every,
-            'ma2_max_mem_frames': args.ma2_max_mem_frames,
-            'ma2_use_long_term': args.ma2_use_long_term,
-            'temporal_median_window': args.temporal_median_window,
+            'max_size': mask_square,
+            'erode': video_args.erode,
+            'warmup': video_args.warmup,
+            'dilate': video_args.dilate,
+            'matanyone_version': video_args.matanyone_version,
+            'ma2_mem_every': video_args.ma2_mem_every,
+            'ma2_max_mem_frames': video_args.ma2_max_mem_frames,
+            'ma2_use_long_term': video_args.ma2_use_long_term,
+            'temporal_median_window': video_args.temporal_median_window,
             'op_num': len(jobs) + 1,
             'total_ops': total_ops,
             'label': f'seg{seg.index:02d}_left',
-            'duration': seg.end_time - seg.start_time
+            'duration': seg.end_time - seg.start_time,
+            'video_args': video_args,
 
             })
 
@@ -441,24 +497,24 @@ def matanyone(segments: List[SegmentInfo], segments_dir: Path, mask_square: int,
             'input_path': seg_right_video,
             'mask_path': seg.right_mask_path,
             'output_path': matanyout,
-            'max_size': args.mask_height,
-            'erode': args.erode,
-            'warmup': args.warmup,
-            'dilate': args.dilate,
-            'matanyone_version': args.matanyone_version,
-            'ma2_mem_every': args.ma2_mem_every,
-            'ma2_max_mem_frames': args.ma2_max_mem_frames,
-            'ma2_use_long_term': args.ma2_use_long_term,
-            'temporal_median_window': args.temporal_median_window,
+            'max_size': mask_square,
+            'erode': video_args.erode,
+            'warmup': video_args.warmup,
+            'dilate': video_args.dilate,
+            'matanyone_version': video_args.matanyone_version,
+            'ma2_mem_every': video_args.ma2_mem_every,
+            'ma2_max_mem_frames': video_args.ma2_max_mem_frames,
+            'ma2_use_long_term': video_args.ma2_use_long_term,
+            'temporal_median_window': video_args.temporal_median_window,
             'op_num': len(jobs) + 1,
             'total_ops': total_ops,
             'label': f'seg{seg.index:02d}_right',
-            'duration': seg.end_time - seg.start_time
+            'duration': seg.end_time - seg.start_time,
+            'video_args': video_args,
 
             })
 
-    completed_paths = matanyone_inference(jobs)
-
+    completed_paths = matanyone_inference(jobs, on_segment_done=None, video_args=video_args)
     if len(completed_paths) != len(jobs):
         raise RuntimeError(f'Not all jobs completed successfully. Expected {len(jobs)}, got {len(completed_paths)}')
 
@@ -480,8 +536,96 @@ def matanyone(segments: List[SegmentInfo], segments_dir: Path, mask_square: int,
             left_pha,
             right_pha,
             stereo_output
-
             )
+
+    return segments
+
+def sam3_propagation(
+
+    segments: List[SegmentInfo],
+    segments_dir: Path,
+    args: argparse.Namespace,
+    refine_with_sapiens: bool,
+    # video_args,
+
+) -> List[SegmentInfo]:
+
+    backend_name = 'sam3_sapiens' if refine_with_sapiens else 'sam3'
+    print(f"Propagation backend: {backend_name}")
+
+    sam3out = str(segments_dir / f'{backend_name}_output')
+    os.makedirs(sam3out, exist_ok=True)
+
+    mask_segments = [s for s in segments if s.seg_type == SegmentType.MASK]
+    total_ops = len(mask_segments) * 2
+
+    tracker_choice = str(getattr(args, 'sam3_tracker', 'sam3video')).lower()
+    sam31 = (tracker_choice == 'sam31video')
+
+    jobs = []
+
+    for seg in mask_segments:
+
+        seg_left_video = str(segments_dir / f'seg{seg.index:02d}_left.mp4')
+        seg_right_video = str(segments_dir / f'seg{seg.index:02d}_right.mp4')
+
+        jobs.append({
+            'input_path': seg_left_video,
+            'output_path': sam3out,
+            'mask_height': args.mask_height,
+            'prompt': args.prompt,
+            'sam31': sam31,
+            'refine_with_sapiens': refine_with_sapiens,
+            'refine_fg_threshold': args.refine_fg_threshold,
+            'refine_bg_threshold': args.refine_bg_threshold,
+            'refine_unknown_dilate': args.refine_unknown_dilate,
+            'gate_dilate': args.gate_dilate,
+            'video_args': args,
+            'op_num': len(jobs) + 1,
+            'total_ops': total_ops,
+            'label': f'seg{seg.index:02d}_left',
+        })
+
+        jobs.append({
+            'input_path': seg_right_video,
+            'output_path': sam3out,
+            'mask_height': args.mask_height,
+            'prompt': args.prompt,
+            'sam31': sam31,
+            'refine_with_sapiens': refine_with_sapiens,
+            'refine_fg_threshold': args.refine_fg_threshold,
+            'refine_bg_threshold': args.refine_bg_threshold,
+            'refine_unknown_dilate': args.refine_unknown_dilate,
+            'gate_dilate': args.gate_dilate,
+            'video_args': args,
+            'op_num': len(jobs) + 1,
+            'total_ops': total_ops,
+            'label': f'seg{seg.index:02d}_right',
+        })
+
+    completed_paths = sam3_track_inference(jobs, on_segment_done=None, video_args=video_args)
+
+    if len(completed_paths) != len(jobs):
+        raise RuntimeError(f'Not all SAM3 jobs completed successfully. Expected {len(jobs)}, got {len(completed_paths)}')
+
+    for seg in mask_segments:
+
+        left_basename = os.path.splitext(os.path.basename(f'seg{seg.index:02d}_left.mp4'))[0]
+        right_basename = os.path.splitext(os.path.basename(f'seg{seg.index:02d}_right.mp4'))[0]
+
+        left_pha = os.path.join(sam3out, f'{left_basename}_pha.mp4')
+        right_pha = os.path.join(sam3out, f'{right_basename}_pha.mp4')
+
+        if not os.path.exists(left_pha) or not os.path.exists(right_pha):
+            raise RuntimeError(f'Could not find generated SAM3 masks for segment {seg.index}')
+
+        stereo_output = str(segments_dir / f'seg{seg.index:02d}_stereo.mp4')
+
+        seg.video_path = stereo_video(
+            left_pha,
+            right_pha,
+            stereo_output
+        )
 
     return segments
 
@@ -528,7 +672,7 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path, batch_m
 
     orig_w, orig_h, fps, duration, is_vfr  = info(video_path)
 
-    video_args = argparse.Namespace(**vars(args), video=video_path)
+    video_args = argparse.Namespace(**vars(args))
 
     print(f'Specs: {orig_w}x{orig_h}, {fps:.2f}fps, {format_timestamp(duration)}')
     print(f'Mask height: {video_args.mask_height}px')
@@ -540,12 +684,16 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path, batch_m
 
     if overlay_mask is None:
 
+        total_frames = frame_count(video_path)
+
         segments = calculate_segments(
 
             duration,
-            video_args.segment_length
-
-            )
+            video_args.segment_length,
+            fps=fps,
+            total_frames=total_frames,
+            video_args=video_args,
+        )
 
         mask_segments = [s for s in segments if s.seg_type == SegmentType.MASK]
 
@@ -560,18 +708,32 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path, batch_m
 
             )
 
-        mask_segments = sam3_masks(
+        if video_args.propagation_backend == 'matanyone':
 
-            mask_segments, frames_dir, masks_dir, mask_square,
-            video_args.prompt,
-            video_args.seed_model,
-            video_args.sapiens_threshold,
-            video_args.gate_dilate,
-            video_args=video_args,
+            mask_segments = sam3_masks(
 
-        )
+                mask_segments,
+                frames_dir,
+                masks_dir,
+                mask_square,
+                video_args.prompt,
+                video_args.seed_model,
+                video_args.sapiens_threshold,
+                video_args.gate_dilate,
+                video_args=video_args,
 
-        segments = matanyone(segments, segments_dir, mask_square, video_args)
+            )
+
+            segments = matanyone(segments, segments_dir, mask_square, video_args)
+
+        elif video_args.propagation_backend == 'sam3':
+            segments = sam3_propagation(segments, segments_dir, video_args, refine_with_sapiens=False)
+
+        elif video_args.propagation_backend == 'sam3_sapiens':
+            segments = sam3_propagation(segments, segments_dir, video_args, refine_with_sapiens=True)
+
+        else:
+            raise RuntimeError(f"Unsupported propagation backend: {video_args.propagation_backend}")
 
         output_mask = finalize(
 
@@ -594,7 +756,8 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path, batch_m
 
         )
 
-        print(f'Overlay preview: {overlay_video}')
+        print(f'Overlay : {overlay_video}')
+
         print('=' * 60)
         print(f'Segments: {len(segments)} ({len(mask_segments)} masks)')
         print(f'Output: {output_mask}')
@@ -611,7 +774,6 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path, batch_m
     else:
 
         overlay_target = str(Path(video_path).with_name(f"{video_name}_overlay.mp4"))
-
         overlay_video = mask_overlay(
 
             video_path,
@@ -622,12 +784,44 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path, batch_m
 
         )
 
-        print(f'Overlay preview: {overlay_video}')
+        print(f'Overlay : {overlay_video}')
         print('=' * 60)
 
         return overlay_video
 
-def calculate_segments(video_duration: float, max_segment_length: float = 5.0) -> List[SegmentInfo]:
+def calculate_segments(
+    video_duration: float,
+    max_segment_length: float,
+    fps: float | None,
+    total_frames: int | None,
+    video_args: argparse.Namespace,
+) -> List[SegmentInfo]:
+
+    if fps and total_frames and fps > 0 and total_frames > 0:
+
+        segments: List[SegmentInfo] = []
+        max_segment_frames = max(1, int(round(max_segment_length * fps)))
+        start_frame = 0
+        index = 0
+
+        while start_frame < total_frames:
+            end_frame = min(start_frame + max_segment_frames, total_frames)
+            start_time = start_frame / fps
+            end_time = end_frame / fps
+
+            segments.append(
+                SegmentInfo(
+                    index=index,
+                    start_time=start_time,
+                    end_time=end_time,
+                    seg_type=SegmentType.MASK,
+                )
+            )
+
+            index += 1
+            start_frame = end_frame
+
+        return segments
 
     segments: List[SegmentInfo] = []
     chunk_start = 0.0
@@ -648,7 +842,7 @@ def calculate_segments(video_duration: float, max_segment_length: float = 5.0) -
     return segments
 
 def extract_segments(
-        
+
     args: argparse.Namespace,
     segments: List[SegmentInfo],
     mask_segments: List[SegmentInfo],
@@ -672,6 +866,7 @@ def extract_segments(
 
         left_frame = str(frames_dir / f'seg{seg.index:02d}_left.png')
         right_frame = str(frames_dir / f'seg{seg.index:02d}_right.png')
+
         seg_left_video = str(segments_dir / f'seg{seg.index:02d}_left.mp4')
         seg_right_video = str(segments_dir / f'seg{seg.index:02d}_right.mp4')
 
@@ -686,16 +881,21 @@ def extract_segments(
             right_frame_out=right_frame,
             left_video_out=seg_left_video,
             right_video_out=seg_right_video,
-            progress_prefix=f'[{i + 1}/{len(mask_segments)}]'
+            progress_prefix=f'[{i + 1}/{len(mask_segments)}]',
 
-            )
+        )
 
         seg.left_frame_path = left_frame_path
         seg.right_frame_path = right_frame_path
 
     return mask_segments
 
-def finalize(segments: List[SegmentInfo], video_name: str, video_path: str, video_args=None) -> str:
+def finalize(
+    segments: List[SegmentInfo],
+    video_name: str,
+    video_path: str,
+    video_args: argparse.Namespace
+) -> str:
 
     segment_vid = []
 
@@ -722,29 +922,36 @@ def main() -> int:
     parser.add_argument('--segment-length', type=float, default=10)
     parser.add_argument('--erode', type=int, default=0)
     parser.add_argument('--dilate', type=int, default=0)
+    parser.add_argument('--mask-refine-mode', type=str, default='legacy', choices=['legacy', 'deterministic', 'expand_static'], help='Seed mask refinement mode before propagation')
+    parser.add_argument('--mask-kernel-shape', type=str, default='ellipse', choices=['ellipse', 'cross', 'rect'], help='Morphology kernel shape for deterministic/expand_static refine modes')
+    parser.add_argument('--mask-close-kernel', type=int, default=0, help='Apply MORPH_CLOSE with this kernel size in deterministic refine mode (0 disables)')
+    parser.add_argument('--mask-feather-radius', type=float, default=0.0, help='Optional Gaussian feather radius for deterministic/expand_static refine modes')
+    parser.add_argument('--mask-fill-holes', action='store_true', help='Fill enclosed mask holes during deterministic/expand_static refinement (requires scipy)')
     parser.add_argument('--prompt', type=str, default='one woman')
-    parser.add_argument('--warmup', type=int, default=0)
-    parser.add_argument('--seed-model', type=str, default='sam3', choices=['sam3', 'sam3video', 'sam31video', 'sapiens', 'hybrid'], help='Seed mask mode (sam3, sam3video, sam31video, sapiens, or hybrid)')
-    parser.add_argument('--sapiens-threshold', type=float, default=0.5, help='Threshold for converting Sapiens alpha matte to a binary mask')
-    parser.add_argument('--gate-dilate', type=int, default=5, help='Dilate SAM3 gating in hybrid mode')
+    parser.add_argument('--warmup', type=int, default=6)
+    parser.add_argument('--seed-model', type=str, default='sam3video', choices=['sam3', 'sam3video', 'sam31video', 'sapiens', 'hybrid'], help='Seed mask mode (sam3, sam3video, sam31video, sapiens, or hybrid)')
+    parser.add_argument('--propagation-backend', type=str, default='matanyone', choices=['matanyone', 'sam3', 'sam3_sapiens'], help='Temporal propagation backend (matanyone, sam3, sam3_sapiens)')
+    parser.add_argument('--sam3-tracker', type=str, default='sam3video', choices=['sam3video', 'sam31video'], help='SAM3 video tracker variant when using sam3 or sam3_sapiens backend')
+    parser.add_argument('--sapiens-threshold', type=float, default=0.5, help='Threshold for converting Sapiens alpha matte to a binary mask - sapiens-threshold must be between 0.0 and 1.0')
+    parser.add_argument('--gate-dilate', type=int, default=5, help='Dilate SAM3 gating in hybrid mode and sam3_sapiens refinement mode - gate-dilate must be >= 1')
+    parser.add_argument('--refine-fg-threshold', type=float, default=0.85, help='SAM confidence threshold for sure foreground in sam3_sapiens refinement')
+    parser.add_argument('--refine-bg-threshold', type=float, default=0.05, help='SAM confidence threshold for sure background in sam3_sapiens refinement')
+    parser.add_argument('--refine-unknown-dilate', type=int, default=5, help='Dilate unknown/boundary region before Sapiens edge refinement (sam3_sapiens)')
     parser.add_argument('--matanyone-version', type=str, default='v2', choices=['v1', 'v2'], help='Select MatAnyone runtime version')
-    parser.add_argument('--ma2-mem-every', type=int, default=32, help='Override MatAnyone mem_every (works for v1 and v2; e.g. 2 or 3 for faster refresh)')
-    parser.add_argument('--ma2-max-mem-frames', type=int, default=2, help='Override MatAnyone memory window in frames (works for v1 and v2)')
+    parser.add_argument('--ma2-mem-every', type=int, default=32, help='Override MatAnyone mem_every (works for v1 and v2; e.g. 2 or 3 for faster refresh) ma2-mem-every must be >= 1')
+    parser.add_argument('--ma2-max-mem-frames', type=int, default=2, help='Override MatAnyone memory window in frames (works for v1 and v2) ma2-max-mem-frames must be >= 2')
     parser.add_argument('--ma2-use-long-term', type=str, default='off', choices=['auto', 'on', 'off'], help='Override MatAnyone long-term memory mode (works for v1 and v2)')
-    parser.add_argument('--temporal-median-window', type=int, default=0, help='Temporal median window for alpha cleanup. 0 disables; use odd values >= 3 (e.g. 5)')
+    parser.add_argument('--temporal-median-window', type=int, default=0, help='Temporal median window for alpha cleanup. 0 disables; use odd values >= 3 (e.g. 5) temporal-median-window must be >= 0')
     parser.add_argument('--no-normalize-input', dest='normalize_input', action='store_false', help='Skip upfront input normalization/transcoding')
     parser.set_defaults(normalize_input=True)
     parser.add_argument('--overlay-output', type=str, default='input_path', help='Write a composited video with the mask over the original source')
     parser.add_argument('--overlay-color', type=str, default='0x00ff00', help='Background color for overlay (use 0x00ff00 for pure green)')
     parser.add_argument('--overlay-mask', type=str, default=None, help='Write a composited video with a provided mask over the original source')
+    parser.add_argument('--despill-mode', type=str, default='off', choices=['off', 'edge', 'subject'], help='Optional green-despill during overlay compositing')
+    parser.add_argument('--despill-edge-threshold', type=float, default=0.35, help='Edge alpha threshold (0..1) for edge-gated despill mode')
+    parser.add_argument('--despill-strength', type=float, default=1.0, help='Despill strength (0..1), where 1.0 applies full clamp to green channel')
+    parser.add_argument('--alpha-packer', type=str, default=None, help='Run alpha packer. Pass a file/folder to pack existing original videos and matching *_mask videos, or omit the value to auto-pack outputs from the normal pipeline.')
 
-    parser.add_argument(
-        '--alpha-packer',
-        nargs='?',
-        const=ALPHA_PACKER_PIPELINE_MODE,
-        default=None,
-        help='Run alpha packer. Pass a file/folder to pack existing original videos and matching *_mask videos, or omit the value to auto-pack outputs from the normal pipeline.',
-    )
     parser.add_argument(
         '--fisheye180',
         nargs='?',
@@ -755,32 +962,45 @@ def main() -> int:
 
     args = parser.parse_args()
     args.matanyone_version = str(args.matanyone_version).lower()
+    args.propagation_backend = str(args.propagation_backend).lower()
+    args.sam3_tracker = str(args.sam3_tracker).lower()
 
-    if not (0.0 <= args.sapiens_threshold <= 1.0):
-        raise ValueError('--sapiens-threshold must be between 0.0 and 1.0')
-    if args.gate_dilate < 1:
-        raise ValueError('--gate-dilate must be >= 1')
-    if args.ma2_mem_every is not None and args.ma2_mem_every < 1:
-        raise ValueError('--ma2-mem-every must be >= 1')
-    if args.ma2_max_mem_frames is not None and args.ma2_max_mem_frames < 2:
-        raise ValueError('--ma2-max-mem-frames must be >= 2')
+    if not (0.0 <= float(args.sapiens_threshold) <= 1.0):
+        raise RuntimeError('sapiens-threshold must be between 0.0 and 1.0')
+
+    if int(args.gate_dilate) < 1:
+        raise RuntimeError('gate-dilate must be >= 1')
+
+    if int(args.refine_unknown_dilate) < 0:
+        raise RuntimeError('refine-unknown-dilate must be >= 0')
+
+    if int(args.mask_close_kernel) < 0:
+        raise RuntimeError('mask-close-kernel must be >= 0')
+
+    if float(args.mask_feather_radius) < 0.0:
+        raise RuntimeError('mask-feather-radius must be >= 0.0')
+
+    if int(args.erode) < 0 or int(args.dilate) < 0:
+        raise RuntimeError('erode and dilate must be >= 0')
+
+    if not (0.0 <= float(args.despill_edge_threshold) <= 1.0):
+        raise RuntimeError('despill-edge-threshold must be between 0.0 and 1.0')
+
+    if not (0.0 <= float(args.despill_strength) <= 1.0):
+        raise RuntimeError('despill-strength must be between 0.0 and 1.0')
+
+    if not (0.0 <= float(args.refine_bg_threshold) < float(args.refine_fg_threshold) <= 1.0):
+        raise RuntimeError('refine thresholds must satisfy 0.0 <= refine-bg-threshold < refine-fg-threshold <= 1.0')
+
     if args.ma2_use_long_term == 'auto':
         args.ma2_use_long_term = None
     else:
         args.ma2_use_long_term = (args.ma2_use_long_term == 'on')
-    if args.temporal_median_window < 0:
-        raise ValueError('--temporal-median-window must be >= 0')
-    if args.temporal_median_window != 0 and args.temporal_median_window < 3:
-        raise ValueError('--temporal-median-window must be 0 or odd >= 3')
-    if args.temporal_median_window % 2 == 0 and args.temporal_median_window != 0:
-        raise ValueError('--temporal-median-window must be odd (e.g. 3, 5, 7)')
 
     if args.alpha_packer:
         return packer(args.alpha_packer)
 
     if args.fisheye180 is not None:
-        if not args.input_path:
-            raise SystemExit('input_path is required when using --fisheye180')
         fisheye_mask = None if args.fisheye180 == FISHEYE180_PIPELINE_MODE else args.fisheye180
         return run_fisheye180_mode(args.input_path, fisheye_mask)
 
@@ -789,30 +1009,29 @@ def main() -> int:
 
     if temp_root.exists():
         shutil.rmtree(temp_root)
+
     temp_root.mkdir(parents=True, exist_ok=True)
 
     processed = []
     batch_mode = len(video_paths) > 1
 
     for index, video_path in enumerate(video_paths, 1):
+
         video_path = str(video_path)
         print(f'[{index}/{len(video_paths)}] Processing: {video_path}')
 
         video_args = argparse.Namespace(**vars(args), video=video_path)
+
         video_path = norm_video(video_path, video_args=video_args)
-        output_mask = process_video(video_path, args, temp_root, batch_mode=batch_mode)
-        # packed = packer(video_path, sync_frames=None)
-        # packed = pack_video(video_path, output_mask)
+
+        output_mask = process_video(video_path, video_args, temp_root, batch_mode=batch_mode)
+        # alpha = pack_video(video_path, output_mask)
+
         processed.append((video_path, output_mask))
 
-    # for video_path, output_mask in processed:
-    #    pack_video(video_path, output_mask)
-
     for video_path, output_mask in processed:
-
         print(f'{video_path}')
         print(f'{output_mask}')
-        # print(f'{packed}')
 
     total_end = time.time() - start_time
     print('=' * 60)
