@@ -740,7 +740,7 @@ def main() -> int:
     parser.add_argument('--ma2-max-mem-frames', type=int, default=2, help='Override MatAnyone memory window in frames (works for v1 and v2) ma2-max-mem-frames must be >= 2')
     parser.add_argument('--ma2-use-long-term', type=str, default='off', choices=['auto', 'on', 'off'], help='Override MatAnyone long-term memory mode (works for v1 and v2)')
     parser.add_argument('--temporal-median-window', type=int, default=0, help='Temporal median window for alpha cleanup. 0 disables; use odd values >= 3 (e.g. 5) temporal-median-window must be >= 0')
-    parser.add_argument('--normalize-input', dest='normalize_input', action='store_false', help='Skip upfront input normalization/transcoding')
+    parser.add_argument('--normalize-input', dest='normalize_input', action='store_true', help='Skip upfront input normalization/transcoding')
     parser.set_defaults(normalize_input=True)
     parser.add_argument('--overlay-output', type=str, default='input_path', help='Write a composited video with the mask over the original source')
     parser.add_argument('--overlay-color', type=str, default='0x00ff00', help='Background color for overlay (use 0x00ff00 for pure green)')
