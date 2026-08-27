@@ -547,9 +547,9 @@ def mask_overlay(source_video: str, mask_video: str, output_path: str, backgroun
     src_w, src_h, src_fps, src_duration, is_vfr = info(source_video)
     mask_w, mask_h, mask_fps, mask_duration, is_vfr = info(mask_video)
 
-    orig_filter = f"format=rgba,fps=fps={src_fps},setpts=N/({src_fps}*TB),scale={src_w}:{src_h}:flags=lanczos"
-    mask_filter = f"format=gray,fps=fps={src_fps},setpts=N/({src_fps}*TB),scale={src_w}:{src_h}:flags=lanczos,lut=a=val/255"
-    bg_filter = f"format=rgba,fps=fps={src_fps},setpts=N/({src_fps}*TB),scale={src_w}:{src_h}:flags=lanczos" 
+    orig_filter = f"format=rgba,scale={src_w}:{src_h}:flags=lanczos"
+    mask_filter = f"format=gray,scale={src_w}:{src_h}:flags=lanczos,lut=a=val/255"
+    bg_filter = f"format=rgba,scale={src_w}:{src_h}:flags=lanczos" 
 
     filter_complex = (
         f"[0:v]{orig_filter}[orig];"
