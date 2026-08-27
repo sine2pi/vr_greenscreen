@@ -244,11 +244,11 @@ def _matanyone_process_segment(matanyone_model, device, inference_core_cls, job:
     frames, fps, length, video_name = read_frame_from_videos(input_path)
     frames = frames.float()
 
-    frames = F.interpolate(
-        frames,
-        size=(max_size, max_size),
-        mode="area"
-    )
+    # frames = F.interpolate(
+    #     frames,
+    #     size=(max_size, max_size),
+    #     mode="area"
+    # )
 
     repeated_frames = frames[0].unsqueeze(0).repeat(n_warmup, 1, 1, 1)
     frames = torch.cat([repeated_frames, frames], dim=0).float()
@@ -277,6 +277,12 @@ def _matanyone_process_segment(matanyone_model, device, inference_core_cls, job:
         mode="nearest-exact"
 
     )[0][0]
+
+    # if mask.shape != (max_size, max_size):
+        
+    #     mask = cv2.resize(mask.astype(np.uint8), (max_size, max_size), interpolation=cv2.INTER_AREA).astype(np.float32)
+
+    # mask = torch.from_numpy(mask).float().to(device)
 
     objects = [1]
     phas = []
@@ -311,7 +317,7 @@ def _matanyone_process_segment(matanyone_model, device, inference_core_cls, job:
 
     output_file = os.path.join(output_path, f'{video_name}_pha.mp4')
 
-    imageio.mimwrite(output_file, phas_np, fps=fps, quality=10)
+    imageio.mimwrite(output_file, phas_np, fps=fps, quality=7)
 
     del processor, frames, phas, phas_np, mask
     torch.cuda.empty_cache()
@@ -373,6 +379,7 @@ def matanyone_inference(jobs: list[dict], on_segment_done: Callable[[str], None]
         except Exception as exc:
 
             completed_paths.extend(batch_completed)
+
             remaining_jobs = remaining_jobs[len(batch_completed):]
 
             if not remaining_jobs:
@@ -385,7 +392,6 @@ def matanyone_inference(jobs: list[dict], on_segment_done: Callable[[str], None]
 
                 for i, job in enumerate(remaining_jobs):
                     job['op_num'] = start_op + i
-
                 time.sleep(3.0)
 
                 continue
@@ -527,14 +533,11 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path, batch_m
         d.mkdir(parents=True, exist_ok=True)
 
     orig_w, orig_h, fps, duration, is_vfr  = info(video_path)
-    print()
-    print(f'@process_video : orig_w, orig_h, fps, duration, is_vfr {orig_w}, {orig_h}, {fps}, {duration}, {is_vfr} {video_path}')
 
     video_args = argparse.Namespace(**vars(args), video=video_path)
 
     print(f'Specs: {orig_w}x{orig_h}, {fps:.2f}fps, {format_timestamp(duration)}')
     print(f'Mask height: {video_args.mask_height}px')
-    print(f'Please hold... ♩ ♪ ♫ ♬')
     print()
 
     mask_square = video_args.mask_height
@@ -596,8 +599,7 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path, batch_m
 
         )
 
-        print(f'Overlay : {overlay_video}')
-
+        print(f'Overlay preview: {overlay_video}')
         print('=' * 60)
         print(f'Segments: {len(segments)} ({len(mask_segments)} masks)')
         print(f'Output: {output_mask}')
@@ -614,6 +616,7 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path, batch_m
     else:
 
         overlay_target = str(Path(video_path).with_name(f"{video_name}_overlay.mp4"))
+
         overlay_video = mask_overlay(
 
             video_path,
@@ -624,7 +627,7 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path, batch_m
 
         )
 
-        print(f'Overlay : {overlay_video}')
+        print(f'Overlay preview: {overlay_video}')
         print('=' * 60)
 
         return overlay_video
@@ -650,17 +653,15 @@ def calculate_segments(video_duration: float, max_segment_length: float = 5.0) -
     return segments
 
 def extract_segments(
-
     args: argparse.Namespace,
     segments: List[SegmentInfo],
     mask_segments: List[SegmentInfo],
     orig_h: int,
     frames_dir: Path,
     segments_dir: Path,
-
 ) -> List[SegmentInfo]:
 
-    print(f'Creating: {len(segments)} video segments')
+    print(f'Total: {len(segments)} segments')
 
     for seg in segments:
 
@@ -674,7 +675,6 @@ def extract_segments(
 
         left_frame = str(frames_dir / f'seg{seg.index:02d}_left.png')
         right_frame = str(frames_dir / f'seg{seg.index:02d}_right.png')
-
         seg_left_video = str(segments_dir / f'seg{seg.index:02d}_left.mp4')
         seg_right_video = str(segments_dir / f'seg{seg.index:02d}_right.mp4')
 
@@ -714,11 +714,6 @@ def finalize(segments: List[SegmentInfo], video_name: str, video_path: str, vide
     output_mask = os.path.join(output_dir, f'{video_name}_mask.mp4')
     output_mask = concat_video(segment_vid, output_mask)
 
-    orig_w, orig_h, fps, duration, is_vfr  = info(output_mask)
-
-    print()
-    print(f'@process_video : orig_w, orig_h, fps, duration, is_vfr {orig_w}, {orig_h}, {fps}, {duration}, {is_vfr} {output_mask}')
-
     return output_mask
 
 def main() -> int:
@@ -732,36 +727,45 @@ def main() -> int:
     parser.add_argument('--dilate', type=int, default=0)
     parser.add_argument('--prompt', type=str, default='one woman')
     parser.add_argument('--warmup', type=int, default=0)
-    parser.add_argument('--seed-model', type=str, default='sam3', choices=['sam3', 'sam3video', 'sam31video', 'sapiens', 'hybrid'], help='Seed mask mode (sam3, sam3video, sam31video, sapiens, or hybrid)')
-    parser.add_argument('--sapiens-threshold', type=float, default=0.5, help='Threshold for converting Sapiens alpha matte to a binary mask - sapiens-threshold must be between 0.0 and 1.0')
-    parser.add_argument('--gate-dilate', type=int, default=5, help='Dilate SAM3 gating in hybrid mode - gate-dilate must be >= 1')
+    parser.add_argument('--seed-model', type=str, default='sam3video', choices=['sam3', 'sam3video', 'sam31video', 'sapiens', 'hybrid'], help='Seed mask mode (sam3, sam3video, sam31video, sapiens, or hybrid)')
+    parser.add_argument('--sapiens-threshold', type=float, default=0.5, help='Threshold for converting Sapiens alpha matte to a binary mask')
+    parser.add_argument('--gate-dilate', type=int, default=5, help='Dilate SAM3 gating in hybrid mode')
     parser.add_argument('--matanyone-version', type=str, default='v2', choices=['v1', 'v2'], help='Select MatAnyone runtime version')
-    parser.add_argument('--ma2-mem-every', type=int, default=32, help='Override MatAnyone mem_every (works for v1 and v2; e.g. 2 or 3 for faster refresh) ma2-mem-every must be >= 1')
-    parser.add_argument('--ma2-max-mem-frames', type=int, default=2, help='Override MatAnyone memory window in frames (works for v1 and v2) ma2-max-mem-frames must be >= 2')
+    parser.add_argument('--ma2-mem-every', type=int, default=32, help='Override MatAnyone mem_every (works for v1 and v2; e.g. 2 or 3 for faster refresh)')
+    parser.add_argument('--ma2-max-mem-frames', type=int, default=2, help='Override MatAnyone memory window in frames (works for v1 and v2)')
     parser.add_argument('--ma2-use-long-term', type=str, default='off', choices=['auto', 'on', 'off'], help='Override MatAnyone long-term memory mode (works for v1 and v2)')
-    parser.add_argument('--temporal-median-window', type=int, default=0, help='Temporal median window for alpha cleanup. 0 disables; use odd values >= 3 (e.g. 5) temporal-median-window must be >= 0')
-    parser.add_argument('--normalize-input', dest='normalize_input', action='store_true', help='Skip upfront input normalization/transcoding')
+    parser.add_argument('--temporal-median-window', type=int, default=0, help='Temporal median window for alpha cleanup. 0 disables; use odd values >= 3 (e.g. 5)')
+    parser.add_argument('--no-normalize-input', dest='normalize_input', action='store_false', help='Skip upfront input normalization/transcoding')
     parser.set_defaults(normalize_input=True)
     parser.add_argument('--overlay-output', type=str, default='input_path', help='Write a composited video with the mask over the original source')
     parser.add_argument('--overlay-color', type=str, default='0x00ff00', help='Background color for overlay (use 0x00ff00 for pure green)')
     parser.add_argument('--overlay-mask', type=str, default=None, help='Write a composited video with a provided mask over the original source')
-    parser.add_argument('--alpha-packer', type=str, default=None, help='Run alpha packer. Pass a file/folder to pack existing original videos and matching *_mask videos, or omit the value to auto-pack outputs from the normal pipeline.')
-
-    parser.add_argument(
-        '--fisheye180',
-        nargs='?',
-        const=FISHEYE180_PIPELINE_MODE,
-        default=None,
-        help='Convert an SBS equirectangular input video or folder to SBS fisheye180. Optionally pass a PNG mask overlay path to black out the area outside the circles.',
-    )
+    parser.add_argument('--alpha-packer', type=str, default=None, help='Run alpha packer. ')
+    parser.add_argument('--fisheye180', nargs='?', const=FISHEYE180_PIPELINE_MODE, default=None, help='Convert an SBS equirectangular input video or folder to SBS fisheye180')
 
     args = parser.parse_args()
     args.matanyone_version = str(args.matanyone_version).lower()
+
+    if not (0.0 <= args.sapiens_threshold <= 1.0):
+        raise ValueError('--sapiens-threshold must be between 0.0 and 1.0')
+    if args.gate_dilate < 1:
+        raise ValueError('--gate-dilate must be >= 1')
+    if args.ma2_mem_every is not None and args.ma2_mem_every < 1:
+        raise ValueError('--ma2-mem-every must be >= 1')
+    if args.ma2_max_mem_frames is not None and args.ma2_max_mem_frames < 2:
+        raise ValueError('--ma2-max-mem-frames must be >= 2')
 
     if args.ma2_use_long_term == 'auto':
         args.ma2_use_long_term = None
     else:
         args.ma2_use_long_term = (args.ma2_use_long_term == 'on')
+
+    if args.temporal_median_window < 0:
+        raise ValueError('--temporal-median-window must be >= 0')
+    if args.temporal_median_window != 0 and args.temporal_median_window < 3:
+        raise ValueError('--temporal-median-window must be 0 or odd >= 3')
+    if args.temporal_median_window % 2 == 0 and args.temporal_median_window != 0:
+        raise ValueError('--temporal-median-window must be odd (e.g. 3, 5, 7)')
 
     if args.alpha_packer:
         return packer(args.alpha_packer)
@@ -775,27 +779,26 @@ def main() -> int:
 
     if temp_root.exists():
         shutil.rmtree(temp_root)
-
     temp_root.mkdir(parents=True, exist_ok=True)
 
     processed = []
     batch_mode = len(video_paths) > 1
 
     for index, video_path in enumerate(video_paths, 1):
-
         video_path = str(video_path)
         print(f'[{index}/{len(video_paths)}] Processing: {video_path}')
-        video_args = argparse.Namespace(**vars(args), video=video_path)
 
-        video_path = norm_video(video_path, video_args=video_args)
+        video_args = argparse.Namespace(**vars(args), video=video_path)
+        # video_path = norm_video(video_path, video_args=video_args)
         output_mask = process_video(video_path, args, temp_root, batch_mode=batch_mode)
         # alpha = pack_video(video_path, output_mask)
-
         processed.append((video_path, output_mask))
 
     for video_path, output_mask in processed:
+
         print(f'{video_path}')
         print(f'{output_mask}')
+        # print(f'{packed}')
 
     total_end = time.time() - start_time
     print('=' * 60)
