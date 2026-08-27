@@ -559,28 +559,12 @@ def mask_overlay(source_video: str, mask_video: str, output_path: str, backgroun
     resolved_path = overlay_path(source_video, output_path)
     src_w, src_h, src_fps, src_duration, is_vfr = info(source_video)
     mask_w, mask_h, mask_fps, mask_duration, is_vfr = info(mask_video)
-     
-    if src_fps != mask_fps:
-        print(f"-- Fps does not match: src_fps={src_fps:.6f} mask_fps={mask_fps:.6f}")
-        source_video = norm_video(source_video, fps=src_fps, video_args=video_args)
-        mask_video = norm_video(mask_video, fps=src_fps, video_args=video_args)
 
-    duration = src_duration
-    fps = src_fps
-
-    if (src_w, src_h) != (mask_w, mask_h):
-
-        orig_filter = f"format=rgba,scale={src_w}:{src_h}:flags=lanczos"
-        mask_filter = f"format=gray,scale={src_w}:{src_h}:flags=lanczos,lut=a=val/255"
-        bg_filter = f"format=rgba,scale={src_w}:{src_h}:flags=lanczos"
-
-    else:
-        orig_filter = 'format=rgba'
-        mask_filter = 'format=gray,lut=a=val/255'
-        bg_filter = 'format=rgba'
+    orig_filter = f"format=rgba,fps=fps={src_fps},setpts=N/({src_fps}*TB),scale={src_w}:{src_h}:flags=lanczos"
+    mask_filter = f"format=gray,fps=fps={src_fps},setpts=N/({src_fps}*TB),scale={src_w}:{src_h}:flags=lanczos,lut=a=val/255"
+    bg_filter = f"format=rgba,fps=fps={src_fps},setpts=N/({src_fps}*TB),scale={src_w}:{src_h}:flags=lanczos" 
 
     filter_complex = (
-
         f"[0:v]{orig_filter}[orig];"
         f"[1:v]{mask_filter}[mask_alpha];"
         f"[orig][mask_alpha]alphamerge[alphaed];"
@@ -591,14 +575,15 @@ def mask_overlay(source_video: str, mask_video: str, output_path: str, backgroun
     os.makedirs(os.path.dirname(os.path.abspath(resolved_path)) or '.', exist_ok=True)
 
     cmd = [
-
-        'ffmpeg', '-y', '-hwaccel', 'auto',
+        'ffmpeg', '-y',
+        '-hwaccel', 'auto',
         '-i', source_video,
         '-i', mask_video,
-        '-f', 'lavfi', '-i', f'color=c={background_color}:s={src_w}x{src_h}:d={src_duration}:r={src_fps}',
+        '-f', 'lavfi', '-i', f'color=c={background_color}',  
         '-filter_complex', filter_complex,
         '-map', '[out]',
-     
+        '-t', str(src_duration),
+
     ]
 
     cmd.extend(encoder_args())
