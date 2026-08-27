@@ -185,7 +185,7 @@ class sam3_video_inference:
         else:
             raise ValueError(f"Unknown coord_type: {coord_type}")
 
-    def track(self, video_path = None, remove = False, add_box = True, sub_box = False, add_point = 0, show_plots = True):
+    def track(self, video_path = None, remove = False, add_box = False, sub_box = False, add_point = 0, show_plots = True):
 
         predictor, video_path, prompt = self.predictor, self.video_path, self.prompt
 
