@@ -479,10 +479,10 @@ def _sam3_video_inference(frames_dir: str, output_size: int | None = None, promp
         image = raw.convert("RGB")
         raw.close()
 
-        # if image.height > output_size:
-        #     full = image
-        #     image = full.resize((output_size, output_size), Image.Resampling.BICUBIC)
-        #     full.close()
+        if image.height > output_size:
+            full = image
+            image = full.resize((output_size, output_size), Image.Resampling.BICUBIC)
+            full.close()
 
         frame_shapes.append((image.height, image.width))
         image.save(seq_dir / f"{i:06d}.jpg", format="JPEG", quality=100)
