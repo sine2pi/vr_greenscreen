@@ -86,7 +86,7 @@ def _create_vit_backbone(compile_mode=None, use_fa3=False, use_rope_real=False):
         global_att_blocks=(7, 15, 23, 31),
         rel_pos_blocks=(),
         use_rope=True,
-        use_interp_rope=False,
+        use_interp_rope=True,
         window_size=24,
         pretrain_use_cls_token=True,
         retain_cls_token=False,
@@ -588,7 +588,6 @@ def download_ckpt_from_hf(version="sam3"):
     return checkpoint_path
 
 def build_sam3_video_model(
-    
     use_fa3: bool = False,
     checkpoint_path: Optional[str] = None,
     load_from_HF=True,
@@ -648,22 +647,83 @@ def build_sam3_video_model(
         supervise_joint_box_scores=has_presence_token,
     )
 
+    # if apply_temporal_disambiguation:
+    #     print(f'apply_temporal_disambiguation={apply_temporal_disambiguation}')
+    #     model = Sam3VideoInferenceWithInstanceInteractivity(
+    #         detector=detector,
+    #         tracker=tracker,
+    #         score_threshold_detection=0.6,
+    #         assoc_iou_thresh=0.1,
+    #         det_nms_thresh=0.1,
+    #         new_det_thresh=0.9,
+    #         hotstart_delay=0,
+    #         hotstart_unmatch_thresh=6,
+    #         hotstart_dup_thresh=6,
+    #         suppress_unmatched_only_within_hotstart=False,
+    #         min_trk_keep_alive=-1,
+    #         max_trk_keep_alive=120,
+    #         init_trk_keep_alive=5,
+    #         suppress_overlapping_based_on_recent_occlusion_threshold=0.8,
+    #         suppress_det_close_to_boundary=False,
+    #         fill_hole_area=16,
+    #         recondition_every_nth_frame=32,
+    #         masklet_confirmation_enable=True,
+    #         decrease_trk_keep_alive_for_empty_masklets=False,
+    #         image_size=1008,
+    #         image_mean=(0.5, 0.5, 0.5),
+    #         image_std=(0.5, 0.5, 0.5),
+    #         compile_model=compile,
+    #         max_num_objects=max_num_objects,
+    #         num_obj_for_compile=num_obj_for_compile,
+    #     )
+
+    # else:
+    #     print(f'apply_temporal_disambiguation={apply_temporal_disambiguation}')
+    #     model = Sam3VideoInferenceWithInstanceInteractivity(
+    #         detector=detector,
+    #         tracker=tracker,
+    #         score_threshold_detection=0.1,
+    #         assoc_iou_thresh=0.1,
+    #         det_nms_thresh=0.1,
+    #         new_det_thresh=0.1,
+    #         hotstart_delay=0,
+    #         hotstart_unmatch_thresh=4,
+    #         hotstart_dup_thresh=4,
+    #         suppress_unmatched_only_within_hotstart=False,
+    #         min_trk_keep_alive=-1,
+    #         max_trk_keep_alive=1,
+    #         init_trk_keep_alive=1,
+    #         suppress_overlapping_based_on_recent_occlusion_threshold=0.1,
+    #         suppress_det_close_to_boundary=False,
+    #         fill_hole_area=8,
+    #         recondition_every_nth_frame=0,
+    #         masklet_confirmation_enable=False,
+    #         decrease_trk_keep_alive_for_empty_masklets=False,
+    #         image_size=1008,
+    #         image_mean=(0.5, 0.5, 0.5),
+    #         image_std=(0.5, 0.5, 0.5),
+    #         compile_model=compile,
+    #         max_num_objects=max_num_objects,
+    #         num_obj_for_compile=num_obj_for_compile,
+    #     )
+
+    # Build the main SAM3 video model
     if apply_temporal_disambiguation:
         print(f'apply_temporal_disambiguation={apply_temporal_disambiguation}')
         model = Sam3VideoInferenceWithInstanceInteractivity(
             detector=detector,
             tracker=tracker,
-            score_threshold_detection=0.46,
+            score_threshold_detection=0.65,
             assoc_iou_thresh=0.1,
-            det_nms_thresh=0.1,
-            new_det_thresh=0.8,
-            hotstart_delay=0,
-            hotstart_unmatch_thresh=6,
-            hotstart_dup_thresh=6,
+            det_nms_thresh=0.15,
+            new_det_thresh=0.9,
+            hotstart_delay=15,
+            hotstart_unmatch_thresh=8,
+            hotstart_dup_thresh=8,
             suppress_unmatched_only_within_hotstart=False,
             min_trk_keep_alive=-1,
-            max_trk_keep_alive=120,
-            init_trk_keep_alive=5,
+            max_trk_keep_alive=30,
+            init_trk_keep_alive=30,
             suppress_overlapping_based_on_recent_occlusion_threshold=0.8,
             suppress_det_close_to_boundary=False,
             fill_hole_area=32,
@@ -674,29 +734,27 @@ def build_sam3_video_model(
             image_mean=(0.5, 0.5, 0.5),
             image_std=(0.5, 0.5, 0.5),
             compile_model=compile,
-            max_num_objects=max_num_objects,
-            num_obj_for_compile=num_obj_for_compile,
         )
-
     else:
         print(f'apply_temporal_disambiguation={apply_temporal_disambiguation}')
+        # a version without any heuristics for ablation studies
         model = Sam3VideoInferenceWithInstanceInteractivity(
             detector=detector,
             tracker=tracker,
-            score_threshold_detection=0.1,
+            score_threshold_detection=0.5,
             assoc_iou_thresh=0.1,
             det_nms_thresh=0.1,
-            new_det_thresh=0.1,
+            new_det_thresh=0.7,
             hotstart_delay=0,
-            hotstart_unmatch_thresh=4,
-            hotstart_dup_thresh=4,
-            suppress_unmatched_only_within_hotstart=False,
+            hotstart_unmatch_thresh=0,
+            hotstart_dup_thresh=0,
+            suppress_unmatched_only_within_hotstart=True,
             min_trk_keep_alive=-1,
-            max_trk_keep_alive=1,
-            init_trk_keep_alive=1,
-            suppress_overlapping_based_on_recent_occlusion_threshold=0.1,
+            max_trk_keep_alive=30,
+            init_trk_keep_alive=30,
+            suppress_overlapping_based_on_recent_occlusion_threshold=0.7,
             suppress_det_close_to_boundary=False,
-            fill_hole_area=8,
+            fill_hole_area=16,
             recondition_every_nth_frame=0,
             masklet_confirmation_enable=False,
             decrease_trk_keep_alive_for_empty_masklets=False,
@@ -704,65 +762,7 @@ def build_sam3_video_model(
             image_mean=(0.5, 0.5, 0.5),
             image_std=(0.5, 0.5, 0.5),
             compile_model=compile,
-            max_num_objects=max_num_objects,
-            num_obj_for_compile=num_obj_for_compile,
         )
-
-    # Build the main SAM3 video model
-    # if apply_temporal_disambiguation:
-    #     print(f'apply_temporal_disambiguation={apply_temporal_disambiguation}')
-    #     model = Sam3VideoInferenceWithInstanceInteractivity(
-    #         detector=detector,
-    #         tracker=tracker,
-    #         score_threshold_detection=0.2,
-    #         assoc_iou_thresh=0.1,
-    #         det_nms_thresh=0.1,
-    #         new_det_thresh=0.7,
-    #         hotstart_delay=15,
-    #         hotstart_unmatch_thresh=8,
-    #         hotstart_dup_thresh=8,
-    #         suppress_unmatched_only_within_hotstart=False,
-    #         min_trk_keep_alive=-1,
-    #         max_trk_keep_alive=30,
-    #         init_trk_keep_alive=30,
-    #         suppress_overlapping_based_on_recent_occlusion_threshold=0.7,
-    #         suppress_det_close_to_boundary=False,
-    #         fill_hole_area=16,
-    #         recondition_every_nth_frame=16,
-    #         masklet_confirmation_enable=False,
-    #         decrease_trk_keep_alive_for_empty_masklets=False,
-    #         image_size=1008,
-    #         image_mean=(0.5, 0.5, 0.5),
-    #         image_std=(0.5, 0.5, 0.5),
-    #         compile_model=compile,
-    #     )
-    # else:
-    #     print(f'apply_temporal_disambiguation={apply_temporal_disambiguation}')
-    #     model = Sam3VideoInferenceWithInstanceInteractivity(
-    #         detector=detector,
-    #         tracker=tracker,
-    #         score_threshold_detection=0.5,
-    #         assoc_iou_thresh=0.1,
-    #         det_nms_thresh=0.1,
-    #         new_det_thresh=0.7,
-    #         hotstart_delay=0,
-    #         hotstart_unmatch_thresh=0,
-    #         hotstart_dup_thresh=0,
-    #         suppress_unmatched_only_within_hotstart=True,
-    #         min_trk_keep_alive=-1,
-    #         max_trk_keep_alive=30,
-    #         init_trk_keep_alive=30,
-    #         suppress_overlapping_based_on_recent_occlusion_threshold=0.7,
-    #         suppress_det_close_to_boundary=False,
-    #         fill_hole_area=16,
-    #         recondition_every_nth_frame=0,
-    #         masklet_confirmation_enable=False,
-    #         decrease_trk_keep_alive_for_empty_masklets=False,
-    #         image_size=1008,
-    #         image_mean=(0.5, 0.5, 0.5),
-    #         image_std=(0.5, 0.5, 0.5),
-    #         compile_model=compile,
-    #     )
 
     checkpoint_path = download_ckpt_from_hf(version="sam3")
     if checkpoint_path is not None:
