@@ -90,12 +90,12 @@ def format_timestamp(seconds: float) -> str:
 
     return f"{h:02d}:{m:02d}:{s:06.3f}"
 
-def encoder_args() -> list[str]:
+def encoder_args(fps=None) -> list[str]:
 
     return [
 
-        '-sws_flags', 'lanczos+full_chroma_int+accurate_rnd+full_chroma_inp',
         '-fps_mode', 'cfr',
+        '-r', str(fps) if fps is not None else '60',
         '-c:v', ENCODER,
         '-preset', 'p5',
         '-profile:v', 'main10',
@@ -145,7 +145,7 @@ def ffmpeg_progress(cmd: list[str], progress_prefix: str = "", cwd: str | None =
 
     return process.returncode, "".join(stderr_lines)
 
-def info(video_path: str) -> Tuple[int, int, float, float]:
+def info(video_path: str):
 
     cmd = [
 
@@ -163,37 +163,32 @@ def info(video_path: str) -> Tuple[int, int, float, float]:
 
     lines = result.stdout.strip().split('\n')
 
-    w, h, fps_str,fps_avg = lines[0].split(',')
+    w,h,fps_str,fps_avg = lines[0].split(',')
 
     cmd2 = ['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', video_path]
     duration = float(subprocess.check_output(cmd2).decode().strip())
 
-#     vfr_cmd = [
-#         'ffmpeg', '-i', video_path, 
-#         '-vf', 'vfrdet', 
-#         '-f', 'null', '-'
-#     ]
-#     vfr_result = subprocess.run(vfr_cmd, capture_output=True, text=True)
-    
-#     is_vfr = False
-#     vfr_match = re.search(r'VFR:(\d+\.\d+)', vfr_result.stderr)
-#     if vfr_match:
-#         vfr_score = float(vfr_match.group(1))
-  
-#         is_vfr = vfr_score > 0.0
+    if '/' in fps_str:
+        num, den = fps_str.split('/')
+        fps_str = float(num) / float(den)
+        fps = fps_str
+
+    else:
+        fps_str = float(fps_str)
+        fps = fps_str
+
+    if '/' in fps_avg:
+        num, den = fps_avg.split('/')
+        fps_avg = float(num) / float(den)
+
+    else:
+        fps_avg = float(fps_avg)
 
     is_vfr = False
     if fps_str != fps_avg:
         is_vfr = True
 
-    if '/' in fps_str:
-        num, den = fps_str.split('/')
-        fps = float(num) / float(den)
-
-    else:
-        fps = float(fps_str)
-
-    return int(w), int(h), normalize_fps(fps), duration, is_vfr
+    return int(w), int(h), fps, duration, is_vfr
 
 def frame_count(video_path: str) -> int:
 
@@ -220,14 +215,14 @@ def frame_count(video_path: str) -> int:
 def norm_video(source_video, w = None, h = None, fps = None, progress_prefix: str = "[normalize] ", video_args = None) -> str:
 
     wi, hi, _, duration, is_vfr = info(source_video)
-    enc = encoder_args()
-
+    
     if is_vfr or video_args.normalize_input or fps is not None:
         print(f"-- norm_video: VRF = {is_vfr} - {fps}, normalize_input = {video_args.normalize_input}")
         source_path = Path(source_video).expanduser().resolve()
         output_video = str(source_path.with_name(f"{source_path.stem}_normed.mp4"))
 
         fps = aorb(fps, 60)
+        enc = encoder_args(fps=fps)
 
         if w is not None:
             wi = w
@@ -237,7 +232,7 @@ def norm_video(source_video, w = None, h = None, fps = None, progress_prefix: st
 
             'ffmpeg', '-y', '-hwaccel', 'auto',
             '-i', source_video,
-            '-filter_complex', f'[0:v]fps={fps},setpts=N/({fps}*TB),scale=w={wi}:h={hi}:flags=lanczos:threads=0',
+            '-filter_complex', f'[0:v]fps={fps},setpts=N/({fps}*TB),scale=w={wi}:h={hi}:flags=bilinear:threads=0',
             *enc,
             output_video,
         ]
@@ -261,16 +256,15 @@ def norm_video(source_video, w = None, h = None, fps = None, progress_prefix: st
     
 def resize_video(source_video: str, output_video: str, width: int, height: int, progress_prefix: str = "[resize] ") -> str:
 
-    enc = encoder_args()
     fps = info(source_video)[2]
-
+    enc = encoder_args(fps=fps)
     os.makedirs(os.path.dirname(os.path.abspath(output_video)) or '.', exist_ok=True)
 
     cmd = [
 
         'ffmpeg', '-y', '-hwaccel', 'auto',
         '-i', source_video,
-        '-filter_complex', f'[0:v]fps={fps},setpts=N/({fps}*TB),scale={width}:{height}:flags=lanczos:threads=0',
+        '-filter_complex', f'[0:v]fps={fps},setpts=N/({fps}*TB),scale={width}:{height}:flags=bilinear:threads=0',
         *enc,
         output_video,
     ]
@@ -293,7 +287,7 @@ def concat_video(video_list: list[str], output_path: str, fps: float | None = No
     fps = info(video_list[0])[2]
     BATCH_SIZE = 50
     n = len(video_list)
-    enc = encoder_args()
+    enc = encoder_args(fps=fps)
 
     if n > BATCH_SIZE:
 
@@ -434,7 +428,7 @@ def extract_segment_frames(
 
     fps = info(stereo_video)[2]
 
-    enc = encoder_args()
+    enc = encoder_args(fps=fps)
 
     start_frame = round(start * fps)
     end_frame = round(end * fps)
@@ -466,7 +460,7 @@ def extract_segment_frames(
         f"[full]split=2[fullL][fullR];"
         f"[fullL]select=eq(n\\,0),{frame_left}[frame_left];"
         f"[fullR]select=eq(n\\,0),{frame_right}[frame_right];"
-        f"[toscale]format=nv12,scale={scale_w}:{scale_h}:flags=lanczos,split=2[sL][sR];"
+        f"[toscale]format=nv12,scale={scale_w}:{scale_h}:flags=bilinear,split=2[sL][sR];"
         f"[sL]{video_left}[video_left];"
         f"[sR]{video_right}[video_right]"
     )
@@ -541,17 +535,147 @@ def overlay_path(source_video: str, output_path: str) -> str:
 
     return str(target_path.with_suffix('.mp4'))
 
+# def mask_overlay(source_video: str, mask_video: str, output_path: str, background_color: str = '0x00ff00', video_args: argparse.Namespace = None) -> str:
+
+#     resolved_path = overlay_path(source_video, output_path)
+#     src_w, src_h, src_fps, src_duration, is_vfr = info(source_video)
+#     mask_w, mask_h, mask_fps, mask_duration, is_vfr = info(mask_video)
+     
+#     # if src_fps != mask_fps:
+#     #     print(f"-- Fps does not match: src_fps={src_fps:.6f} mask_fps={mask_fps:.6f}")
+#     #     source_video = norm_video(source_video, fps=src_fps, video_args=video_args)
+#     # mask_video = norm_video(mask_video, fps=src_fps, video_args=video_args)
+
+#     # duration = mask_duration
+#     # fps = src_fps
+
+#     # if (src_w, src_h) != (mask_w, mask_h):
+
+#     #     orig_filter = f"format=rgba,fps=fps={src_fps},setpts=N/({src_fps}*TB),scale={src_w}:{src_h}:flags=bilinear"
+
+#     #     mask_filter = f"format=gray,fps=fps={src_fps},setpts=N/({src_fps}*TB),scale={src_w}:{src_h}:flags=bilinear,lut=a=val/255"
+
+#     #     bg_filter = f"format=rgba,fps=fps={src_fps},setpts=N/({src_fps}*TB),scale={src_w}:{src_h}:flags=bilinear"
+
+#     # else:
+#     #     orig_filter = 'format=rgba'
+#     #     mask_filter = 'format=gray,lut=a=val/255'
+#     #     bg_filter = 'format=rgba'
+
+#     # filter_complex = (
+
+#     #     f"[0:v]{orig_filter}[orig];"
+#     #     f"[1:v]{mask_filter}[mask_alpha];"
+#     #     f"[orig][mask_alpha]alphamerge[alphaed];"
+#     #     f"[2:v]{bg_filter}[bg];"
+#     #     f"[bg][alphaed]overlay=shortest=1:format=auto[out]"
+#     # )
+
+#     # os.makedirs(os.path.dirname(os.path.abspath(resolved_path)) or '.', exist_ok=True)
+
+#     # cmd = [
+#     #     'ffmpeg', '-y',
+#     #     '-hwaccel', 'auto',
+#     #     '-i', source_video,
+#     #     '-i', mask_video,
+#     #     '-f', 'lavfi', 
+#     #     '-i', f'color=c={background_color}',  # Infinite canvas: no forced size, duration, or fps here
+#     #     '-filter_complex', filter_complex,
+#     #     '-map', '[out]',
+#     #     '-t', str(duration),
+#     # ]
+
+#     # bg_filter = f"format=rgba,scale={src_w}:{src_h}:flags=bilinear"
+
+#     # if (src_w, src_h) != (mask_w, mask_h):
+#     #     orig_filter = f"format=rgba,scale={src_w}:{src_h}:flags=bilinear"
+#     #     mask_filter = f"format=gray,scale={src_w}:{src_h}:flags=bilinear,lut=a=val/255"
+#     # else:
+#     #     orig_filter = 'format=rgba'
+#     #     mask_filter = 'format=gray,lut=a=val/255'
+#     #     bg_filter = 'format=rgba'
+
+#     # filter_complex = (
+#     #     f"[0:v]{orig_filter}[orig];"
+#     #     f"[1:v]{mask_filter}[mask_alpha];"
+#     #     f"[orig][mask_alpha]alphamerge[alphaed];"
+#     #     f"[2:v]{bg_filter}[bg];"
+#     #     f"[bg][alphaed]overlay=shortest=1:format=auto[out]"
+#     # )
+
+#     duration = mask_duration
+#     fps = mask_fps
+
+#     # if (src_w, src_h) != (mask_w, mask_h):
+#     orig_filter = f"format=rgba,scale={src_w}:{src_h}:flags=bilinear"
+#     mask_filter = f"format=gray,scale={src_w}:{src_h}:flags=bilinear,lut=a=val/255"
+#     bg_filter = f"format=rgba,scale={src_w}:{src_h}:flags=bilinear"
+#     # else:
+#     #     orig_filter = 'format=rgba'
+#     #     mask_filter = 'format=gray,lut=a=val/255'
+#     #     bg_filter = 'format=rgba'
+
+#     filter_complex = (
+#         f"[0:v]{orig_filter}[orig];"
+#         f"[1:v]{mask_filter}[mask_alpha];"
+#         f"[orig][mask_alpha]alphamerge[alphaed];"
+#         f"[2:v]{bg_filter}[bg];"
+#         f"[bg][alphaed]overlay=shortest=1:format=auto[out]"
+#     )
+
+#     os.makedirs(os.path.dirname(os.path.abspath(resolved_path)) or '.', exist_ok=True)
+
+#     cmd = [
+#         'ffmpeg', '-y', '-hide_banner',
+#         '-i', source_video,
+#         '-i', mask_video,
+#         '-f', 'lavfi', '-i', f'color=c={background_color}:s={src_w}x{src_h}:d={duration}:r={fps}',
+#         '-filter_complex', filter_complex,
+#         '-map', '[out]',
+#         '-shortest',
+#     ]
+
+#     cmd.extend(encoder_args(fps=fps))
+#     cmd.append(resolved_path)
+
+#     rc, stderr_text = ffmpeg_progress(cmd)
+
+#     if rc != 0:
+#         raise RuntimeError(f"Mask overlay failed.\n\nFFmpeg tail:\n{''.join(stderr_text.splitlines(True)[-40:])}")
+
+#     return resolved_path
+
 def mask_overlay(source_video: str, mask_video: str, output_path: str, background_color: str = '0x00ff00', video_args: argparse.Namespace = None) -> str:
 
     resolved_path = overlay_path(source_video, output_path)
-    src_w, src_h, src_fps, src_duration, is_vfr = info(source_video)
-    mask_w, mask_h, mask_fps, mask_duration, is_vfr = info(mask_video)
+    src_w, src_h, src_fps, src_duration, _ = info(source_video)
+    mask_w, mask_h, mask_fps, mask_duration, _ = info(mask_video)
 
-    orig_filter = f"format=rgba,scale={src_w}:{src_h}:flags=lanczos"
-    mask_filter = f"format=gray,scale={src_w}:{src_h}:flags=lanczos,lut=a=val/255"
-    bg_filter = f"format=rgba,scale={src_w}:{src_h}:flags=lanczos" 
+    if src_fps != mask_fps:
+
+        if src_fps < 60:
+            source_video = norm_video(source_video)
+
+        if mask_fps < 60:
+            mask_video = norm_video(mask_video)
+
+    duration = src_duration
+    fps = src_fps
+    enc = encoder_args(fps=fps)
+
+    if (src_w, src_h) != (mask_w, mask_h):
+
+        orig_filter = f"format=rgba,scale={src_w}:{src_h}:flags=bilinear"
+        mask_filter = f"format=gray,scale={src_w}:{src_h}:flags=bilinear,lut=a=val/255"
+        bg_filter = f"format=rgba,scale={src_w}:{src_h}:flags=bilinear"
+
+    else:
+        orig_filter = 'format=rgba'
+        mask_filter = 'format=gray,lut=a=val/255'
+        bg_filter = 'format=rgba'
 
     filter_complex = (
+
         f"[0:v]{orig_filter}[orig];"
         f"[1:v]{mask_filter}[mask_alpha];"
         f"[orig][mask_alpha]alphamerge[alphaed];"
@@ -562,19 +686,18 @@ def mask_overlay(source_video: str, mask_video: str, output_path: str, backgroun
     os.makedirs(os.path.dirname(os.path.abspath(resolved_path)) or '.', exist_ok=True)
 
     cmd = [
-        'ffmpeg', '-y',
-        '-hwaccel', 'auto',
+
+        'ffmpeg', '-y', '-hide_banner',
         '-i', source_video,
         '-i', mask_video,
-        '-f', 'lavfi', '-i', f'color=c={background_color}',  
+        '-f', 'lavfi', '-i', f'color=c={background_color}:s={src_w}x{src_h}:d={duration}:r={fps}',
         '-filter_complex', filter_complex,
         '-map', '[out]',
-        '-t', str(src_duration),
+        '-map', '0:a?',
+        *enc,
+        resolved_path,
 
     ]
-
-    cmd.extend(encoder_args())
-    cmd.append(resolved_path)
 
     rc, stderr_text = ffmpeg_progress(cmd)
 
@@ -585,7 +708,8 @@ def mask_overlay(source_video: str, mask_video: str, output_path: str, backgroun
 
 def stereo_video(left_video: str, right_video: str, output_path: str) -> str:
 
-    enc = encoder_args()
+    fps = info(left_video)[2]
+    enc = encoder_args(fps=fps)
 
     filter_complex = "[0:v][1:v]hstack=inputs=2[out]"
 
@@ -640,7 +764,7 @@ def _ceil_to(n: int, base: int) -> int:
     return ((n + base - 1) // base) * base
 
 def get_circle_mask(size: int) -> str:
-
+    
     import tempfile
     from pathlib import Path
 
@@ -656,11 +780,12 @@ def get_circle_mask(size: int) -> str:
         draw = ImageDraw.Draw(circle_img)
         draw.ellipse([0, 0, size_hr - 1, size_hr - 1], fill=255)
 
-        circle_img = circle_img.resize((size, size), Image.Resampling.LANCZOS)
+        circle_img = circle_img.resize((size, size), Image.Resampling.BILINEAR)
         circle_img = circle_img.filter(ImageFilter.GaussianBlur(radius=1))
         circle_img.save(str(mask_path))
 
     except ImportError:
+
         cmd = [
 
             "ffmpeg", "-y", "-f", "lavfi", "-i",
@@ -669,19 +794,21 @@ def get_circle_mask(size: int) -> str:
             "geq=lum='if(lte(pow(X-W/2,2)+pow(Y-H/2,2),pow(min(W,H)/2,2)),255,0)'",
             "-frames:v", "1",
             str(mask_path),
+            
         ]
-
         subprocess.run(cmd, capture_output=True, text=True)
 
     return str(mask_path)
 
 def discover_input_pairs(input_path: str) -> list[tuple[Path, Path]]:
+
     path = Path(input_path).expanduser().resolve()
 
     if not path.exists():
         raise FileNotFoundError(f"Input path not found: {input_path}")
 
     if path.is_file():
+
         if path.suffix.lower() not in VIDEO_EXTENSIONS:
             raise RuntimeError(f"Unsupported video file: {path}")
 
@@ -689,14 +816,16 @@ def discover_input_pairs(input_path: str) -> list[tuple[Path, Path]]:
 
         if not mask_path.exists():
             raise FileNotFoundError(f"Mask not found for {path}: expected {mask_path}")
-
+        
         return [(path, mask_path)]
 
     if not path.is_dir():
         raise RuntimeError(f"Input path is not a file or folder: {input_path}")
 
     pairs: list[tuple[Path, Path]] = []
+
     for candidate in sorted(path.rglob('*')):
+
         if not candidate.is_file() or candidate.suffix.lower() not in VIDEO_EXTENSIONS:
             continue
 
@@ -704,6 +833,7 @@ def discover_input_pairs(input_path: str) -> list[tuple[Path, Path]]:
             continue
 
         mask_path = candidate.with_name(f"{candidate.stem}_mask{candidate.suffix}")
+
         if mask_path.exists():
             pairs.append((candidate.resolve(), mask_path.resolve()))
 
@@ -719,12 +849,14 @@ def create_alpha_pack_command(
     video_dims: tuple[int, int],
 ) -> list[str]:
 
-    src_fps = info(video_path)[2]
     video_w, video_h = video_dims
     out_h = _ceil_to(video_h, 32)
 
+    fps = info(video_path)[2]
+
     if video_w == 2 * video_h:
         out_w = 2 * out_h
+
     else:
         out_w = _ceil_to(video_w, 32)
 
@@ -739,6 +871,7 @@ def create_alpha_pack_command(
         erosion_threshold = 32768
         contrast = 2.0
         gamma = 1.2
+
     else:
         erosion_threshold = 65535
         contrast = 2.5
@@ -798,7 +931,7 @@ def create_alpha_pack_command(
 
     cmd: list[str] = [
 
-        'ffmpeg', '-y', '-hide_banner',
+        'ffmpeg', '-y', '-hwaccel', 'auto',
         "-filter_threads", "0",
         "-threads", "0",
         "-i", video_path,
@@ -808,20 +941,29 @@ def create_alpha_pack_command(
         "-filter_complex", filter_complex,
         "-map", "[out]",
         "-map", "0:a?",
-        "-shortest",
-        *encoder_args(src_fps),
-        output_path,
     ]
 
-    return cmd
+    cmd.extend(encoder_args(fps=fps))
+    cmd.append(output_path)
+
+    rc, stderr_text = ffmpeg_progress(cmd)
+
+    if rc != 0:
+        raise RuntimeError(f"Mask overlay failed.\n\nFFmpeg tail:\n{''.join(stderr_text.splitlines(True)[-40:])}")
+
+    return output_path
+
+    #     *encoder_args(),
+    #     output_path,
+    # ]
+
+    # return cmd
 
 def pack_video(
-
     video_path: str,
     mask_path: str,
     output_path: str | None = None,
     sync_frames = None,
-    progress_prefix: str = "[ALPHA] "
 
 ) -> int:
 
@@ -837,13 +979,14 @@ def pack_video(
     synced_tmp = None
 
     if sync_frames is not None:
-        fps = info(mask_path)[2]
+        
+        _, _, fps, duration, is_vfr = info(mask_path)
         print(f"Syncing mask by {sync_frames} frame(s)...")
         synced_tmp = sync_mask_to_video(mask_path, fps=fps, frame_offset=sync_frames)
         actual_mask = synced_tmp
 
-    video_w, video_h, *_ = info(video_path)
-    mask_w, mask_h, *_ = info(actual_mask)
+    video_w, video_h, fps, duration, is_vfr  = info(video_path)
+    mask_w, mask_h, fps, duration, is_vfr  = info(actual_mask)
 
     encoder = "hevc_nvenc"
 
@@ -851,36 +994,19 @@ def pack_video(
     print(f"Encoder: {encoder}")
     print(f"Mask: {mask_w}x{mask_h}")
 
-    cmd = create_alpha_pack_command(video_path, actual_mask, output_path, (video_w, video_h))
-    rc, stderr_text = ffmpeg_progress(cmd, progress_prefix=progress_prefix)
-
-    if rc != 0:
-        raise RuntimeError(
-
-            "Alpha failed.\n\nFFmpeg tail:\n"
-            + ''.join(stderr_text.splitlines(True)[-40:])
-        )
-
-    if not os.path.exists(output_path):
-        raise RuntimeError(f"Alpha failed: {output_path}")
-
-    if synced_tmp and os.path.exists(synced_tmp):
-        os.remove(synced_tmp)
-
-    print(f" Failed to pack {video_path}")
+    output_path = create_alpha_pack_command(video_path, actual_mask, output_path, (video_w, video_h))
 
     return output_path
+
+ALPHA_PACKER_PIPELINE_MODE = '__PIPELINE__'
 
 def packer(input_path: str, sync_frames=None) -> int:
     input_pairs = discover_input_pairs(input_path)
 
     processed = []
-
     for index, (video_path, mask_path) in enumerate(input_pairs, 1):
-
         print(f"[{index}/{len(input_pairs)}] Processing: {video_path.name} <- {mask_path.name}")
-        rc = pack_video(str(video_path), str(mask_path), sync_frames=None)
-
+        rc = pack_video(str(video_path), str(mask_path), sync_frames=sync_frames)
         if rc == 0:
             processed.append((str(video_path), str(mask_path)))
         print()
@@ -889,6 +1015,9 @@ def packer(input_path: str, sync_frames=None) -> int:
         print(" No files were packed successfully")
         return 1
 
+    print("=" * 60)
+    print("Batch packing complete")
+    print("=" * 60)
     for video_path, mask_path in processed:
         print(f"{video_path} <- {mask_path}")
 
@@ -911,11 +1040,11 @@ def sync_mask_to_video(mask_path: str, fps: float, frame_offset: int = 0) -> str
     synced_path = f"{base}_synced{ext}"
 
     cmd = [
-
         'ffmpeg', '-y',
         '-i', mask_path,
         '-vf', vf,
-        *encoder_args(fps),
+
+        *encoder_args(fps=fps),
         synced_path,
     ]
 
@@ -976,7 +1105,7 @@ def fisheye180(input_video: str, mask_path: str | None = None) -> str:
         '-filter_complex', filter_complex,
         '-map', '[out]',
         '-map', '0:a?',
-        *encoder_args(),
+        *encoder_args(fps=fps),
         output_video,
     ])
 
