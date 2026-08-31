@@ -268,21 +268,22 @@ def _matanyone_process_segment(matanyone_model, device, inference_core_cls, job:
     if r_erode > 0:
         mask = gen_erosion(mask, r_erode, r_erode)
 
-    mask = torch.from_numpy(mask).float().to(device)
-
-    mask = F.interpolate(
-
-        mask.unsqueeze(0).unsqueeze(0),
-        size=(max_size, max_size),
-        mode="nearest-exact"
-
-    )[0][0]
+    # mask = torch.from_numpy(mask).float().to(device)
 
     # if mask.shape != (max_size, max_size):
-        
-    #     mask = cv2.resize(mask.astype(np.uint8), (max_size, max_size), interpolation=cv2.INTER_AREA).astype(np.float32)
+    #     mask = F.interpolate(
 
-    # mask = torch.from_numpy(mask).float().to(device)
+    #         mask.unsqueeze(0).unsqueeze(0),
+    #         size=(max_size, max_size),
+    #         mode="nearest-exact"
+
+    #     )[0][0]
+
+    if mask.shape != (max_size, max_size):
+        
+        mask = cv2.resize(mask.astype(np.uint8), (max_size, max_size), interpolation=cv2.INTER_AREA).astype(np.float32)
+
+    mask = torch.from_numpy(mask).float().to(device)
 
     objects = [1]
     phas = []
@@ -719,19 +720,19 @@ def finalize(segments: List[SegmentInfo], video_name: str, video_path: str, vide
 def main() -> int:
 
     start_time = time.time()
-    parser = argparse.ArgumentParser(description='Minimal VR Video Masking Pipeline')
+    parser = argparse.ArgumentParser(description='VR Video Masking Pipeline')
     parser.add_argument('input_path')
     parser.add_argument('--mask-height', type=int, default=1008)
-    parser.add_argument('--segment-length', type=float, default=10)
+    parser.add_argument('--segment-length', type=float, default=2)
     parser.add_argument('--erode', type=int, default=0)
     parser.add_argument('--dilate', type=int, default=0)
     parser.add_argument('--prompt', type=str, default='one woman')
-    parser.add_argument('--warmup', type=int, default=0)
+    parser.add_argument('--warmup', type=int, default=6)
     parser.add_argument('--seed-model', type=str, default='sam3video', choices=['sam3', 'sam3video', 'sam31video', 'sapiens', 'hybrid'], help='Seed mask mode (sam3, sam3video, sam31video, sapiens, or hybrid)')
     parser.add_argument('--sapiens-threshold', type=float, default=0.5, help='Threshold for converting Sapiens alpha matte to a binary mask')
     parser.add_argument('--gate-dilate', type=int, default=5, help='Dilate SAM3 gating in hybrid mode')
     parser.add_argument('--matanyone-version', type=str, default='v2', choices=['v1', 'v2'], help='Select MatAnyone runtime version')
-    parser.add_argument('--ma2-mem-every', type=int, default=32, help='Override MatAnyone mem_every (works for v1 and v2; e.g. 2 or 3 for faster refresh)')
+    parser.add_argument('--ma2-mem-every', type=int, default=6, help='Override MatAnyone mem_every (works for v1 and v2; e.g. 2 or 3 for faster refresh)')
     parser.add_argument('--ma2-max-mem-frames', type=int, default=2, help='Override MatAnyone memory window in frames (works for v1 and v2)')
     parser.add_argument('--ma2-use-long-term', type=str, default='off', choices=['auto', 'on', 'off'], help='Override MatAnyone long-term memory mode (works for v1 and v2)')
     parser.add_argument('--temporal-median-window', type=int, default=0, help='Temporal median window for alpha cleanup. 0 disables; use odd values >= 3 (e.g. 5)')
