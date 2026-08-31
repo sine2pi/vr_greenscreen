@@ -98,9 +98,9 @@ class sam3_video_inference:
                 use_rope_real = False,
                 compile = False,
                 warm_up = False,
-                default_output_prob_thresh  = 0.5,
-                async_loading_frames  = True,
-                num_obj_for_compile=1
+                default_output_prob_thresh = 0.5,
+                async_loading_frames = True,
+                num_obj_for_compile = 1
                 )
 
         else:
@@ -161,7 +161,7 @@ class sam3_video_inference:
                         session_id=session_id,
                         propagation_direction="forward",
                         output_prob_thresh = 0.4,
-                        max_frame_num_to_track = max_frame_num_to_track if max_frame_num_to_track != -1 else None,
+                        max_frame_num_to_track = max_frame_num_to_track,
 
                     )):
 
@@ -185,7 +185,7 @@ class sam3_video_inference:
         else:
             raise ValueError(f"Unknown coord_type: {coord_type}")
 
-    def track(self, video_path = None, remove = False, add_box = False, sub_box = False, add_point = 0, show_plots = True):
+    def track(self, video_path = None, remove = False, add_box = True, sub_box = True, add_point = 0, show_plots = True):
 
         predictor, video_path, prompt = self.predictor, self.video_path, self.prompt
 
@@ -244,24 +244,9 @@ class sam3_video_inference:
             )
         )
 
-        frame_idx = 0
-        response = predictor.handle_request(
-
-            request=dict(
-                type="add_prompt",
-                session_id=session_id,
-                frame_idx=frame_idx,
-                text=prompt,
-
-            )
-        )
-
-        out = response["outputs"]
-        outputs = self.propagate_in_video(predictor, session_id)
-
         if add_box:
 
-            boxes = torch.tensor(np.array([[0.2, 0.2, 0.6, 0.7]]), dtype=torch.float32)
+            boxes = torch.tensor(np.array([[0.2, 0.2, 0.7, 0.7]]), dtype=torch.float32)
             labels = torch.tensor(np.array([1]), dtype=torch.int32)
 
         else:
@@ -407,53 +392,11 @@ class sam3_video_inference:
         predictor.shutdown()
         return outputs
 
-def _extract_sam3_video_mask(outputs, out_h: int, out_w: int) -> np.ndarray | None:
+def _sam3_video_inference(frames_dir, prompt, sam31, output_size, video_args) -> None:
 
-    if not isinstance(outputs, dict):
-        return None
-
-    masks = outputs.get("out_binary_masks", None)
-
-    if masks is None:
-        return None
-
-    masks = np.asarray(masks)
-
-    if masks.size == 0:
-        return None
-
-    if masks.ndim == 2:
-        best = masks.astype(np.float32)
-
-    elif masks.ndim == 3:
-
-        if masks.shape[0] == 1:
-            best = masks[0].astype(np.float32)
-
-        else:
-            probs = outputs.get("out_probs", None)
-
-            if probs is not None:
-                probs = np.asarray(probs)
-
-                if probs.size == masks.shape[0]:
-                    best = masks[int(np.argmax(probs))].astype(np.float32)
-
-                else:
-                    best = masks[0].astype(np.float32)
-
-            else:
-                best = masks[0].astype(np.float32)
-
-    else:
-        return None
-    
-    # best = np.clip((best - 0.5) * 3.0 + 0.5, 0.0, 1.0)
-    return best
-
-def _sam3_video_inference(frames_dir: str, output_size: int | None = None, prompt: str = "one woman", sam31: bool = False, video_args: argparse.Namespace = None) -> None:
-
+    output_size = video_args.mask_height
     folder = Path(frames_dir)
+
     image_files = sorted(list(folder.glob("*.png")) + list(folder.glob("*.jpg")))
     image_files = [f for f in image_files if "_mask" not in f.stem]
 
@@ -470,6 +413,11 @@ def _sam3_video_inference(frames_dir: str, output_size: int | None = None, promp
     frame_shapes: list[tuple[int, int]] = []
     output_paths: list[Path] = []
 
+    soft_masks: list[np.ndarray] = []
+    valid_flags: list[bool] = []
+
+    min_valid_pixels = int(output_size * 0.8)
+
     for i, frame_path in enumerate(image_files):
 
         out_path = frame_path.parent / f"{frame_path.stem}_mask.png"
@@ -479,9 +427,10 @@ def _sam3_video_inference(frames_dir: str, output_size: int | None = None, promp
         image = raw.convert("RGB")
         raw.close()
 
-        if image.height > output_size:
+        if image.height != output_size:
+
             full = image
-            image = full.resize((output_size, output_size), Image.Resampling.BICUBIC)
+            image = full.resize((output_size, output_size), Image.Resampling.LANCZOS)
             full.close()
 
         frame_shapes.append((image.height, image.width))
@@ -489,34 +438,76 @@ def _sam3_video_inference(frames_dir: str, output_size: int | None = None, promp
         image.close()
 
     tracker = sam3_video_inference(video_path=str(seq_dir), prompt=prompt, sam31=sam31, output_size=output_size, video_args=video_args)
-    outputs_per_frame = tracker.track()
+    inference_state = tracker.track()
 
-    missing = 0
+    with torch.inference_mode():
 
-    for i, out_path in enumerate(output_paths):
-        out_h, out_w = frame_shapes[i]
-        outputs = outputs_per_frame.get(i)
+        for i, out_path in enumerate(output_paths):
 
-        soft = _extract_sam3_video_mask(outputs, out_h, out_w)
+            out_h, out_w = frame_shapes[i]
+            outputs = inference_state.get(i)
 
-        if soft is None:
-            missing += 1
-            soft = np.zeros((out_h, out_w), dtype=np.float32)
+            masks = outputs.get("out_binary_masks", None)
+            scores = outputs.get("out_probs", None)
 
-        # soft = np.clip((soft - 0.5) * 3.0 + 0.5, 0.0, 1.0)
-        hard = (soft >= 0.5).astype(np.uint8) * 255
+            if masks is None:
+                return None
 
-        Image.fromarray(hard, mode='L').save(out_path)
+            if isinstance(scores, torch.Tensor):
+                scores = scores.cpu().numpy()
 
-    if missing > 0:
-        print(f"SAM3 video: missing {missing}/{len(output_paths)} frames; wrote empty masks for those frames")
+            else:
+                scores = np.asarray(scores)
+
+            if isinstance(masks, torch.Tensor):
+                masks = masks.cpu().numpy()
+
+            else:
+                masks = np.asarray(masks)
+
+            if len(masks) == 0 or scores.size == 0:
+                best_soft = np.zeros((image.height, image.width), dtype=np.float32)
+
+                print(f"No SAM3 masks/scores for {frame_path.name}; marking as missing for temporal fill")
+
+            else:
+                best_idx = int(np.argmax(scores))
+                best_soft = masks[best_idx]
+
+                if len(best_soft.shape) == 3:
+                    best_soft = best_soft[0]
+
+                best_soft = np.asarray(best_soft, dtype=np.float32)
+
+                print("Confidence:", scores[best_idx])
+
+            soft_masks.append(best_soft)
+            valid_flags.append(np.count_nonzero(best_soft >= 0.5) >= min_valid_pixels)
+
+    filled_soft_masks, filled_count = _fill_soft_mask_gaps(soft_masks, valid_flags, max_interp_gap=6)
+
+    if filled_count > 0:
+        print(f"Filled {filled_count} missing/weak SAM3 masks using temporal soft-mask interpolation")
+
+    for out_path, soft_mask in zip(output_paths, filled_soft_masks):
+
+        # mask = (soft_mask).astype(np.uint8) * 255
+        mask = (np.clip((soft_mask - 0.5) * 5.0 + 0.5, 0.0, 1.0) * 255).astype(np.uint8)
+        Image.fromarray(mask, mode='L').save(out_path)
+
+    # for out_path, soft_mask in zip(output_paths, filled_soft_masks):
+    #     mask = (np.clip((soft_mask - 0.5) * 1.0 + 0.5, 0.0, 1.0) * 255).astype(np.uint8)
+    #     mask = Image.fromarray(mask).convert('L')
+    #     mask = mask.filter(ImageFilter.MinFilter(size=3))
+    #     mask = mask.filter(ImageFilter.GaussianBlur(radius=1.5))
+        # mask.save(out_path)
 
     if seq_dir.exists():
         shutil.rmtree(seq_dir)
 
-def sam3_video_batch(frames_dir: str, output_size: int | None = None, prompt: str = "one woman", sam31=False, video_args: argparse.Namespace = None) -> None:
-
-    _sam3_video_inference(frames_dir, output_size=output_size, prompt=prompt, sam31=sam31, video_args=video_args)
+    del tracker, inference_state
+    gc.collect()
+    torch.cuda.empty_cache()
 
 def _fill_soft_mask_gaps(
     soft_masks: list[np.ndarray],
@@ -565,7 +556,9 @@ def _fill_soft_mask_gaps(
 
     return filled, filled_count
 
-def _sam3_inference(frames_dir: str, output_size: int | None = None, prompt: str = "one woman", show_plots = False, video_args: argparse.Namespace = None) -> None:
+def _sam3_inference(frames_dir, output_size, prompt, video_args) -> None:
+
+    show_plots = False
 
     folder = Path(frames_dir)
 
@@ -667,9 +660,6 @@ def _sam3_inference(frames_dir: str, output_size: int | None = None, prompt: str
     gc.collect()
     torch.cuda.empty_cache()
 
-def sam3_batch(frames_dir: str, output_size: int | None = None, prompt: str = "woman", video_args: argparse.Namespace = None) -> None:
-    _sam3_inference(frames_dir, output_size=output_size, prompt=prompt, video_args=video_args)
-
 def seed_mask_batch(
     frames_dir: str,
     output_size: int | None = None,
@@ -684,16 +674,48 @@ def seed_mask_batch(
     seed_model = (seed_model or "sam3").lower()
 
     if seed_model == "sam3":
-        sam3_batch(frames_dir, output_size=output_size, prompt=prompt, video_args=video_args)
+
+        _sam3_inference(
+
+            frames_dir, 
+            output_size=output_size, 
+            prompt=prompt, 
+            video_args=video_args
+
+            )
 
     elif seed_model == "sam3video":
-        sam3_video_batch(frames_dir, output_size=output_size, prompt=prompt, sam31=False, video_args=video_args)
+
+        _sam3_video_inference(
+            
+            frames_dir,
+            output_size=output_size, 
+            prompt=prompt, 
+            sam31=False, 
+            video_args=video_args
+            
+            )
 
     elif seed_model == "sam31video":
-        sam3_video_batch(frames_dir, output_size=output_size, prompt=prompt, sam31=True, video_args=video_args)
+
+        _sam3_video_inference(
+            
+            frames_dir, 
+            output_size=output_size, 
+            prompt=prompt, 
+            sam31=True, 
+            video_args=video_args
+
+            )
 
     elif seed_model == "sapiens":
-        _sapiens_inference(frames_dir, output_size=output_size, threshold=sapiens_threshold, video_args=video_args)
+
+        _sapiens_inference(
+            frames_dir, 
+            output_size=output_size, 
+            threshold=sapiens_threshold, 
+            video_args=video_args
+            )
 
     elif seed_model == "hybrid":
         _sam_sapiens(
@@ -708,9 +730,9 @@ def seed_mask_batch(
     else:
         raise ValueError(f"Unsupported seed model: {seed_model}")
 
-def _sam_sapiens(frames_dir: str, output_size: int | None = None, prompt: str = "one woman", threshold: float = 0.5, gate_dilate: int = 5, video_args: argparse.Namespace = None) -> None:
+def _sam_sapiens(frames_dir, output_size, prompt, threshold, gate_dilate, video_args) -> None:
 
-    sam3_batch(frames_dir, output_size=output_size, prompt=prompt)
+    _sam3_inference(frames_dir, output_size=output_size, prompt=prompt, video_args=video_args)
 
     folder = Path(frames_dir)
     image_files = list(folder.glob("*.png")) + list(folder.glob("*.jpg"))
