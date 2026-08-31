@@ -217,7 +217,7 @@ def norm_video(source_video, w = None, h = None, fps = None, progress_prefix: st
     wi, hi, _, duration, is_vfr = info(source_video)
     
     if is_vfr or video_args.normalize_input or fps is not None:
-        print(f"-- norm_video: VRF = {is_vfr} - {fps}, normalize_input = {video_args.normalize_input}")
+        print(f"-- norm_video")
         source_path = Path(source_video).expanduser().resolve()
         output_video = str(source_path.with_name(f"{source_path.stem}_normed.mp4"))
 
