@@ -734,6 +734,8 @@ def build_sam3_video_model(
             image_mean=(0.5, 0.5, 0.5),
             image_std=(0.5, 0.5, 0.5),
             compile_model=compile,
+            max_num_objects=max_num_objects,
+            num_obj_for_compile=num_obj_for_compile,
         )
     else:
         print(f'apply_temporal_disambiguation={apply_temporal_disambiguation}')
@@ -762,6 +764,8 @@ def build_sam3_video_model(
             image_mean=(0.5, 0.5, 0.5),
             image_std=(0.5, 0.5, 0.5),
             compile_model=compile,
+            max_num_objects=max_num_objects,
+            num_obj_for_compile=num_obj_for_compile,
         )
 
     checkpoint_path = download_ckpt_from_hf(version="sam3")
