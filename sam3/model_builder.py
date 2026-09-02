@@ -96,7 +96,7 @@ def _create_vit_backbone(compile_mode=None, use_fa3=False, use_rope_real=True):
         bias_patch_embed=False,
         compile_mode=compile_mode,
         use_fa3=use_fa3,
-        use_rope_real=True,
+        use_rope_real=False,
     )
 
 def _create_vit_neck(position_encoding, vit_backbone, enable_inst_interactivity=False):
