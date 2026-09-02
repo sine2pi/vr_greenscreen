@@ -709,7 +709,7 @@ def discover_input_pairs(input_path: str) -> list[tuple[Path, Path]]:
 
     return pairs
 
-def create_alpha_pack_command(
+def alpha_command(
     video_path: str,
     mask_path: str,
     output_path: str,
@@ -719,6 +719,7 @@ def create_alpha_pack_command(
     src_fps = info(video_path)[2]
     video_w, video_h = video_dims
     out_h = _ceil_to(video_h, 32)
+    enc = encoder_args(src_fps)
 
     if video_w == 2 * video_h:
         out_w = 2 * out_h
@@ -751,13 +752,13 @@ def create_alpha_pack_command(
 
     filter_parts: list[str] = [
 
-        f"[0:v]scale=w={out_w}:h={out_h}:flags=bicubic,format=yuv420p[vid]",
+        f"[0:v]scale=w={out_w}:h={out_h}:flags=bilinear,format=yuv420p[vid]",
         "[1:v]split=2[mask1][mask2]",
         "[2:v]format=gray,split=2[circle_l][circle_r]",
 
         (
             f"[mask1]crop=ih:ih:0:0,"
-            f"scale={overlay_size}:{overlay_size}:flags=bicubic,"
+            f"scale={overlay_size}:{overlay_size}:flags=bilinear,"
             f"{erosion_filter}"
             f"gblur=sigma={sigma},eq=contrast={contrast}:gamma={gamma},"
             "format=gbrp[left_scaled]"
@@ -766,7 +767,7 @@ def create_alpha_pack_command(
 
         (
             f"[mask2]crop=ih:ih:iw-ih:0,"
-            f"scale={overlay_size}:{overlay_size}:flags=bicubic,"
+            f"scale={overlay_size}:{overlay_size}:flags=bilinear,"
             f"{erosion_filter}"
             f"gblur=sigma={sigma},eq=contrast={contrast}:gamma={gamma},"
             "format=gbrp[right_scaled]"
@@ -804,9 +805,8 @@ def create_alpha_pack_command(
         "-i", circle_mask,
         "-filter_complex", filter_complex,
         "-map", "[out]",
-        "-map", "0:a?",
         "-shortest",
-        *encoder_args(src_fps),
+        *enc,
         output_path,
     ]
 
@@ -848,7 +848,7 @@ def pack_video(
     print(f"Encoder: {encoder}")
     print(f"Mask: {mask_w}x{mask_h}")
 
-    cmd = create_alpha_pack_command(video_path, actual_mask, output_path, (video_w, video_h))
+    cmd = alpha_command(video_path, actual_mask, output_path, (video_w, video_h))
     rc, stderr_text = ffmpeg_progress(cmd, progress_prefix=progress_prefix)
 
     if rc != 0:
