@@ -44,8 +44,6 @@ SAM3_REPO_ID = "sin2piusc/sam3_fta"
 
 SAM3_BOX_CXCYWH_NORM = (0.5, 0.4, 0.5, 0.5)
 SAM3_BOX2_CXCYWH_NORM = (0.5, 0.9, 0.9, 0.18)
-# SAM3_BOX3_CXCYWH_NORM = (0.1, 0.9, 0.9, 0.18)
-
 SAPIENS_REPO_ID = "facebook/sapiens2-matting-1b"
 SAPIENS_CHECKPOINT = "sapiens2_1b_matting.safetensors"
 SAPIENS_CONFIG = "assets/sapiens2_1b_matting_gss_p3m_metasim-1024x768.py"
@@ -144,7 +142,7 @@ class sam3_video_inference:
     def propagate_in_video(self, predictor=None, session_id=None, max_frame_num_to_track=None):
         print()
         print(f"Sam3 inference. ... ♩ ♪ ♫ ♬")
-        max_frame_num_to_track=int(self.seg_length * 60) # assumes 60 fps
+        max_frame_num_to_track=int(self.seg_length * 60)
         predictor=self.predictor
         outputs = {}
 
@@ -327,10 +325,10 @@ class sam3_video_inference:
             points_abs = np.array(
 
                 [
-                    [740, 450],  # +
-                    [760, 630],  # -
-                    [840, 640],  # -
-                    [760, 550],  # +
+                    [740, 450],
+                    [760, 630],
+                    [840, 640],
+                    [760, 550],
                 ]
             )
 
@@ -533,13 +531,6 @@ def _sam3_video_inference(frames_dir, prompt, sam31, output_size, video_args) ->
     for out_path, soft_mask in zip(output_paths, filled_soft_masks):
         hard_mask = (soft_mask).astype(np.uint8) * 255
         Image.fromarray(hard_mask, mode='L').save(out_path)
-
-    # for out_path, soft_mask in zip(output_paths, filled_soft_masks):
-    #     mask = (np.clip((soft_mask - 0.5) * 1.0 + 0.5, 0.0, 1.0) * 255).astype(np.uint8)
-    #     mask = Image.fromarray(mask).convert('L')
-    #     mask = mask.filter(ImageFilter.MinFilter(size=3))
-    #     mask = mask.filter(ImageFilter.GaussianBlur(radius=1.5))
-        # mask.save(out_path)
 
     if seq_dir.exists():
         shutil.rmtree(seq_dir)
@@ -1010,13 +1001,6 @@ def _top_tracker_ouputs(outputs: Optional[dict], out_h: int, out_w: int) -> np.n
 
     if best_soft.ndim == 3:
         best_soft = best_soft[0]
-
-    # if best_soft.shape != (out_h, out_w):
-    #     best_soft = cv2.resize(best_soft, (out_w, out_h), interpolation=cv2.INTER_LINEAR)
-
-    # if best_soft.min() < 0.0:
-    #     x = np.clip(best_soft, -20.0, 20.0)
-    #     best_soft = 1.0 / (1.0 + np.exp(-x))
 
     elif best_soft.max() > 1.0:
         best_soft = best_soft / 255.0

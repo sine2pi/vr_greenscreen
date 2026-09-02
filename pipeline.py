@@ -244,12 +244,6 @@ def _matanyone_process_segment(matanyone_model, device, inference_core_cls, job:
     frames, fps, length, video_name = read_frame_from_videos(input_path)
     frames = frames.float()
 
-    # frames = F.interpolate(
-    #     frames,
-    #     size=(max_size, max_size),
-    #     mode="area"
-    # )
-
     repeated_frames = frames[0].unsqueeze(0).repeat(n_warmup, 1, 1, 1)
     frames = torch.cat([repeated_frames, frames], dim=0).float()
     length += n_warmup
@@ -267,17 +261,6 @@ def _matanyone_process_segment(matanyone_model, device, inference_core_cls, job:
 
     if r_erode > 0:
         mask = gen_erosion(mask, r_erode, r_erode)
-
-    # mask = torch.from_numpy(mask).float().to(device)
-
-    # if mask.shape != (max_size, max_size):
-    #     mask = F.interpolate(
-
-    #         mask.unsqueeze(0).unsqueeze(0),
-    #         size=(max_size, max_size),
-    #         mode="nearest-exact"
-
-    #     )[0][0]
 
     if mask.shape != (max_size, max_size):
         
@@ -746,8 +729,8 @@ def main() -> int:
     parser.add_argument('--overlay-output', type=str, default='input_path', help='Write a composited video with the mask over the original source')
     parser.add_argument('--overlay-color', type=str, default='0x00ff00', help='Background color for overlay (use 0x00ff00 for pure green)')
     parser.add_argument('--overlay-mask', type=str, default=None, help='Write a composited video with a provided mask over the original source')
-    parser.add_argument('--alpha-packer', type=str, default=None, help='Run alpha packer. ')
-    parser.add_argument('--alpha', type=bool, default=False, help='Run alpha packer instead of overlay. ')
+    parser.add_argument('--alpha-packer', type=str, default=None, help='Run alpha packer on its own. ')
+    parser.add_argument('--alpha', type=bool, default=False, help='Run alpha packer instead of overlay within pipeline. --alpha <true|false> default is False')
     parser.add_argument('--fisheye180', nargs='?', const=FISHEYE180_PIPELINE_MODE, default=None, help='Convert an SBS equirectangular input video or folder to SBS fisheye180')
 
     args = parser.parse_args()
@@ -796,17 +779,13 @@ def main() -> int:
         print(f'[{index}/{len(video_paths)}] Processing: {video_path}')
 
         video_args = argparse.Namespace(**vars(args), video=video_path)
-        # video_path = norm_video(video_path, video_args=video_args)
         output_mask = process_video(video_path, args, temp_root, batch_mode=batch_mode)
-        # alpha = pack_video(video_path, output_mask)
         processed.append((video_path, output_mask))
 
     for video_path, output_mask in processed:
 
         print(f'{video_path}')
         print(f'{output_mask}')
-        # print(f'{packed}')
-
     total_end = time.time() - start_time
     print('=' * 60)
     print(f"Total time: {total_end:.2f}s")

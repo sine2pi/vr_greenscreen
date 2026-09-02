@@ -216,7 +216,6 @@ def norm_video(source_video, w = None, h = None, fps = None, progress_prefix: st
 
     wi, hi, _, duration, is_vfr = info(source_video)
     
-    # if is_vfr or fps is not None:
     print(f"-- normalizing video")
     source_path = Path(source_video).expanduser().resolve()
     output_video = str(source_path.with_name(f"{source_path.stem}_normed.mp4"))
@@ -249,11 +248,6 @@ def norm_video(source_video, w = None, h = None, fps = None, progress_prefix: st
         raise RuntimeError(f"Normalized video not created: {output_video}")
 
     return output_video
-    # else:
-    #     print()
-    #     print(f"[normalize - skipped], normalize_input = {video_args.normalize_input}")
-    #     return source_video
-    
 def resize_video(source_video: str, output_video: str, width: int, height: int, progress_prefix: str = "[resize] ") -> str:
 
     fps = info(source_video)[2]
@@ -535,132 +529,12 @@ def overlay_path(source_video: str, output_path: str) -> str:
 
     return str(target_path.with_suffix('.mp4'))
 
-# def mask_overlay(source_video: str, mask_video: str, output_path: str, background_color: str = '0x00ff00', video_args: argparse.Namespace = None) -> str:
-
-#     resolved_path = overlay_path(source_video, output_path)
-#     src_w, src_h, src_fps, src_duration, is_vfr = info(source_video)
-#     mask_w, mask_h, mask_fps, mask_duration, is_vfr = info(mask_video)
-     
-#     # if src_fps != mask_fps:
-#     #     print(f"-- Fps does not match: src_fps={src_fps:.6f} mask_fps={mask_fps:.6f}")
-#     #     source_video = norm_video(source_video, fps=src_fps, video_args=video_args)
-#     # mask_video = norm_video(mask_video, fps=src_fps, video_args=video_args)
-
-#     # duration = mask_duration
-#     # fps = src_fps
-
-#     # if (src_w, src_h) != (mask_w, mask_h):
-
-#     #     orig_filter = f"format=rgba,fps=fps={src_fps},setpts=N/({src_fps}*TB),scale={src_w}:{src_h}:flags=bilinear"
-
-#     #     mask_filter = f"format=gray,fps=fps={src_fps},setpts=N/({src_fps}*TB),scale={src_w}:{src_h}:flags=bilinear,lut=a=val/255"
-
-#     #     bg_filter = f"format=rgba,fps=fps={src_fps},setpts=N/({src_fps}*TB),scale={src_w}:{src_h}:flags=bilinear"
-
-#     # else:
-#     #     orig_filter = 'format=rgba'
-#     #     mask_filter = 'format=gray,lut=a=val/255'
-#     #     bg_filter = 'format=rgba'
-
-#     # filter_complex = (
-
-#     #     f"[0:v]{orig_filter}[orig];"
-#     #     f"[1:v]{mask_filter}[mask_alpha];"
-#     #     f"[orig][mask_alpha]alphamerge[alphaed];"
-#     #     f"[2:v]{bg_filter}[bg];"
-#     #     f"[bg][alphaed]overlay=shortest=1:format=auto[out]"
-#     # )
-
-#     # os.makedirs(os.path.dirname(os.path.abspath(resolved_path)) or '.', exist_ok=True)
-
-#     # cmd = [
-#     #     'ffmpeg', '-y',
-#     #     '-hwaccel', 'auto',
-#     #     '-i', source_video,
-#     #     '-i', mask_video,
-#     #     '-f', 'lavfi', 
-#     #     '-i', f'color=c={background_color}',  # Infinite canvas: no forced size, duration, or fps here
-#     #     '-filter_complex', filter_complex,
-#     #     '-map', '[out]',
-#     #     '-t', str(duration),
-#     # ]
-
-#     # bg_filter = f"format=rgba,scale={src_w}:{src_h}:flags=bilinear"
-
-#     # if (src_w, src_h) != (mask_w, mask_h):
-#     #     orig_filter = f"format=rgba,scale={src_w}:{src_h}:flags=bilinear"
-#     #     mask_filter = f"format=gray,scale={src_w}:{src_h}:flags=bilinear,lut=a=val/255"
-#     # else:
-#     #     orig_filter = 'format=rgba'
-#     #     mask_filter = 'format=gray,lut=a=val/255'
-#     #     bg_filter = 'format=rgba'
-
-#     # filter_complex = (
-#     #     f"[0:v]{orig_filter}[orig];"
-#     #     f"[1:v]{mask_filter}[mask_alpha];"
-#     #     f"[orig][mask_alpha]alphamerge[alphaed];"
-#     #     f"[2:v]{bg_filter}[bg];"
-#     #     f"[bg][alphaed]overlay=shortest=1:format=auto[out]"
-#     # )
-
-#     duration = mask_duration
-#     fps = mask_fps
-
-#     # if (src_w, src_h) != (mask_w, mask_h):
-#     orig_filter = f"format=rgba,scale={src_w}:{src_h}:flags=bilinear"
-#     mask_filter = f"format=gray,scale={src_w}:{src_h}:flags=bilinear,lut=a=val/255"
-#     bg_filter = f"format=rgba,scale={src_w}:{src_h}:flags=bilinear"
-#     # else:
-#     #     orig_filter = 'format=rgba'
-#     #     mask_filter = 'format=gray,lut=a=val/255'
-#     #     bg_filter = 'format=rgba'
-
-#     filter_complex = (
-#         f"[0:v]{orig_filter}[orig];"
-#         f"[1:v]{mask_filter}[mask_alpha];"
-#         f"[orig][mask_alpha]alphamerge[alphaed];"
-#         f"[2:v]{bg_filter}[bg];"
-#         f"[bg][alphaed]overlay=shortest=1:format=auto[out]"
-#     )
-
-#     os.makedirs(os.path.dirname(os.path.abspath(resolved_path)) or '.', exist_ok=True)
-
-#     cmd = [
-#         'ffmpeg', '-y', '-hide_banner',
-#         '-i', source_video,
-#         '-i', mask_video,
-#         '-f', 'lavfi', '-i', f'color=c={background_color}:s={src_w}x{src_h}:d={duration}:r={fps}',
-#         '-filter_complex', filter_complex,
-#         '-map', '[out]',
-#         '-shortest',
-#     ]
-
-#     cmd.extend(encoder_args(fps=fps))
-#     cmd.append(resolved_path)
-
-#     rc, stderr_text = ffmpeg_progress(cmd)
-
-#     if rc != 0:
-#         raise RuntimeError(f"Mask overlay failed.\n\nFFmpeg tail:\n{''.join(stderr_text.splitlines(True)[-40:])}")
-
-#     return resolved_path
-
 def mask_overlay(source_video: str, mask_video: str, output_path: str, background_color: str = '0x00ff00', video_args: argparse.Namespace = None) -> str:
 
     resolved_path = overlay_path(source_video, output_path)
     src_w, src_h, src_fps, src_duration, _ = info(source_video)
     mask_w, mask_h, mask_fps, mask_duration, _ = info(mask_video)
 
-    # if src_fps != mask_fps:
-
-    #     if src_fps < 60:
-    #         source_video = norm_video(source_video)
-
-    #     if mask_fps < 60:
-    #         mask_video = norm_video(mask_video)
-
-    # duration = src_duration
-    # fps = src_fps
     enc = encoder_args(fps=src_fps)
 
     if (src_w, src_h) != (mask_w, mask_h):
@@ -693,7 +567,6 @@ def mask_overlay(source_video: str, mask_video: str, output_path: str, backgroun
         '-f', 'lavfi', '-i', f'color=c={background_color}:s={src_w}x{src_h}:d={src_duration}:r={src_fps}',
         '-filter_complex', filter_complex,
         '-map', '[out]',
-        # '-map', '0:a?',
         *enc,
         resolved_path,
 
