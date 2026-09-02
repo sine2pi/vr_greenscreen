@@ -714,7 +714,7 @@ def main() -> int:
     parser.add_argument('--segment-length', type=float, default=4)
     parser.add_argument('--erode', type=int, default=4)
     parser.add_argument('--dilate', type=int, default=-4)
-    parser.add_argument('--prompt', type=str, default='one woman')
+    parser.add_argument('--prompt', type=str, default='woman')
     parser.add_argument('--warmup', type=int, default=6)
     parser.add_argument('--seed-model', type=str, default='sam3video', choices=['sam3', 'sam3video', 'sam31video', 'sapiens', 'hybrid'], help='Seed mask mode (sam3, sam3video, sam31video, sapiens, or hybrid)')
     parser.add_argument('--sapiens-threshold', type=float, default=0.5, help='Threshold for converting Sapiens alpha matte to a binary mask')
