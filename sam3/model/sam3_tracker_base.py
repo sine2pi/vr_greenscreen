@@ -17,11 +17,10 @@ try:
     from timm.layers import trunc_normal_
 except ModuleNotFoundError:
     # compatibility for older timm versions
-    from timm.models.layers import trunc_normal_
+    from timm.layers import trunc_normal_
 
 # a large negative value as a placeholder score for missing objects
 NO_OBJ_SCORE = -1024.0
-
 
 class Sam3TrackerBase(torch.nn.Module):
     def __init__(
@@ -1172,7 +1171,6 @@ class Sam3TrackerBase(torch.nn.Module):
     def _maybe_clone(self, x):
         """Clone a tensor if and only if `self.compile_all_components` is True."""
         return x.clone() if self.compile_all_components else x
-
 
 def concat_points(old_point_inputs, new_points, new_labels):
     """Add new points and labels to previous point inputs (add at the end)."""

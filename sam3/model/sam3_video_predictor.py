@@ -40,7 +40,7 @@ class Sam3VideoPredictor(Sam3BasePredictor):
         super().__init__()
         self.async_loading_frames = async_loading_frames
         self.video_loader_type = video_loader_type
-        from sam3.model_builder import build_sam3_video_model
+        from ..model_builder import build_sam3_video_model
 
         self.model = (
             build_sam3_video_model(
@@ -102,11 +102,10 @@ class Sam3VideoPredictor(Sam3BasePredictor):
         )
 
 class Sam3VideoPredictorMultiGPU(Sam3VideoPredictor):
-    def __init__(self, *model_args, gpus_to_use=None, is_sbs=False,
-            max_num_objects=1,
-            num_obj_for_compile=1, use_fa3 = True, **model_kwargs):
+
+    def __init__(self, *model_args, gpus_to_use, is_sbs, max_num_objects, num_obj_for_compile, use_fa3, **model_kwargs):
+
         if gpus_to_use is None:
-            # if not specified, use only the current GPU by default
             gpus_to_use = [torch.cuda.current_device()]
 
         IS_MAIN_PROCESS = os.getenv("IS_MAIN_PROCESS", "1") == "1"

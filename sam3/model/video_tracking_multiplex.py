@@ -41,14 +41,12 @@ from sam3.model.sam3_tracker_utils import (
 from sam3.sam.mask_decoder import MaskDecoder
 from sam3.sam.prompt_encoder import PositionEmbeddingRandom, PromptEncoder
 from sam3.sam.transformer import TwoWayTransformer
-from timm.models.layers import trunc_normal_
-
+from timm.layers import trunc_normal_
 
 # a large negative value as a placeholder score for missing objects
 NO_OBJ_SCORE = -1024.0
 
 neck_outs = ["interactive", "sam2_backbone_out"]
-
 
 class SAMOutput(TypedDict, total=True):
     # Outputs from a single SAM head forward
@@ -59,7 +57,6 @@ class SAMOutput(TypedDict, total=True):
     high_res_masks: torch.Tensor
     object_score_logits: torch.Tensor
     obj_ptr: NotRequired[torch.Tensor]  # [num_objects, C], in data space
-
 
 class StageOutput(TypedDict, total=False):
     # metadata
@@ -89,7 +86,6 @@ class StageOutput(TypedDict, total=False):
     multistep_pred_ious: list[torch.Tensor]
     multistep_point_inputs: list[dict]
     multistep_object_score_logits: list[torch.Tensor]
-
 
 class VideoTrackingMultiplex(nn.Module):
     def __init__(
@@ -2721,7 +2717,6 @@ class VideoTrackingMultiplex(nn.Module):
 
         return valid_indices
 
-
 def concat_points(old_point_inputs, new_points, new_labels):
     """Add new points and labels to previous point inputs (add at the end)."""
     if old_point_inputs is None:
@@ -2731,7 +2726,6 @@ def concat_points(old_point_inputs, new_points, new_labels):
         labels = torch.cat([old_point_inputs["point_labels"], new_labels], dim=1)
 
     return {"point_coords": points, "point_labels": labels}
-
 
 def _append(
     d1: StageOutput, d2: SAMOutput, k1: str, k2: str, dim: int = 0, strict: bool = True
@@ -2743,7 +2737,6 @@ def _append(
             return
 
     d1[k1] = torch.cat([d1[k1], d2[k2]], dim=dim)
-
 
 def _merge(
     d1: StageOutput,
@@ -2759,7 +2752,6 @@ def _merge(
         if k1 not in d1:
             return
     d1[k1][d2_idx] = d2[k2].to(dtype=d1[k1].dtype)
-
 
 class VideoTrackingDynamicMultiplex(VideoTrackingMultiplex):
     def __init__(

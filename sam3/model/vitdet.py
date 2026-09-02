@@ -25,7 +25,7 @@ try:
     from timm.layers import DropPath, trunc_normal_
 except ModuleNotFoundError:
     # compatibility for older timm versions
-    from timm.models.layers import DropPath, trunc_normal_
+    from timm.layers import DropPath, trunc_normal_
 from sam3.model.data_misc import NestedTensor
 from sam3.model.model_misc import AttentionType, LayerScale
 from sam3.perflib.fused import addmm_act

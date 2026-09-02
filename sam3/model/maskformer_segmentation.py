@@ -12,7 +12,6 @@ import torch.utils.checkpoint as checkpoint
 
 from .model_misc import MLP
 
-
 class LinearPresenceHead(nn.Sequential):
     def __init__(self, d_model):
         # a hack to make `LinearPresenceHead` compatible with old checkpoints
@@ -20,7 +19,6 @@ class LinearPresenceHead(nn.Sequential):
 
     def forward(self, hs, prompt, prompt_mask):
         return super().forward(hs)
-
 
 class MaskPredictor(nn.Module):
     def __init__(self, hidden_dim, mask_dim):
@@ -51,7 +49,6 @@ class MaskPredictor(nn.Module):
                 )
 
         return mask_preds
-
 
 class SegmentationHead(nn.Module):
     def __init__(
@@ -180,13 +177,12 @@ class SegmentationHead(nn.Module):
 
         return {"pred_masks": mask_pred}
 
-
 class PixelDecoder(nn.Module):
     def __init__(
         self,
         hidden_dim,
         num_upsampling_stages,
-        interpolation_mode="nearest",
+        interpolation_mode="nearest-exact",
         shared_conv=False,
         compile_mode=None,
     ):
@@ -229,7 +225,6 @@ class PixelDecoder(nn.Module):
             prev_fpn = F.relu(self.norms[layer_idx](prev_fpn))
 
         return prev_fpn
-
 
 class UniversalSegmentationHead(SegmentationHead):
     """This module handles semantic+instance segmentation"""

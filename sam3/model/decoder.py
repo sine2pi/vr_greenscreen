@@ -999,16 +999,33 @@ def functional_attention(
                 repeat_freqs_k=rope_k_repeat,
             )
 
-    if use_fa3:
-        from sam3.perflib.fa3 import flash_attn_func
+    # if use_fa3:
+    #     from sam3.perflib.fa3 import flash_attn_func
 
+    #     assert dropout == 0.0
+    #     out = flash_attn_func(q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2))
+    # else:
+    #     with sdpa_kernel(SDPBackend.EFFICIENT_ATTENTION):
+    #         out = torchF.scaled_dot_product_attention(q, k, v, dropout_p=dropout)
+    #     out = out.transpose(1, 2)  #  B * n * n_heads * (cv // num_heads)
+
+    # out = out.reshape(b, n, cv)
+    # return out
+
+    if use_fa3:
+      
+        from flash_attn import flash_attn_func
         assert dropout == 0.0
+
         out = flash_attn_func(q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2))
+        
     else:
+  
         with sdpa_kernel(SDPBackend.EFFICIENT_ATTENTION):
             out = torchF.scaled_dot_product_attention(q, k, v, dropout_p=dropout)
-        out = out.transpose(1, 2)  #  B * n * n_heads * (cv // num_heads)
+        out = out.transpose(1, 2) 
 
+    # 4. Shared output flattening code required by the rest of the SAM 3 model
     out = out.reshape(b, n, cv)
     return out
 

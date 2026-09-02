@@ -13,7 +13,7 @@ try:
     from timm.layers import DropPath
 except ModuleNotFoundError:
     # compatibility for older timm versions
-    from timm.models.layers import DropPath
+    from timm.layers import DropPath
 
 from .model_misc import get_clones, LayerNorm2d
 
