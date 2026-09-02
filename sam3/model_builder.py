@@ -82,7 +82,7 @@ def _create_vit_backbone(compile_mode=None, use_fa3=False, use_rope_real=True):
         drop_path_rate=0.1,
         qkv_bias=True,
         use_abs_pos=True,
-        tile_abs_pos=True,
+        tile_abs_pos=False,
         global_att_blocks=(7, 15, 23, 31),
         rel_pos_blocks=(),
         use_rope=True,
