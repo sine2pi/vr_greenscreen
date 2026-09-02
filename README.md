@@ -6,7 +6,8 @@ Install whatever you need to run the ai models.
 
 python pipeline.py path_to_videos
 
-Alpha packing options added
+Alpha packing options added:
+python pipeline.py ./videos --alpha True
 
     '--mask-height', type=int, default=1008
     '--segment-length', type=float, default=4
