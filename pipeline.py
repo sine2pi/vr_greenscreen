@@ -515,7 +515,7 @@ def _input_videos(input_path: str) -> List[Path]:
 
     return videos
 
-def process_video(video_path, args: argparse.Namespace, temp_root: Path, batch_mode: bool = False) -> str:
+def process_video(video_path, args: argparse.Namespace, temp_root: Path, batch_mode: bool = False, alpha_output: bool = False) -> str:
 
     video_path = str(Path(video_path).expanduser().resolve())
     video_name = Path(video_path).stem
@@ -536,6 +536,7 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path, batch_m
     orig_w, orig_h, fps, duration, is_vfr  = info(video_path)
 
     video_args = argparse.Namespace(**vars(args), video=video_path)
+    alpha_output = video_args.alpha
 
     print(f'Specs: {orig_w}x{orig_h}, {fps:.2f}fps, {format_timestamp(duration)}')
     print(f'Mask height: {video_args.mask_height}px')
@@ -588,19 +589,23 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path, batch_m
 
         )
 
-        overlay_target = str(Path(video_path).with_name(f"{video_name}_overlay.mp4"))
+        if alpha_output:
+            alpha = pack_video(video_path, output_mask)
 
-        overlay_video = mask_overlay(
+        else:
+            overlay_target = str(Path(video_path).with_name(f"{video_name}_overlay.mp4"))
+            overlay_video = mask_overlay(
 
-            video_path,
-            output_mask,
-            overlay_target,
-            background_color=video_args.overlay_color,
-            video_args=video_args,
+                video_path,
+                output_mask,
+                overlay_target,
+                background_color=video_args.overlay_color,
+                video_args=video_args,
 
-        )
+            )
 
-        print(f'Overlay preview: {overlay_video}')
+            print(f'Overlay preview: {overlay_video}')
+        
         print('=' * 60)
         print(f'Segments: {len(segments)} ({len(mask_segments)} masks)')
         print(f'Output: {output_mask}')
@@ -723,9 +728,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description='VR Video Masking Pipeline')
     parser.add_argument('input_path')
     parser.add_argument('--mask-height', type=int, default=1008)
-    parser.add_argument('--segment-length', type=float, default=2)
-    parser.add_argument('--erode', type=int, default=0)
-    parser.add_argument('--dilate', type=int, default=0)
+    parser.add_argument('--segment-length', type=float, default=1)
+    parser.add_argument('--erode', type=int, default=4)
+    parser.add_argument('--dilate', type=int, default=-4)
     parser.add_argument('--prompt', type=str, default='one woman')
     parser.add_argument('--warmup', type=int, default=6)
     parser.add_argument('--seed-model', type=str, default='sam3video', choices=['sam3', 'sam3video', 'sam31video', 'sapiens', 'hybrid'], help='Seed mask mode (sam3, sam3video, sam31video, sapiens, or hybrid)')
@@ -742,6 +747,7 @@ def main() -> int:
     parser.add_argument('--overlay-color', type=str, default='0x00ff00', help='Background color for overlay (use 0x00ff00 for pure green)')
     parser.add_argument('--overlay-mask', type=str, default=None, help='Write a composited video with a provided mask over the original source')
     parser.add_argument('--alpha-packer', type=str, default=None, help='Run alpha packer. ')
+    parser.add_argument('--alpha', type=bool, default=False, help='Run alpha packer instead of overlay. ')
     parser.add_argument('--fisheye180', nargs='?', const=FISHEYE180_PIPELINE_MODE, default=None, help='Convert an SBS equirectangular input video or folder to SBS fisheye180')
 
     args = parser.parse_args()
