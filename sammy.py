@@ -82,7 +82,15 @@ def build_sam3_video_predictor(*model_args,
                                **model_kwargs):
 
     from sam3.model.sam3_video_predictor import Sam3VideoPredictorMultiGPU
-    return Sam3VideoPredictorMultiGPU(*model_args, checkpoint_path=checkpoint_path, gpus_to_use=gpus_to_use, is_sbs=is_sbs, max_num_objects= max_num_objects, num_obj_for_compile=num_obj_for_compile, strict_state_dict_loading=strict_state_dict_loading, **model_kwargs)
+    
+    return Sam3VideoPredictorMultiGPU(*model_args, 
+    checkpoint_path=checkpoint_path, 
+    gpus_to_use=gpus_to_use, 
+    is_sbs=is_sbs, 
+    max_num_objects=max_num_objects, 
+    num_obj_for_compile=num_obj_for_compile, 
+    strict_state_dict_loading=strict_state_dict_loading, 
+    **model_kwargs)
 
 class sam3_video_inference:
 
