@@ -143,6 +143,9 @@ class sam3_video_inference:
 
     def propagate_in_video(self, predictor=None, session_id=None, max_frame_num_to_track=None):
 
+        print()
+        print(f"Sam3 inference. ... ♩ ♪ ♫ ♬")
+
         max_frame_num_to_track=int(self.seg_length * 60) # assumes 60 fps
         predictor=self.predictor
         outputs = {}
