@@ -69,7 +69,7 @@ def _create_position_encoding(precompute_resolution=None):
         use_fa3=False,
     )
 
-def _create_vit_backbone(compile_mode=None, use_fa3=False, use_rope_real=False):
+def _create_vit_backbone(compile_mode=None, use_fa3=False, use_rope_real=True):
     return ViT(
         img_size=1008,
         pretrain_img_size=336,
@@ -82,7 +82,7 @@ def _create_vit_backbone(compile_mode=None, use_fa3=False, use_rope_real=False):
         drop_path_rate=0.1,
         qkv_bias=True,
         use_abs_pos=True,
-        tile_abs_pos=False,
+        tile_abs_pos=True,
         global_att_blocks=(7, 15, 23, 31),
         rel_pos_blocks=(),
         use_rope=True,
@@ -96,7 +96,7 @@ def _create_vit_backbone(compile_mode=None, use_fa3=False, use_rope_real=False):
         bias_patch_embed=False,
         compile_mode=compile_mode,
         use_fa3=use_fa3,
-        use_rope_real=use_rope_real,
+        use_rope_real=True,
     )
 
 def _create_vit_neck(position_encoding, vit_backbone, enable_inst_interactivity=False):
@@ -366,7 +366,7 @@ def _create_tracker_transformer():
         rope_theta=10000.0,
         feat_sizes=[72, 72],
         use_fa3=False,
-        use_rope_real=False,
+        use_rope_real=True,
     )
 
     cross_attention = RoPEAttention(
@@ -379,7 +379,7 @@ def _create_tracker_transformer():
         feat_sizes=[72, 72],
         rope_k_repeat=True,
         use_fa3=False,
-        use_rope_real=False,
+        use_rope_real=True,
     )
 
     encoder_layer = TransformerDecoderLayerv2(
@@ -724,9 +724,9 @@ def build_sam3_video_model(
             min_trk_keep_alive=-1,
             max_trk_keep_alive=30,
             init_trk_keep_alive=30,
-            suppress_overlapping_based_on_recent_occlusion_threshold=0.8,
+            suppress_overlapping_based_on_recent_occlusion_threshold=0.7,
             suppress_det_close_to_boundary=False,
-            fill_hole_area=32,
+            fill_hole_area=16,
             recondition_every_nth_frame=32,
             masklet_confirmation_enable=True,
             decrease_trk_keep_alive_for_empty_masklets=False,
@@ -827,7 +827,7 @@ def _create_multiplex_maskmem_backbone(multiplex_count=16):
 
     return maskmem_backbone
 
-def _create_multiplex_transformer(use_fa3=False, use_rope_real=False):
+def _create_multiplex_transformer(use_fa3=False, use_rope_real=True):
     self_attention_rope = SimpleRoPEAttention(
         d_model=256,
         num_heads=8,
@@ -882,7 +882,7 @@ def _create_multiplex_transformer(use_fa3=False, use_rope_real=False):
     return transformer
 
 def _create_multiplex_tri_backbone(
-    compile_mode=None, use_fa3=False, use_rope_real=False
+    compile_mode=None, use_fa3=False, use_rope_real=True
 ):
     position_encoding = _create_position_encoding(precompute_resolution=1008)
     vit_backbone = _create_vit_backbone(
@@ -1196,6 +1196,7 @@ def build_sam3_predictor(
             compile=compile,
             async_loading_frames=async_loading_frames,
             use_fa3 = use_fa3,
+            use_rope_real=use_rope_real,
             max_num_objects= max_num_objects,
             num_obj_for_compile=num_obj_for_compile,
             **kwargs,
@@ -1208,6 +1209,7 @@ def build_sam3_predictor(
             compile=compile,
             async_loading_frames=async_loading_frames,
             use_fa3 = use_fa3,
+            use_rope_real=use_rope_real,
             max_num_objects= max_num_objects,
             num_obj_for_compile=num_obj_for_compile,
             **kwargs,
