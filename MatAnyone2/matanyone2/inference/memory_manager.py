@@ -10,7 +10,6 @@ from matanyone2.model.utils.memory_utils import get_similarity, do_softmax
 
 log = logging.getLogger()
 
-
 class MemoryManager:
     """
     Manages all three memory stores and the transition between working/long-term memory
@@ -111,8 +110,8 @@ class MemoryManager:
             value = torch.cat([lt_value, value], dim=-1)
 
         return value
-    
-    def read_first_frame(self, last_msk_value, pix_feat: torch.Tensor, 
+
+    def read_first_frame(self, last_msk_value, pix_feat: torch.Tensor,
              last_mask: torch.Tensor, network: MatAnyone2, uncert_output=None) -> Dict[int, torch.Tensor]:
         """
         Read from all memory stores and returns a single memory readout tensor for each object
@@ -245,7 +244,7 @@ class MemoryManager:
                 this_msk_value = self._get_visual_values_by_ids(objects)  # (1/2)*num_objects*C*N
                 visual_readout = self._readout(affinity,
                                                this_msk_value, uncert_mask).view(bs, len(objects), self.CV, h, w)
-                
+
                 uncert_output = network.pred_uncertainty(last_pix_feat, pix_feat, last_pred_mask, visual_readout[:,0]-last_msk_value[:,0])
 
                 if uncert_output is not None:
@@ -436,7 +435,7 @@ class MemoryManager:
     def get_sensory(self, ids: List[int]):
         # returns (1/2)*num_objects*C*H*W
         return self._get_sensory_by_ids(ids)
-    
+
     def clear_non_permanent_memory(self):
         self.work_mem.clear_non_permanent_memory()
         if self.use_long_term:
@@ -444,10 +443,10 @@ class MemoryManager:
 
     def clear_sensory_memory(self):
         self.sensory = {}
-    
+
     def clear_work_mem(self):
         self.work_mem = KeyValueMemoryStore(save_selection=self.use_long_term,
                                             save_usage=self.use_long_term)
-    
+
     def clear_obj_mem(self):
         self.obj_v = {}

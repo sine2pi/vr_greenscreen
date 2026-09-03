@@ -20,9 +20,7 @@ from matanyone2.utils.tensor_utils import pad_divide_by, unpad, aggregate
 from matanyone2.utils.inference_utils import gen_dilate, gen_erosion, read_frame_from_videos
 from matanyone2.utils.device import get_default_device, safe_autocast
 
-
 log = logging.getLogger()
-
 
 class InferenceCore:
 
@@ -497,10 +495,10 @@ class InferenceCore:
         mask = torch.from_numpy(mask).float().to(self.device)
         if max_size > 0:
             mask = F.interpolate(
-                mask.unsqueeze(0).unsqueeze(0), size=(new_h, new_w), mode="nearest"
+                mask.unsqueeze(0).unsqueeze(0), size=(new_h, new_w), mode="nearest-exact"
             )[0, 0]
 
-        bgr = (np.array([120, 255, 155], dtype=np.float32) / 255).reshape((1, 1, 3))
+        bgr = (np.array([0, 255, 255], dtype=np.float32) / 255).reshape((1, 1, 3))
         objects = [1]
 
         phas = []
