@@ -9,7 +9,7 @@ python pipeline.py path_to_videos
 Alpha packing options added:
 python pipeline.py ./videos --alpha True
 
--- for alpha packing the video should be converted to 180 fisheye first for best results (not 190). The converter with GUI can be found in the utils directory. Just run the bat file.
+-- for alpha packing the video should be converted to 180 fisheye first for best results (not 190). The converter with GUI can be found in the utils directory. Just run the bat file. Use black_mask.png as the mask image in the convert tab. Use the To Fisheye and Standard SBS options. Anything labeled optional is literally optional and will use the source as parameters otherwise whatever you put in those fields will end up being the output dimensions and fps. 
 
     '--mask-height', type=int, default=1008
     '--segment-length', type=float, default=4
