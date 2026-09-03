@@ -527,6 +527,8 @@ def _sam3_video_inference(frames_dir, prompt, sam31, output_size, video_args) ->
         hard_mask = (soft_mask).astype(np.uint8) * 255
         Image.fromarray(hard_mask, mode='L').save(out_path)
 
+# edge/halo issues have to do with matanyone2 not sam3 .. need to investigate.
+    
     # for out_path, soft_mask in zip(output_paths, filled_soft_masks):
 
     #     array = (soft_mask > 0.5).astype(np.uint8) * 255
