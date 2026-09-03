@@ -4,7 +4,7 @@ how to use:
 
 Install whatever you need to run the ai models.
 
-python pipeline.py path_to_videos
+python pipeline.py ./videos
 
 Alpha packing options added:
 python pipeline.py ./videos --alpha True
