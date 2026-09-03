@@ -9,6 +9,8 @@ python pipeline.py path_to_videos
 Alpha packing options added:
 python pipeline.py ./videos --alpha True
 
+-- for alpha packing the video should be converted to 180 fisheye first for best results (not 190). The converter with GUI can be found in the utils directory.
+
     '--mask-height', type=int, default=1008
     '--segment-length', type=float, default=4
     '--erode', type=int, default=4
