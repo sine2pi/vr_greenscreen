@@ -527,7 +527,7 @@ def _sam3_video_inference(frames_dir, prompt, sam31, output_size, video_args) ->
         hard_mask = (soft_mask).astype(np.uint8) * 255
         Image.fromarray(hard_mask, mode='L').save(out_path)
 
-# edge/halo issues on some colors of background have to do with matanyone2 not sam3 ..  something is not right with matanyone. remove the internal greenscreen function.
+# edge/halo issues on some colors of background have to do with matanyone2 not sam3 ..  something is not right with matanyone. I've already removed the internal matany greenscreen function..... hmmm. dispill? 
     
     # for out_path, soft_mask in zip(output_paths, filled_soft_masks):
 
