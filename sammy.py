@@ -178,7 +178,7 @@ class sam3_video_inference:
                         session_id=session_id,
                         propagation_direction="forward",
                         output_prob_thresh = 0.4,
-                        max_frame_num_to_track = None, #max_frame_num_to_track if max_frame_num_to_track != -1 else None,
+                        max_frame_num_to_track = None, 
 
                     )):
 
@@ -239,12 +239,6 @@ class sam3_video_inference:
                 frames.sort()
 
         image = Image.fromarray(load_frame(frames[0]))
-
-        # if image.height > self.output_size:
-
-        #     full = image
-        #     image = full.resize((self.output_size, self.output_size), Image.Resampling.BILINEAR)
-        #     full.close()
 
         IMG_WIDTH, IMG_HEIGHT = image.size
 
@@ -485,8 +479,8 @@ def _sam3_video_inference(frames_dir, prompt, sam31, output_size, video_args) ->
             out_h, out_w = frame_shapes[i]
             outputs = inference_state.get(i)
 
-            masks = outputs.get("out_binary_masks", None)
-            scores = outputs.get("out_probs", None)
+            masks = (outputs or {}).get("out_binary_masks", None)
+            scores = (outputs or {}).get("out_probs", None)
 
             if masks is None:
                 return None
@@ -518,9 +512,6 @@ def _sam3_video_inference(frames_dir, prompt, sam31, output_size, video_args) ->
                 best_soft = np.asarray(best_soft, dtype=np.float32)
 
                 print("Confidence:", scores[best_idx])
-
-            # if best_soft.shape != (output_size, output_size):
-            #     best_soft = cv2.resize(best_soft.astype(np.uint8), (output_size, output_size), interpolation=cv2.INTER_NEAREST).astype(np.float32)
 
             best_soft = np.clip(best_soft, 0.0, 1.0)
             soft_masks.append(best_soft)
