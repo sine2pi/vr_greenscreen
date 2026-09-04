@@ -231,12 +231,12 @@ def gen_erosion(alpha, min_kernel_size, max_kernel_size):
 
 @torch.inference_mode()
 
-def _matanyone_process_segment(matanyone_model, device, inference_core_cls, job: dict) -> str:
+def _matanyone_process_segment(matanyone_model, device, inference_core_cls, job: dict, args) -> str:
 
     n_warmup = int(job.get('warmup', 6))
     input_path = job['input_path']
     mask_path = job['mask_path']
-    max_size = int(job.get('mask_height', 1008))
+    max_size = int(job.get('mask_height', args.mask_height))
     output_path = job['output_path']
     r_erode = int(job.get('erode', 0))
     r_dilate = int(job.get('dilate', 0))
@@ -314,7 +314,7 @@ def _matanyone_process_segment(matanyone_model, device, inference_core_cls, job:
     gc.collect()
     return output_file
 
-def matanyone_inference(jobs: list[dict], on_segment_done: Callable[[str], None] = None) -> list[str]:
+def matanyone_inference(jobs: list[dict], on_segment_done, args) -> list[str]:
     global _matanyone_is_first_status
 
     max_retries = 1
@@ -353,6 +353,7 @@ def matanyone_inference(jobs: list[dict], on_segment_done: Callable[[str], None]
                     device,
                     inference_core_cls,
                     job,
+                    args=args,
                 )
 
                 batch_completed.append(output_file)
@@ -454,7 +455,7 @@ def matanyone(segments: List[SegmentInfo], segments_dir: Path, mask_square: int,
 
             })
 
-    completed_paths = matanyone_inference(jobs)
+    completed_paths = matanyone_inference(jobs, on_segment_done=None, args=args)
 
     if len(completed_paths) != len(jobs):
         raise RuntimeError(f'Not all jobs completed successfully. Expected {len(jobs)}, got {len(completed_paths)}')
@@ -715,17 +716,17 @@ def main() -> int:
     start_time = time.time()
     parser = argparse.ArgumentParser(description='VR Video Masking Pipeline')
     parser.add_argument('input_path')
-    parser.add_argument('--mask-height', type=int, default=1008)
+    parser.add_argument('--mask-height', type=int, default=1200)
     parser.add_argument('--segment-length', type=float, default=4)
-    parser.add_argument('--erode', type=int, default=0)
-    parser.add_argument('--dilate', type=int, default=0)
+    parser.add_argument('--erode', type=int, default=6)
+    parser.add_argument('--dilate', type=int, default=6)
     parser.add_argument('--prompt', type=str, default='one girl')
     parser.add_argument('--warmup', type=int, default=6)
     parser.add_argument('--seed-model', type=str, default='sam3video', choices=['sam3', 'sam3video', 'sam31video', 'sapiens', 'hybrid'], help='Seed mask mode (sam3, sam3video, sam31video, sapiens, or hybrid)')
     parser.add_argument('--sapiens-threshold', type=float, default=0.5, help='Threshold for converting Sapiens alpha matte to a binary mask')
     parser.add_argument('--gate-dilate', type=int, default=5, help='Dilate SAM3 gating in hybrid mode')
     parser.add_argument('--matanyone-version', type=str, default='v2', choices=['v1', 'v2'], help='Select MatAnyone runtime version')
-    parser.add_argument('--ma2-mem-every', type=int, default=6, help='Override MatAnyone mem_every (works for v1 and v2; e.g. 2 or 3 for faster refresh)')
+    parser.add_argument('--ma2-mem-every', type=int, default=2, help='Override MatAnyone mem_every (works for v1 and v2; e.g. 2 or 3 for faster refresh)')
     parser.add_argument('--ma2-max-mem-frames', type=int, default=2, help='Override MatAnyone memory window in frames (works for v1 and v2)')
     parser.add_argument('--ma2-use-long-term', type=str, default='off', choices=['auto', 'on', 'off'], help='Override MatAnyone long-term memory mode (works for v1 and v2)')
     parser.add_argument('--temporal-median-window', type=int, default=0, help='Temporal median window for alpha cleanup. 0 disables; use odd values >= 3 (e.g. 5)')
@@ -774,23 +775,26 @@ def main() -> int:
 
     if temp_root.exists():
         shutil.rmtree(temp_root)
+
     temp_root.mkdir(parents=True, exist_ok=True)
 
     processed = []
     batch_mode = len(video_paths) > 1
 
     for index, video_path in enumerate(video_paths, 1):
-        video_path = str(video_path)
-        print(f'[{index}/{len(video_paths)}] Processing: {video_path}')
 
+        video_path = str(video_path)
         video_args = argparse.Namespace(**vars(args), video=video_path)
         output_mask = process_video(video_path, args, temp_root, batch_mode=batch_mode)
         processed.append((video_path, output_mask))
+
+        # print(f'[{index}/{len(video_paths)}] Processing: {video_path}')
 
     for video_path, output_mask in processed:
 
         print(f'{video_path}')
         print(f'{output_mask}')
+
     total_end = time.time() - start_time
     print('=' * 60)
     print(f"Total time: {total_end:.2f}s")
