@@ -4,8 +4,12 @@ from enum import Enum
 from pathlib import Path
 from PIL import Image
 from typing import List
-from ffmpeg import  norm_video, info, concat_video, extract_segment_frames, mask_overlay, stereo_video, read_frame_from_videos, timestamp, format_timestamp, FISHEYE180_PIPELINE_MODE, packer, run_fisheye180_mode, pack_video
 from sammy import sam3_masks
+from ffmpeg import (
+ norm_video, info, concat_video, extract_segment_frames, mask_overlay, stereo_video, read_frame_from_videos, timestamp, format_timestamp, FISHEYE180_PIPELINE_MODE, 
+ packer, run_fisheye180_mode, pack_video
+ )
+
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 def _setup_tf32() -> None:
@@ -31,47 +35,11 @@ class SegmentInfo:
     right_mask_path: str = ''
     video_path: str = ''
 
-ENCODER = 'hevc_nvenc'
-IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.JPG', '.JPEG', '.PNG')
-VIDEO_EXTENSIONS = ('.mp4', '.mov', '.avi', '.MP4', '.MOV', '.AVI')
-
-SAM3_MAX = 1008
-BATCH_SIZE = 50
-
-import gc, argparse, os, sys, functools, time, torch, cv2, imageio, numpy as np, tqdm, random
-from pathlib import Path
-from PIL import Image
-from typing import Callable, List
-import torch.nn.functional as F
-from dataclasses import dataclass
-from enum import Enum
-from omegaconf import open_dict
-from ffmpeg import stereo_video, read_frame_from_videos
-
-class SegmentType(Enum):
-    MASK = 'mask'
-
-@dataclass
-class SegmentInfo:
-    index: int
-    start_time: float
-    end_time: float
-    seg_type: SegmentType
-    left_frame_path: str = ''
-    right_frame_path: str = ''
-    left_mask_path: str = ''
-    right_mask_path: str = ''
-    video_path: str = ''
-
 _matanyone_is_first_status = True
 _matanyone_tqdm_lines = 1
 
-ENCODER = 'hevc_nvenc'
 IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.JPG', '.JPEG', '.PNG')
 VIDEO_EXTENSIONS = ('.mp4', '.mov', '.avi', '.MP4', '.MOV', '.AVI')
-
-SAM3_MAX = 1008
-BATCH_SIZE = 50
 
 MATANYONE_V1 = "https://github.com/pq-yang/MatAnyone/releases/download/v1.0.0/matanyone.pth"
 MATANYONE_V2 = "https://github.com/pq-yang/MatAnyone2/releases/download/v1.0.0/matanyone2.pth"
@@ -781,8 +749,6 @@ def main() -> int:
         video_args = argparse.Namespace(**vars(args), video=video_path)
         output_mask = process_video(video_path, args, temp_root, batch_mode=batch_mode)
         processed.append((video_path, output_mask))
-
-        # print(f'[{index}/{len(video_paths)}] Processing: {video_path}')
 
     for video_path, output_mask in processed:
 
