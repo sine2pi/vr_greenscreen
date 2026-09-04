@@ -731,7 +731,7 @@ def main() -> int:
     parser.add_argument('--overlay-output', type=str, default='input_path', help='Write a composited video with the mask over the original source')
     parser.add_argument('--overlay-color', type=str, default='0x00ff00', help='Background color for overlay (use 0x00ff00 for pure green)')
     parser.add_argument('--overlay-mask', type=str, default=None, help='Write a composited video with a provided mask over the original source')
-    parser.add_argument('--alpha-packer', type=str, default=None, help='Run alpha packer on its own. ')
+    parser.add_argument('--alpha-packer', type=str, default=None, help='Run alpha packer on its own. Provide folder with video and mask (_mask.<ext>)')
     parser.add_argument('--alpha', type=bool, default=False, help='Run alpha packer instead of overlay within pipeline. --alpha <true|false> default is False')
     parser.add_argument('--fisheye180', nargs='?', const=FISHEYE180_PIPELINE_MODE, default=None, help='Convert an SBS equirectangular input video or folder to SBS fisheye180')
 
