@@ -510,7 +510,7 @@ def _sam3_video_inference(frames_dir, prompt, sam31, output_size, video_args) ->
     gc.collect()
     torch.cuda.empty_cache()
 
-def fill_soft(
+def _fill_soft(
 
     soft_masks,
     valid_flags,
@@ -559,7 +559,10 @@ def fill_soft(
 
     return filled, filled_count
 
-def sam3_inference(frames_dir, prompt, sam31, output_size, video_args, show_plots=False) -> None:
+def fill_soft(*args, **kwargs):
+    return _fill_soft(*args, **kwargs)
+
+def _sam3_inference(frames_dir, prompt, sam31, output_size, video_args, show_plots=False) -> None:
 
     folder = Path(frames_dir)
 
@@ -643,7 +646,7 @@ def sam3_inference(frames_dir, prompt, sam31, output_size, video_args, show_plot
             del inference_state
             image.close()
 
-    filled_masks, filled_count = fill_soft(soft_masks, valid_flags, max_interp_gap=6)
+    filled_masks, filled_count = _fill_soft(soft_masks, valid_flags, max_interp_gap=6)
 
     if filled_count > 0:
         print(f"Filled {filled_count} missing/weak SAM3 masks using temporal soft-mask interpolation")
@@ -657,6 +660,9 @@ def sam3_inference(frames_dir, prompt, sam31, output_size, video_args, show_plot
 
     gc.collect()
     torch.cuda.empty_cache()
+
+def sam3_inference(frames_dir, prompt, sam31, output_size, video_args, show_plots=False) -> None:
+    return _sam3_inference(frames_dir, prompt, sam31, output_size, video_args, show_plots=show_plots)
 
 def seed_mask_batch(
 
@@ -685,22 +691,22 @@ def seed_mask_batch(
 
     elif seed_model == "sam3video":
 
-        sam3_video_inference(
-            frames_dir, 
-            prompt=prompt, 
-            sam31=False, 
-            output_size=output_size, 
-            video_args=video_args
+        _sam3_video_inference(
+            frames_dir,
+            prompt=prompt,
+            sam31=False,
+            output_size=output_size,
+            video_args=video_args,
             )
 
     elif seed_model == "sam31video":
 
-        sam3_video_inference(
-            frames_dir, 
-            prompt=prompt, 
-            sam31=True, 
-            output_size=output_size, 
-            video_args=video_args
+        _sam3_video_inference(
+            frames_dir,
+            prompt=prompt,
+            sam31=True,
+            output_size=output_size,
+            video_args=video_args,
             )
 
     elif seed_model == "sapiens":
@@ -865,7 +871,7 @@ def estimate_alpha(image_bgr, model):
 
     return alpha
 
-def sam3_masks(
+def _sam3_masks(
     mask_segments,
     frames_dir: Path,
     masks_dir: Path,
@@ -914,6 +920,9 @@ def sam3_masks(
                 seg.right_mask_path = final_mask_path
 
     return mask_segments
+
+def sam3_masks(*args, **kwargs):
+    return _sam3_masks(*args, **kwargs)
 
 def read_frames(video_path: str):
 
