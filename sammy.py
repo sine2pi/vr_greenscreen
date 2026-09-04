@@ -400,7 +400,7 @@ class sam3_video_inference:
         predictor.shutdown()
         return outputs
 
-def sam3_video_inference(frames_dir, prompt, sam31, output_size, video_args) -> None:
+def _sam3_video_inference(frames_dir, prompt, sam31, output_size, video_args) -> None:
 
     output_size = video_args.mask_height
     folder = Path(frames_dir)
@@ -740,7 +740,7 @@ def sam_sapiens(
 
         ) -> None:
 
-    sam3_video_inference(frames_dir, prompt=prompt, sam31=False, output_size=output_size, video_args=video_args)
+    _sam3_video_inference(frames_dir, prompt=prompt, sam31=False, output_size=output_size, video_args=video_args)
 
     folder = Path(frames_dir)
     image_files = list(folder.glob("*.png")) + list(folder.glob("*.jpg"))
