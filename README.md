@@ -32,7 +32,7 @@ python pipeline.py
     '--overlay-output', type=str, default='input_path', help='Write a composited video with the mask over the original source'
     '--overlay-color', type=str, default='0x00ff00', help='Background color for overlay use 0x00ff00 for pure green'
     '--overlay-mask', type=str, default=None, help='Write a composited video with a provided mask over the original source'
-    '--alpha-packer', type=str, default='input_path', help='Run alpha packer on its own. Provide folder with video and mask _mask.<ext>), default is input_path'
+    '--alpha-packer', type=str, default=, help='Run alpha packer on its own. Provide folder with video and mask _mask.<ext>)'
     '--alpha', type=bool, default=False, help='Run alpha packer instead of overlay within pipeline. --alpha <true|false> default is False'
 
 
