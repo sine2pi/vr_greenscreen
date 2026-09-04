@@ -7,6 +7,11 @@ from typing import List
 import torch.nn.functional as F
 from ffmpeg import  norm_video, info, concat_video, extract_segment_frames, mask_overlay, stereo_video, read_frame_from_videos, timestamp, format_timestamp, FISHEYE180_PIPELINE_MODE, packer, run_fisheye180_mode, pack_video
 from sammy import sam3_masks
+try:
+    from sammy import _sam3_masks as sam3_masks_compat
+    sam3_masks = sam3_masks_compat
+except ImportError:
+    pass
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 def _setup_tf32() -> None:
@@ -523,8 +528,7 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path, batch_m
     video_args = argparse.Namespace(**vars(args), video=video_path)
     alpha_output = video_args.alpha
 
-    print(f'Specs: {orig_w}x{orig_h}, {fps:.2f}fps, {format_timestamp(duration)}')
-    print(f'Mask height: {video_args.mask_height}px')
+    print(f'Specs: {orig_w}x{orig_h}, {fps:.2f}fps, {format_timestamp(duration)}, Mask height: {video_args.mask_height}px')
     print()
 
     mask_square = video_args.mask_height
@@ -592,8 +596,7 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path, batch_m
             print(f'Overlay preview: {overlay_video}')
         
         print('=' * 60)
-        print(f'Segments: {len(segments)} ({len(mask_segments)} masks)')
-        print(f'Output: {output_mask}')
+        print(f'Segments: {len(segments)} ({len(mask_segments)} masks) - Output: {output_mask}')
         print()
 
         with open(temp_dir / 'segments.txt', 'w', encoding='utf-8') as f:
@@ -714,8 +717,8 @@ def main() -> int:
     parser.add_argument('input_path')
     parser.add_argument('--mask-height', type=int, default=1008)
     parser.add_argument('--segment-length', type=float, default=4)
-    parser.add_argument('--erode', type=int, default=4)
-    parser.add_argument('--dilate', type=int, default=-4)
+    parser.add_argument('--erode', type=int, default=0)
+    parser.add_argument('--dilate', type=int, default=0)
     parser.add_argument('--prompt', type=str, default='one girl')
     parser.add_argument('--warmup', type=int, default=6)
     parser.add_argument('--seed-model', type=str, default='sam3video', choices=['sam3', 'sam3video', 'sam31video', 'sapiens', 'hybrid'], help='Seed mask mode (sam3, sam3video, sam31video, sapiens, or hybrid)')
