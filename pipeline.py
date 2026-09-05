@@ -290,7 +290,7 @@ def _matanyone_process_segment(matanyone_model, device, inference_core_cls, job:
         frames = torch.nn.functional.interpolate(
             mask.unsqueeze(0).unsqueeze(0),
             size=(max_size, max_size),
-            mode="area",
+            mode="nearest-exact",
         )[0, 0]
 
     objects = [1]
@@ -621,7 +621,7 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path, batch_m
     for d in [frames_dir, masks_dir, segments_dir]:
         d.mkdir(parents=True, exist_ok=True)
 
-    orig_w, orig_h, fps, duration, is_vfr  = info(video_path)
+    orig_w, orig_h, fps, duration, is_vfr, pix_fmt  = info(video_path)
 
     video_args = argparse.Namespace(**vars(args), video=video_path)
     alpha_output = video_args.alpha
@@ -821,10 +821,10 @@ def main() -> int:
     start_time = time.time()
     parser = argparse.ArgumentParser(description='VR Video Masking Pipeline')
     parser.add_argument('input_path')
-    parser.add_argument('--mask-height', type=int, default=640)
+    parser.add_argument('--mask-height', type=int, default=1280)
     parser.add_argument('--segment-length', type=float, default=4)
-    parser.add_argument('--erode', type=int, default=4)
-    parser.add_argument('--dilate', type=int, default=4)
+    parser.add_argument('--erode', type=int, default=0)
+    parser.add_argument('--dilate', type=int, default=0)
     parser.add_argument('--prompt', type=str, default='one girl')
     parser.add_argument('--warmup', type=int, default=6)
     parser.add_argument('--seed-model', type=str, default='sam3video', choices=['sam3', 'sam3video', 'sam31video', 'sapiens', 'hybrid'], help='Seed mask mode (sam3, sam3video, sam31video, sapiens, or hybrid)')
