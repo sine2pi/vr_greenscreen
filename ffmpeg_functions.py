@@ -604,7 +604,7 @@ def stereo_video(left_video: str, right_video: str, output_path: str) -> str:
 
     return output_path
 
-def read_frame_from_videos(frame_root):
+def read_frame_from_videos(frame_root, max_size):
 
     if frame_root.endswith(VIDEO_EXTENSIONS):
         video_name = os.path.basename(frame_root)[:-4]
@@ -619,6 +619,14 @@ def read_frame_from_videos(frame_root):
 
         container.close()
         frames = torch.from_numpy(np.stack(frames_list)).permute(0, 3, 1, 2).contiguous()
+        frames = frames.float()
+
+        if max_size is not None:
+            frames = torch.nn.functional.interpolate(
+                frames,
+                size=(max_size, max_size),
+                mode="area",
+            )
 
     length = frames.shape[0]
     return frames, fps, length, video_name
