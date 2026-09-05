@@ -9,7 +9,9 @@ python pipeline.py ./videos
 Alpha packing options added:
 python pipeline.py ./videos --alpha True
 
--- for alpha packing the video should be converted to 180 fisheye first for best results for use with DEOVR. Heresphere allows you to use the mask as a separate video so its not necessary to convert and you can use any video projection. The converter with GUI can be found in the utils directory. Just run the bat file. Use black_mask.png as the mask image in the convert tab. Use the To Fisheye and Standard SBS options. Anything labeled optional is literally optional and will use the source as parameters otherwise whatever you put in those fields will end up being the output dimensions and fps. 
+The --alpha True will turn off the background color pathway and create an alpha packed video with the mask suitable for DEOVR.
+
+-- for alpha packing the video should be converted to 180 fisheye first for best results for use with DEOVR. Heresphere allows you to use the mask as a separate video so it's not necessary to convert but you can if you want to. The converter with GUI can be found in the utils directory. Use black_mask.png as the mask image in the convert tab if you want the conversion to have a binocular overlay which is mainly cosmetic. Use the To Fisheye and Standard SBS options if converting from a standard equirectangular 180 sbs. You can experiment with the others but i've found that the 190 tends to create giant women. Anything labeled optional is literally optional and will use the source as parameters otherwise whatever you put in those fields will end up being the output dimensions and fps. This is just until I get it working internally although its a nifty util on it's own.
 
 python pipeline.py
 
