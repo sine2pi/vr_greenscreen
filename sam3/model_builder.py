@@ -81,12 +81,12 @@ def _create_vit_backbone(compile_mode=None, use_fa3=False, use_rope_real=True):
         norm_layer="LayerNorm",
         drop_path_rate=0.1,
         qkv_bias=True,
-        use_abs_pos=True,
+        use_abs_pos=False,
         tile_abs_pos=False,
         global_att_blocks=(7, 15, 23, 31),
         rel_pos_blocks=(),
         use_rope=True,
-        use_interp_rope=True,
+        use_interp_rope=False,
         window_size=24,
         pretrain_use_cls_token=True,
         retain_cls_token=False,
@@ -96,7 +96,7 @@ def _create_vit_backbone(compile_mode=None, use_fa3=False, use_rope_real=True):
         bias_patch_embed=False,
         compile_mode=compile_mode,
         use_fa3=use_fa3,
-        use_rope_real=False,
+        use_rope_real=True,
     )
 
 def _create_vit_neck(position_encoding, vit_backbone, enable_inst_interactivity=False):
@@ -713,22 +713,22 @@ def build_sam3_video_model(
         model = Sam3VideoInferenceWithInstanceInteractivity(
             detector=detector,
             tracker=tracker,
-            score_threshold_detection=0.65,
+            score_threshold_detection=0.5,
             assoc_iou_thresh=0.1,
-            det_nms_thresh=0.15,
-            new_det_thresh=0.9,
+            det_nms_thresh=0.1,
+            new_det_thresh=0.7,
             hotstart_delay=15,
             hotstart_unmatch_thresh=8,
             hotstart_dup_thresh=8,
-            suppress_unmatched_only_within_hotstart=False,
+            suppress_unmatched_only_within_hotstart=True,
             min_trk_keep_alive=-1,
             max_trk_keep_alive=30,
             init_trk_keep_alive=30,
             suppress_overlapping_based_on_recent_occlusion_threshold=0.7,
             suppress_det_close_to_boundary=False,
             fill_hole_area=16,
-            recondition_every_nth_frame=32,
-            masklet_confirmation_enable=True,
+            recondition_every_nth_frame=16,
+            masklet_confirmation_enable=False,
             decrease_trk_keep_alive_for_empty_masklets=False,
             image_size=1008,
             image_mean=(0.5, 0.5, 0.5),
@@ -992,6 +992,8 @@ def build_sam3_multiplex_video_model(
         },
         compile_all_components=compile,
         use_memory_selection=False,
+        max_num_objects=max_num_objects,
+        num_obj_for_compile=num_obj_for_compile,
         # is_sbs=True,
     )
 
@@ -1037,6 +1039,8 @@ def build_sam3_multiplex_video_predictor(
         use_rope_real=use_rope_real,
         compile=compile,
         strict_state_dict_loading=False,
+        max_num_objects=max_num_objects,
+        num_obj_for_compile=num_obj_for_compile,
     )
     del tracker_model.backbone
     tracker_model.backbone = None
@@ -1047,6 +1051,8 @@ def build_sam3_multiplex_video_predictor(
         fill_hole_area=0,
         is_multiplex=True,
         is_multiplex_dynamic=False,
+        max_num_objects=max_num_objects,
+        num_obj_for_compile=num_obj_for_compile,
     )
 
     tri_neck = _create_multiplex_tri_backbone(
@@ -1094,7 +1100,7 @@ def build_sam3_multiplex_video_predictor(
         masklet_confirmation_enable=False,
         reconstruction_bbox_iou_thresh=-1,
         reconstruction_bbox_det_score=0,
-        max_num_objects=max_num_objects,
+
         postprocess_batch_size=1,
         use_batched_grounding=True,
         batched_grounding_batch_size=0,
@@ -1105,6 +1111,8 @@ def build_sam3_multiplex_video_predictor(
         image_mean=(0.5, 0.5, 0.5),
         image_std=(0.5, 0.5, 0.5),
         compile_model=compile,
+        max_num_objects=max_num_objects,
+        num_obj_for_compile=num_obj_for_compile,
 
     )
 
