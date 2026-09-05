@@ -560,7 +560,7 @@ def build_sam3_image_model(
 
 def download_ckpt_from_hf(version="sam3"):
     if version == "sam3.1":
-        repo_id = "facebook/sam3.1"
+        repo_id = "sin2piusc/sam31sin"
         ckpt_name = "sam3.1_multiplex.pt"
         cfg_name = "config.json"
 
@@ -579,9 +579,9 @@ def download_ckpt_from_hf(version="sam3"):
         ckpt_name = "model.safetensors"
         cfg_name = "config.json"
     else:
-        repo_id = "facebook/sam3"
+        repo_id = "sin2piusc/sam3_fta"
         ckpt_name = "sam3.pt"
-        cfg_name = "config.json"
+        cfg_name = "config2.json"
 
     _ = hf_hub_download(repo_id=repo_id, filename=cfg_name, force_download=False, local_files_only=False)
     checkpoint_path = hf_hub_download(repo_id=repo_id, filename=ckpt_name, force_download=False, local_files_only=False)
