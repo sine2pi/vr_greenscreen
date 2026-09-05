@@ -264,7 +264,7 @@ def _matanyone_process_segment(matanyone_model, device, inference_core_cls, job:
     _config_overrides(matanyone_model, job, verbose=(job.get('op_num', 1) == 1))
     processor = inference_core_cls(matanyone_model, cfg=matanyone_model.cfg)
 
-    frames, fps, length, video_name = read_frame_from_videos(input_path)
+    frames, fps, length, video_name = read_frame_from_videos(input_path, max_size)
     frames = frames.float()
 
     repeated_frames = frames[0].unsqueeze(0).repeat(n_warmup, 1, 1, 1)
@@ -280,31 +280,18 @@ def _matanyone_process_segment(matanyone_model, device, inference_core_cls, job:
     mask = np.array(mask)
     mask = torch.from_numpy(mask).float().to(device)
 
-    # if mask.shape != (max_size, max_size):
+    if r_dilate > 0:
+        mask = gen_dilate(mask, r_dilate, r_dilate)
 
-    #     mask = F.interpolate(
+    if r_erode > 0:
+        mask = gen_erosion(mask, r_erode, r_erode)
 
-    #         mask.unsqueeze(0).unsqueeze(0),
-    #         size=(max_size, max_size),
-    #         mode="nearest-exact"
-
-    #     )[0][0]
-
-    # if r_dilate > 0:
-    #     mask = gen_dilate(mask, r_dilate, r_dilate)
-
-    # if r_erode > 0:
-    #     mask = gen_erosion(mask, r_erode, r_erode)
-
-    # if mask.shape != (max_size, max_size):
-
-    #     mask = F.interpolate(
-
-    #         mask.unsqueeze(0).unsqueeze(0),
-    #         size=(max_size, max_size),
-    #         mode="nearest-exact"
-
-    #     )[0][0]
+    if mask.shape != (max_size, max_size):
+        frames = torch.nn.functional.interpolate(
+            mask.unsqueeze(0).unsqueeze(0),
+            size=(max_size, max_size),
+            mode="area",
+        )[0, 0]
 
     objects = [1]
     phas = []
@@ -504,6 +491,95 @@ def matanyone(segments: List[SegmentInfo], segments_dir: Path, mask_square: int,
 
     return segments
 
+def sam3_propagation(
+
+    segments: List[SegmentInfo],
+    segments_dir: Path,
+    args: argparse.Namespace,
+    refine_with_sapiens: bool,
+    # video_args,
+
+) -> List[SegmentInfo]:
+
+    backend_name = 'sam3_sapiens' if refine_with_sapiens else 'sam3'
+    print(f"Propagation backend: {backend_name}")
+
+    sam3out = str(segments_dir / f'{backend_name}_output')
+    os.makedirs(sam3out, exist_ok=True)
+
+    mask_segments = [s for s in segments if s.seg_type == SegmentType.MASK]
+    total_ops = len(mask_segments) * 2
+
+    tracker_choice = str(getattr(args, 'sam3_tracker', 'sam3video')).lower()
+    sam31 = (tracker_choice == 'sam31video')
+
+    jobs = []
+
+    for seg in mask_segments:
+
+        seg_left_video = str(segments_dir / f'seg{seg.index:02d}_left.mp4')
+        seg_right_video = str(segments_dir / f'seg{seg.index:02d}_right.mp4')
+
+        jobs.append({
+            'input_path': seg_left_video,
+            'output_path': sam3out,
+            'mask_height': args.mask_height,
+            'prompt': args.prompt,
+            'sam31': sam31,
+            'refine_with_sapiens': refine_with_sapiens,
+            'refine_fg_threshold': args.refine_fg_threshold,
+            'refine_bg_threshold': args.refine_bg_threshold,
+            'refine_unknown_dilate': args.refine_unknown_dilate,
+            'gate_dilate': args.gate_dilate,
+            'video_args': args,
+            'op_num': len(jobs) + 1,
+            'total_ops': total_ops,
+            'label': f'seg{seg.index:02d}_left',
+        })
+
+        jobs.append({
+            'input_path': seg_right_video,
+            'output_path': sam3out,
+            'mask_height': args.mask_height,
+            'prompt': args.prompt,
+            'sam31': sam31,
+            'refine_with_sapiens': refine_with_sapiens,
+            'refine_fg_threshold': args.refine_fg_threshold,
+            'refine_bg_threshold': args.refine_bg_threshold,
+            'refine_unknown_dilate': args.refine_unknown_dilate,
+            'gate_dilate': args.gate_dilate,
+            'video_args': args,
+            'op_num': len(jobs) + 1,
+            'total_ops': total_ops,
+            'label': f'seg{seg.index:02d}_right',
+        })
+
+    completed_paths = matanyone_inference(jobs, on_segment_done=None, video_args=None)
+
+    if len(completed_paths) != len(jobs):
+        raise RuntimeError(f'Not all SAM3 jobs completed successfully. Expected {len(jobs)}, got {len(completed_paths)}')
+
+    for seg in mask_segments:
+
+        left_basename = os.path.splitext(os.path.basename(f'seg{seg.index:02d}_left.mp4'))[0]
+        right_basename = os.path.splitext(os.path.basename(f'seg{seg.index:02d}_right.mp4'))[0]
+
+        left_pha = os.path.join(sam3out, f'{left_basename}_pha.mp4')
+        right_pha = os.path.join(sam3out, f'{right_basename}_pha.mp4')
+
+        if not os.path.exists(left_pha) or not os.path.exists(right_pha):
+            raise RuntimeError(f'Could not find generated SAM3 masks for segment {seg.index}')
+
+        stereo_output = str(segments_dir / f'seg{seg.index:02d}_stereo.mp4')
+
+        seg.video_path = stereo_video(
+            left_pha,
+            right_pha,
+            stereo_output
+        )
+
+    return segments
+
 def _input_videos(input_path: str) -> List[Path]:
     path = Path(input_path).expanduser().resolve()
 
@@ -578,18 +654,26 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path, batch_m
 
             )
 
-        mask_segments = sam3_masks(
+        if video_args.propagation_backend == 'matanyone':
 
-            mask_segments, frames_dir, masks_dir, mask_square,
-            video_args.prompt,
-            video_args.seed_model,
-            video_args.sapiens_threshold,
-            video_args.gate_dilate,
-            video_args=video_args,
+            mask_segments = sam3_masks(
 
-        )
+                mask_segments, frames_dir, masks_dir, mask_square,
+                video_args.prompt,
+                video_args.seed_model,
+                video_args.sapiens_threshold,
+                video_args.gate_dilate,
+                video_args=video_args,
 
-        segments = matanyone(segments, segments_dir, mask_square, video_args)
+            )
+
+            segments = matanyone(segments, segments_dir, mask_square, video_args)
+
+        elif video_args.propagation_backend == 'sam3':
+            segments = sam3_propagation(segments, segments_dir, video_args, refine_with_sapiens=False)
+
+        elif video_args.propagation_backend == 'sam3_sapiens':
+            segments = sam3_propagation(segments, segments_dir, video_args, refine_with_sapiens=True)
 
         output_mask = finalize(
 
@@ -738,16 +822,22 @@ def main() -> int:
     parser = argparse.ArgumentParser(description='VR Video Masking Pipeline')
     parser.add_argument('input_path')
     parser.add_argument('--mask-height', type=int, default=640)
-    parser.add_argument('--segment-length', type=float, default=5)
-    parser.add_argument('--erode', type=int, default=6)
-    parser.add_argument('--dilate', type=int, default=-3)
+    parser.add_argument('--segment-length', type=float, default=4)
+    parser.add_argument('--erode', type=int, default=4)
+    parser.add_argument('--dilate', type=int, default=4)
     parser.add_argument('--prompt', type=str, default='one girl')
     parser.add_argument('--warmup', type=int, default=6)
     parser.add_argument('--seed-model', type=str, default='sam3video', choices=['sam3', 'sam3video', 'sam31video', 'sapiens', 'hybrid'], help='Seed mask mode (sam3, sam3video, sam31video, sapiens, or hybrid)')
     parser.add_argument('--sapiens-threshold', type=float, default=0.5, help='Threshold for converting Sapiens alpha matte to a binary mask')
     parser.add_argument('--gate-dilate', type=int, default=5, help='Dilate SAM3 gating in hybrid mode')
+
+    parser.add_argument('--propagation-backend', type=str, default='matanyone', choices=['matanyone', 'sam3', 'sam3_sapiens'], help='Temporal propagation backend (matanyone, sam3, sam3_sapiens)')
+    parser.add_argument('--refine-fg-threshold', type=float, default=0.95, help='SAM confidence threshold for sure foreground in sam3_sapiens refinement')
+    parser.add_argument('--refine-bg-threshold', type=float, default=0.05, help='SAM confidence threshold for sure background in sam3_sapiens refinement')
+    parser.add_argument('--refine-unknown-dilate', type=int, default=5, help='Dilate unknown/boundary region before Sapiens edge refinement (sam3_sapiens)')
+
     parser.add_argument('--matanyone-version', type=str, default='v2', choices=['v1', 'v2'], help='Select MatAnyone runtime version')
-    parser.add_argument('--ma2-mem-every', type=int, default=3, help='Override MatAnyone mem_every (works for v1 and v2; e.g. 2 or 3 for faster refresh)')
+    parser.add_argument('--ma2-mem-every', type=int, default=1, help='Override MatAnyone mem_every (works for v1 and v2; e.g. 2 or 3 for faster refresh)')
     parser.add_argument('--ma2-max-mem-frames', type=int, default=2, help='Override MatAnyone memory window in frames (works for v1 and v2)')
     parser.add_argument('--ma2-use-long-term', type=str, default='off', choices=['auto', 'on', 'off'], help='Override MatAnyone long-term memory mode (works for v1 and v2)')
     parser.add_argument('--temporal-median-window', type=int, default=0, help='Temporal median window for alpha cleanup. 0 disables; use odd values >= 3 (e.g. 5)')
@@ -808,8 +898,6 @@ def main() -> int:
         video_args = argparse.Namespace(**vars(args), video=video_path)
         output_mask = process_video(video_path, args, temp_root, batch_mode=batch_mode)
         processed.append((video_path, output_mask))
-
-        # print(f'[{index}/{len(video_paths)}] Processing: {video_path}')
 
     for video_path, output_mask in processed:
 
