@@ -90,7 +90,7 @@ def format_timestamp(seconds: float) -> str:
 
     return f"{h:02d}:{m:02d}:{s:06.3f}"
 
-def encoder_args(fps=None) -> list[str]:
+def encoder_args(fps=None, pix_fmt=None) -> list[str]:
 
     return [
 
@@ -99,7 +99,7 @@ def encoder_args(fps=None) -> list[str]:
         '-c:v', ENCODER,
         '-preset', 'p5',
         '-profile:v', 'main10',
-        # '-pix_fmt', 'yuv420p',
+        '-pix_fmt', str(pix_fmt) if pix_fmt is not None else 'p010le',
         '-g', '20',
         '-b:v', '80M',
         '-maxrate', '80M',
@@ -151,7 +151,7 @@ def info(video_path: str):
 
         'ffprobe', '-v', 'error',
         '-select_streams', 'v:0',
-        '-show_entries', 'stream=width,height,r_frame_rate,avg_frame_rate:format=duration',
+        '-show_entries', 'stream=width,height,r_frame_rate,avg_frame_rate:format=pix_fmt',
         '-of', 'csv=p=0',
         video_path
     ]
@@ -164,6 +164,7 @@ def info(video_path: str):
     lines = result.stdout.strip().split('\n')
 
     w,h,fps_str,fps_avg = lines[0].split(',')
+    pix_fmt = str(lines[1]) if len(lines) > 1 else 0
 
     cmd2 = ['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', video_path]
     duration = float(subprocess.check_output(cmd2).decode().strip())
@@ -188,7 +189,7 @@ def info(video_path: str):
     if fps_str != fps_avg:
         is_vfr = True
 
-    return int(w), int(h), fps, duration, is_vfr
+    return int(w), int(h), fps, duration, is_vfr, pix_fmt
 
 def frame_count(video_path: str) -> int:
 
@@ -214,14 +215,14 @@ def frame_count(video_path: str) -> int:
 
 def norm_video(source_video, w = None, h = None, fps = None, progress_prefix: str = "[normalize] ", video_args = None) -> str:
 
-    wi, hi, _, duration, is_vfr = info(source_video)
+    wi, hi, _, duration, is_vfr, pix_fmt = info(source_video)
     
     print(f"-- normalizing video")
     source_path = Path(source_video).expanduser().resolve()
     output_video = str(source_path.with_name(f"{source_path.stem}_normed.mp4"))
 
     fps = aorb(fps, 60)
-    enc = encoder_args(fps=fps)
+    enc = encoder_args(fps=fps, pix_fmt=pix_fmt)
 
     if w is not None:
         wi = w
@@ -250,8 +251,8 @@ def norm_video(source_video, w = None, h = None, fps = None, progress_prefix: st
     return output_video
 def resize_video(source_video: str, output_video: str, width: int, height: int, progress_prefix: str = "[resize] ") -> str:
 
-    fps = info(source_video)[2]
-    enc = encoder_args(fps=fps)
+    wi, hi, fps, duration, is_vfr, pix_fmt = info(source_video)
+    enc = encoder_args(fps=fps, pix_fmt=pix_fmt)
     os.makedirs(os.path.dirname(os.path.abspath(output_video)) or '.', exist_ok=True)
 
     cmd = [
@@ -278,10 +279,10 @@ def resize_video(source_video: str, output_video: str, width: int, height: int, 
 
 def concat_video(video_list: list[str], output_path: str, fps: float | None = None) -> str:
 
-    fps = info(video_list[0])[2]
+    wi, hi, fps, duration, is_vfr, pix_fmt = info(video_list[0])
     BATCH_SIZE = 50
     n = len(video_list)
-    enc = encoder_args(fps=fps)
+    enc = encoder_args(fps=fps, pix_fmt=pix_fmt)
 
     if n > BATCH_SIZE:
 
@@ -420,9 +421,9 @@ def extract_segment_frames(
     progress_prefix: str = "",
 ) -> tuple[str, str, str, str]:
 
-    fps = info(stereo_video)[2]
-
-    enc = encoder_args(fps=fps)
+    # fps = info(stereo_video)[2]
+    wi, hi, fps, duration, is_vfr, pix_fmt = info(stereo_video)
+    enc = encoder_args(fps=fps, pix_fmt=pix_fmt)
 
     start_frame = round(start * fps)
     end_frame = round(end * fps)
@@ -532,10 +533,10 @@ def overlay_path(source_video: str, output_path: str) -> str:
 def mask_overlay(source_video: str, mask_video: str, output_path: str, background_color: str = '0x00ff00', video_args: argparse.Namespace = None) -> str:
 
     resolved_path = overlay_path(source_video, output_path)
-    src_w, src_h, src_fps, src_duration, _ = info(source_video)
-    mask_w, mask_h, mask_fps, mask_duration, _ = info(mask_video)
+    src_w, src_h, src_fps, src_duration, src_vfr, src_fmt = info(source_video)
+    mask_w, mask_h, mask_fps, mask_duration, mask_vfr, mask_fmt = info(mask_video)
 
-    enc = encoder_args(fps=src_fps)
+    enc = encoder_args(fps=src_fps, pix_fmt=src_fmt)
 
     if (src_w, src_h) != (mask_w, mask_h):
 
@@ -581,8 +582,8 @@ def mask_overlay(source_video: str, mask_video: str, output_path: str, backgroun
 
 def stereo_video(left_video: str, right_video: str, output_path: str) -> str:
 
-    fps = info(aorb(left_video, right_video))[2]
-    enc = encoder_args(fps=fps)
+    w, h, fps, dur, vfr, pix_fmt = info(aorb(left_video, right_video))
+    enc = encoder_args(fps=fps, pix_fmt=pix_fmt)
 
     filter_complex = "[0:v][1:v]hstack=inputs=2[out]"
 
@@ -622,11 +623,12 @@ def read_frame_from_videos(frame_root, max_size):
         frames = frames.float()
 
         if max_size is not None:
-            frames = torch.nn.functional.interpolate(
-                frames,
-                size=(max_size, max_size),
-                mode="area",
-            )
+            if frames.shape != (max_size, max_size):
+                frames = torch.nn.functional.interpolate(
+                    frames,
+                    size=(max_size, max_size),
+                    mode="area",
+                )
 
     length = frames.shape[0]
     return frames, fps, length, video_name
@@ -724,10 +726,10 @@ def alpha_command(
     video_dims: tuple[int, int],
 ) -> list[str]:
 
-    src_fps = info(video_path)[2]
+    _,_,src_fps,_,_,pix_fmt = info(video_path)
     video_w, video_h = video_dims
     out_h = _ceil_to(video_h, 32)
-    enc = encoder_args(src_fps)
+    enc = encoder_args(src_fps, pix_fmt=pix_fmt)
 
     if video_w == 2 * video_h:
         out_w = 2 * out_h
@@ -937,7 +939,7 @@ def fisheye180(input_video: str, mask_path: str | None = None) -> str:
     input_video = str(Path(input_video).expanduser().resolve())
     filename, ext = os.path.splitext(input_video)
     output_video = f'{filename}_FISHEYE180{ext}'
-    target_w, target_h, fps, duration, is_vfr  = info(input_video)
+    target_w, target_h, fps, duration, is_vfr, pix_fmt  = info(input_video)
     eye_w = target_w // 2
 
     if eye_w <= 0 or target_h <= 0:
