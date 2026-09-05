@@ -654,19 +654,18 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path, batch_m
 
             )
 
+        mask_segments = sam3_masks(
+
+            mask_segments, frames_dir, masks_dir, mask_square,
+            video_args.prompt,
+            video_args.seed_model,
+            video_args.sapiens_threshold,
+            video_args.gate_dilate,
+            video_args=video_args,
+
+        )
+
         if video_args.propagation_backend == 'matanyone':
-
-            mask_segments = sam3_masks(
-
-                mask_segments, frames_dir, masks_dir, mask_square,
-                video_args.prompt,
-                video_args.seed_model,
-                video_args.sapiens_threshold,
-                video_args.gate_dilate,
-                video_args=video_args,
-
-            )
-
             segments = matanyone(segments, segments_dir, mask_square, video_args)
 
         elif video_args.propagation_backend == 'sam3':
@@ -898,6 +897,8 @@ def main() -> int:
         video_args = argparse.Namespace(**vars(args), video=video_path)
         output_mask = process_video(video_path, args, temp_root, batch_mode=batch_mode)
         processed.append((video_path, output_mask))
+
+        # print(f'[{index}/{len(video_paths)}] Processing: {video_path}')
 
     for video_path, output_mask in processed:
 
