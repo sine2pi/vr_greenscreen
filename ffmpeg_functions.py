@@ -91,14 +91,16 @@ def encoder_args(fps=None, pix_fmt=None) -> list[str]:
 
     return [
 
+        '-sws_flags', 'lanczos+full_chroma_int+accurate_rnd+full_chroma_inp',
         '-fps_mode', 'cfr',
         '-r', str(fps) if fps is not None else '60',
         '-c:v', ENCODER,
+        # '-load_plugin', 'hevc_hw',
         '-preset', 'p5',
         '-profile:v', 'main10',
-        '-pix_fmt', str(pix_fmt) if pix_fmt is not None else 'yuv420p10le',
+        '-pix_fmt', str(pix_fmt) if pix_fmt is not None else 'p010le',
         '-g', '20',
-        '-b:v', '80M',
+        '-b:v', '60M',
         '-maxrate', '80M',
         '-bufsize', '160M',
         '-rc:v', 'cbr',
@@ -655,7 +657,7 @@ def mask_overlay(source_video: str, mask_video: str, output_path: str, backgroun
 def stereo_video(left_video: str, right_video: str, output_path: str) -> str:
 
     w, h, fps, dur, vfr, pix_fmt = info(aorb(left_video, right_video))
-    # print(f"@@@@@@@@-- stitching stereo video:  duration {dur:.3f}s, fps={fps:.6f}")
+
     enc = encoder_args(fps=fps, pix_fmt=pix_fmt)
 
     filter_complex = "[0:v][1:v]hstack=inputs=2[out]"
