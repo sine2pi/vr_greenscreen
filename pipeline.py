@@ -326,10 +326,10 @@ def _matanyone_process_segment(matanyone_model, device, inference_core_cls, job:
 
     imageio.mimwrite(output_file, phas, fps=fps, quality=10)
 
-    del processor, frames, phas, mask
-    torch.cuda.empty_cache()
+    # del processor, frames, phas, mask
+    # torch.cuda.empty_cache()
 
-    gc.collect()
+    # gc.collect()
     return output_file
 
 def matanyone_inference(jobs: list[dict], on_segment_done, args) -> list[str]:
@@ -820,7 +820,7 @@ def main() -> int:
     start_time = time.time()
     parser = argparse.ArgumentParser(description='VR Video Masking Pipeline')
     parser.add_argument('input_path')
-    parser.add_argument('--mask-height', type=int, default=1280)
+    parser.add_argument('--mask-height', type=int, default=1200)
     parser.add_argument('--segment-length', type=float, default=4)
     parser.add_argument('--erode', type=int, default=0)
     parser.add_argument('--dilate', type=int, default=0)
@@ -836,7 +836,7 @@ def main() -> int:
     parser.add_argument('--refine-unknown-dilate', type=int, default=5, help='Dilate unknown/boundary region before Sapiens edge refinement (sam3_sapiens)')
 
     parser.add_argument('--matanyone-version', type=str, default='v2', choices=['v1', 'v2'], help='Select MatAnyone runtime version')
-    parser.add_argument('--ma2-mem-every', type=int, default=1, help='Override MatAnyone mem_every (works for v1 and v2; e.g. 2 or 3 for faster refresh)')
+    parser.add_argument('--ma2-mem-every', type=int, default=3, help='Override MatAnyone mem_every (works for v1 and v2; e.g. 2 or 3 for faster refresh)')
     parser.add_argument('--ma2-max-mem-frames', type=int, default=2, help='Override MatAnyone memory window in frames (works for v1 and v2)')
     parser.add_argument('--ma2-use-long-term', type=str, default='off', choices=['auto', 'on', 'off'], help='Override MatAnyone long-term memory mode (works for v1 and v2)')
     parser.add_argument('--temporal-median-window', type=int, default=0, help='Temporal median window for alpha cleanup. 0 disables; use odd values >= 3 (e.g. 5)')
@@ -847,6 +847,7 @@ def main() -> int:
     parser.add_argument('--overlay-mask', type=str, default=None, help='Write a composited video with a provided mask over the original source')
     parser.add_argument('--alpha-packer', type=str, default=None, help='Run alpha packer on its own. Provide folder with video and mask (_mask.<ext>)')
     parser.add_argument('--alpha', type=bool, default=False, help='Run alpha packer instead of overlay within pipeline. --alpha <true|false> default is False')
+    parser.add_argument('--show-plots', type=bool, default=False, help='Sam3 mask plots will be displayed if True. Default is False')
     parser.add_argument('--fisheye180', nargs='?', const=FISHEYE180_PIPELINE_MODE, default=None, help='Convert an SBS equirectangular input video or folder to SBS fisheye180')
 
     args = parser.parse_args()
