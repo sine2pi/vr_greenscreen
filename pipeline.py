@@ -337,8 +337,9 @@ def _matanyone_process_segment(matanyone_model, device, inference_core_cls, job:
             pha = torch.clamp(pha, 0, 255).cpu()
             phas.append(pha)
 
-    if temporal_median_window > 1 and phas.shape[0] >= temporal_median_window:
-        phas = _apply_temporal_median_filter(phas, temporal_median_window)
+    # temporarily out of service
+    # if temporal_median_window > 1 and phas.shape[0] >= temporal_median_window:
+    #     phas = _apply_temporal_median_filter(phas, temporal_median_window)
 
     output_file = os.path.join(output_path, f'{video_name}_pha.mp4')
 
