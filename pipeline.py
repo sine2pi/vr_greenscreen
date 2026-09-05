@@ -5,7 +5,7 @@ from pathlib import Path
 from PIL import Image
 from typing import Callable, List
 from omegaconf import open_dict
-# from torchvision.transforms import v2
+
 from ffmpeg_functions import (
  norm_video, 
  info, 
@@ -32,6 +32,37 @@ def _setup_tf32() -> None:
             torch.backends.cuda.matmul.allow_tf32 = True
             torch.backends.cudnn.allow_tf32 = True
 _setup_tf32()
+
+def get_default_device():
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    elif torch.backends.mps.is_built() and torch.backends.mps.is_available():
+        return torch.device("mps")
+    else:
+        return torch.device("cpu")
+
+def safe_autocast_decorator(enabled=True):
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            device = get_default_device()
+            if device.type in ["cuda", "cpu"]:
+                with torch.amp.autocast(device_type=device.type, enabled=enabled):
+                    return func(*args, **kwargs)
+            else:
+                return func(*args, **kwargs)
+        return wrapper
+    return decorator
+
+import contextlib
+@contextlib.contextmanager
+def safe_autocast(enabled=True):
+    device = get_default_device()
+    if device.type in ["cuda", "cpu"]:
+        with torch.amp.autocast(device_type=device.type, enabled=enabled):
+            yield
+    else:
+        yield  
 
 class SegmentType(Enum):
     MASK = 'mask'
@@ -171,19 +202,13 @@ def _apply_matanyone_config_overrides(matanyone_model, job: dict, *, verbose: bo
         )
         sys.stderr.flush()
 
-def _apply_temporal_median_filter(phas: np.ndarray, window: int) -> np.ndarray:
+def _apply_temporal_median_filter(phas, window: int):
+    from scipy.ndimage import median_filter
 
     if window <= 1:
         return phas
 
-    try:
-        from scipy.ndimage import median_filter
-
-    except Exception as exc:
-        raise RuntimeError(
-            "Temporal median filtering requires scipy. "
-            "Install scipy or set --temporal-median-window 0."
-        ) from exc
+         # phas_np = np.array(phas, dtype=np.uint8)
 
     return median_filter(phas, size=(window, 1, 1, 1), mode='nearest-exact').astype(np.uint8)
 
@@ -192,17 +217,20 @@ def str_to_list(value):
 
 def _elliptical_kernel(kernel_size: int, *, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
     coordinates = torch.arange(kernel_size, device=device, dtype=dtype)
-    center = (kernel_size - 1) / 2
-    radius = kernel_size / 2
+    center = (kernel_size - 1) / 2.0
+    radius = kernel_size / 2.0
     y, x = torch.meshgrid(coordinates, coordinates, indexing='ij')
     return ((x - center).square() + (y - center).square() <= radius * radius).to(dtype)
+
+def _binary_mask(alpha: torch.Tensor) -> torch.Tensor:
+    return (alpha > 127).to(alpha.dtype)
 
 def gen_dilate(alpha: torch.Tensor, min_kernel_size: int, max_kernel_size: int) -> torch.Tensor:
     kernel_size = random.randint(min_kernel_size, max_kernel_size)
     kernel = _elliptical_kernel(kernel_size, device=alpha.device, dtype=alpha.dtype)
-    foreground_or_unknown = (alpha != 0).to(alpha.dtype)
+    binary = _binary_mask(alpha)
     dilated = F.conv2d(
-        foreground_or_unknown.unsqueeze(0).unsqueeze(0),
+        binary.unsqueeze(0).unsqueeze(0),
         kernel.unsqueeze(0).unsqueeze(0),
         padding=kernel_size // 2,
     )
@@ -210,17 +238,21 @@ def gen_dilate(alpha: torch.Tensor, min_kernel_size: int, max_kernel_size: int) 
 
 def gen_erosion(alpha: torch.Tensor, min_kernel_size: int, max_kernel_size: int) -> torch.Tensor:
     kernel_size = random.randint(min_kernel_size, max_kernel_size)
+    if kernel_size <= 1:
+        return _binary_mask(alpha)
+
     kernel = _elliptical_kernel(kernel_size, device=alpha.device, dtype=alpha.dtype)
-    foreground = (alpha == 255).to(alpha.dtype)
+    binary = _binary_mask(alpha)
     padded_foreground = F.pad(
-        foreground.unsqueeze(0).unsqueeze(0),
+        binary.unsqueeze(0).unsqueeze(0),
         (kernel_size // 2,) * 4,
-        value=1,
+        value=0,
     )
     eroded = F.conv2d(padded_foreground, kernel.unsqueeze(0).unsqueeze(0))
     return (eroded[0, 0, :alpha.shape[-2], :alpha.shape[-1]] == kernel.sum()).to(alpha.dtype) * 255
 
 @torch.inference_mode()
+@safe_autocast()
 
 def _matanyone_process_segment(matanyone_model, device, inference_core_cls, job: dict, args) -> str:
 
@@ -229,8 +261,8 @@ def _matanyone_process_segment(matanyone_model, device, inference_core_cls, job:
     mask_path = job['mask_path']
     max_size = int(job.get('mask_height', args.mask_height))
     output_path = job['output_path']
-    r_erode = int(job.get('erode', 0))
-    r_dilate = int(job.get('dilate', 0))
+    r_erode = int(job.get('erode', args.erode))
+    r_dilate = int(job.get('dilate', args.dilate))
     suffix = job.get('suffix', '')
     temporal_median_window = int(job.get('temporal_median_window', args.temporal_median_window))
 
@@ -290,32 +322,29 @@ def _matanyone_process_segment(matanyone_model, device, inference_core_cls, job:
         if ti == 0:
 
             output_prob = processor.step(image, mask, objects=objects)
-            output_prob = processor.step(image, first_frame_pred=True)
+            output_prob = processor.step(image, first_frame_pred=True, force_permanent=True)
 
         elif ti <= n_warmup:
-            output_prob = processor.step(image, first_frame_pred=True)
+            output_prob = processor.step(image, first_frame_pred=True, force_permanent=True)
 
         else:
             output_prob = processor.step(image)
 
-        mask = processor.output_prob_to_mask(output_prob)
-        pha = mask.unsqueeze(2).cpu().numpy()
+        mask = processor.output_prob_to_mask(output_prob, matting = True)
 
         if ti > (n_warmup-1):
-
-            pha = np.round(np.clip(pha * 255.0, 0, 255)).astype(np.uint8)
+            pha = torch.round(mask * 255).to(torch.uint8)
+            pha = torch.clamp(pha, 0, 255).cpu()
             phas.append(pha)
 
-    phas_np = np.array(phas, dtype=np.uint8)
-
-    if temporal_median_window > 1 and phas_np.shape[0] >= temporal_median_window:
-        phas_np = _apply_temporal_median_filter(phas_np, temporal_median_window)
+    if temporal_median_window > 1 and phas.shape[0] >= temporal_median_window:
+        phas = _apply_temporal_median_filter(phas, temporal_median_window)
 
     output_file = os.path.join(output_path, f'{video_name}_pha.mp4')
 
-    imageio.mimwrite(output_file, phas_np, fps=fps, quality=7)
+    imageio.mimwrite(output_file, phas, fps=fps, quality=10)
 
-    del processor, frames, phas, phas_np, mask
+    del processor, frames, phas, mask
     torch.cuda.empty_cache()
 
     gc.collect()
@@ -728,12 +757,12 @@ def main() -> int:
     parser.add_argument('--erode', type=int, default=0)
     parser.add_argument('--dilate', type=int, default=0)
     parser.add_argument('--prompt', type=str, default='one girl')
-    parser.add_argument('--warmup', type=int, default=12)
+    parser.add_argument('--warmup', type=int, default=6)
     parser.add_argument('--seed-model', type=str, default='sam3video', choices=['sam3', 'sam3video', 'sam31video', 'sapiens', 'hybrid'], help='Seed mask mode (sam3, sam3video, sam31video, sapiens, or hybrid)')
     parser.add_argument('--sapiens-threshold', type=float, default=0.5, help='Threshold for converting Sapiens alpha matte to a binary mask')
     parser.add_argument('--gate-dilate', type=int, default=5, help='Dilate SAM3 gating in hybrid mode')
     parser.add_argument('--matanyone-version', type=str, default='v2', choices=['v1', 'v2'], help='Select MatAnyone runtime version')
-    parser.add_argument('--ma2-mem-every', type=int, default=2, help='Override MatAnyone mem_every (works for v1 and v2; e.g. 2 or 3 for faster refresh)')
+    parser.add_argument('--ma2-mem-every', type=int, default=1, help='Override MatAnyone mem_every (works for v1 and v2; e.g. 2 or 3 for faster refresh)')
     parser.add_argument('--ma2-max-mem-frames', type=int, default=2, help='Override MatAnyone memory window in frames (works for v1 and v2)')
     parser.add_argument('--ma2-use-long-term', type=str, default='off', choices=['auto', 'on', 'off'], help='Override MatAnyone long-term memory mode (works for v1 and v2)')
     parser.add_argument('--temporal-median-window', type=int, default=0, help='Temporal median window for alpha cleanup. 0 disables; use odd values >= 3 (e.g. 5)')
@@ -794,6 +823,8 @@ def main() -> int:
         video_args = argparse.Namespace(**vars(args), video=video_path)
         output_mask = process_video(video_path, args, temp_root, batch_mode=batch_mode)
         processed.append((video_path, output_mask))
+
+        # print(f'[{index}/{len(video_paths)}] Processing: {video_path}')
 
     for video_path, output_mask in processed:
 
