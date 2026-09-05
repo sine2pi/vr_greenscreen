@@ -5,23 +5,7 @@ from pathlib import Path
 from PIL import Image
 from typing import Callable, List
 from omegaconf import open_dict
-# from torchvision.transforms import v2
-from ffmpeg_functions import (
- norm_video, 
- info, 
- concat_video, 
- extract_segment_frames, 
- mask_overlay, 
- stereo_video, 
- read_frame_from_videos, 
- timestamp, 
- format_timestamp, 
- FISHEYE180_PIPELINE_MODE, 
- packer, 
- run_fisheye180_mode, 
- pack_video
- )
-
+from ffmpeg_functions import *
 from sammy import sam3_masks
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -164,7 +148,7 @@ def _load_matanyone_runtime(version: str = 'v2'):
 
     raise ValueError(f"Unsupported MatAnyone version: {version}")
 
-def _apply_matanyone_config_overrides(matanyone_model, job: dict, *, verbose: bool = False) -> None:
+def _config_overrides(matanyone_model, job: dict, *, verbose: bool = False) -> None:
 
     cfg = matanyone_model.cfg
     mem_every = job.get('ma2_mem_every')
@@ -214,42 +198,52 @@ def str_to_list(value):
     return list(map(int, value.split(',')))
 
 def _elliptical_kernel(kernel_size: int, *, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+
     coordinates = torch.arange(kernel_size, device=device, dtype=dtype)
     center = (kernel_size - 1) / 2.0
     radius = kernel_size / 2.0
     y, x = torch.meshgrid(coordinates, coordinates, indexing='ij')
+
     return ((x - center).square() + (y - center).square() <= radius * radius).to(dtype)
 
 def _binary_mask(alpha: torch.Tensor) -> torch.Tensor:
     return (alpha > 127).to(alpha.dtype)
 
 def gen_dilate(alpha: torch.Tensor, min_kernel_size: int, max_kernel_size: int) -> torch.Tensor:
- 
+
     kernel_size = random.randint(min_kernel_size, max_kernel_size)
     kernel = _elliptical_kernel(kernel_size, device=alpha.device, dtype=alpha.dtype)
     binary = _binary_mask(alpha)
- 
+
     dilated = F.conv2d(
+
         binary.unsqueeze(0).unsqueeze(0),
         kernel.unsqueeze(0).unsqueeze(0),
         padding=kernel_size // 2,
     )
- 
+
     return (dilated[0, 0, :alpha.shape[-2], :alpha.shape[-1]] > 0).to(alpha.dtype) * 255
 
 def gen_erosion(alpha: torch.Tensor, min_kernel_size: int, max_kernel_size: int) -> torch.Tensor:
+
     kernel_size = random.randint(min_kernel_size, max_kernel_size)
+
     if kernel_size <= 1:
         return _binary_mask(alpha)
 
     kernel = _elliptical_kernel(kernel_size, device=alpha.device, dtype=alpha.dtype)
     binary = _binary_mask(alpha)
+
     padded_foreground = F.pad(
+
         binary.unsqueeze(0).unsqueeze(0),
         (kernel_size // 2,) * 4,
         value=0,
+
     )
+
     eroded = F.conv2d(padded_foreground, kernel.unsqueeze(0).unsqueeze(0))
+
     return (eroded[0, 0, :alpha.shape[-2], :alpha.shape[-1]] == kernel.sum()).to(alpha.dtype) * 255
 
 @torch.inference_mode()
@@ -257,17 +251,17 @@ def gen_erosion(alpha: torch.Tensor, min_kernel_size: int, max_kernel_size: int)
 
 def _matanyone_process_segment(matanyone_model, device, inference_core_cls, job: dict, args) -> str:
 
-    n_warmup = int(job.get('warmup', 6))
+    n_warmup = args.warmup
     input_path = job['input_path']
     mask_path = job['mask_path']
-    max_size = int(job.get('mask_height', args.mask_height))
+    max_size = args.mask_height
     output_path = job['output_path']
-    r_erode = int(job.get('erode', args.erode))
-    r_dilate = int(job.get('dilate', args.dilate))
+    r_erode = args.erode
+    r_dilate = args.dilate
     suffix = job.get('suffix', '')
-    temporal_median_window = int(job.get('temporal_median_window', args.temporal_median_window))
+    temporal_median_window = args.temporal_median_window
 
-    _apply_matanyone_config_overrides(matanyone_model, job, verbose=(job.get('op_num', 1) == 1))
+    _config_overrides(matanyone_model, job, verbose=(job.get('op_num', 1) == 1))
     processor = inference_core_cls(matanyone_model, cfg=matanyone_model.cfg)
 
     frames, fps, length, video_name = read_frame_from_videos(input_path)
@@ -284,34 +278,33 @@ def _matanyone_process_segment(matanyone_model, device, inference_core_cls, job:
 
     mask = Image.open(mask_path).convert('L')
     mask = np.array(mask)
-
     mask = torch.from_numpy(mask).float().to(device)
 
-    if mask.shape != (max_size, max_size):
+    # if mask.shape != (max_size, max_size):
 
-        mask = F.interpolate(
+    #     mask = F.interpolate(
 
-            mask.unsqueeze(0).unsqueeze(0),
-            size=(max_size, max_size),
-            mode="nearest-exact"
+    #         mask.unsqueeze(0).unsqueeze(0),
+    #         size=(max_size, max_size),
+    #         mode="nearest-exact"
 
-        )[0][0]
+    #     )[0][0]
 
-    if r_dilate > 0:
-        mask = gen_dilate(mask, r_dilate, r_dilate)
+    # if r_dilate > 0:
+    #     mask = gen_dilate(mask, r_dilate, r_dilate)
 
-    if r_erode > 0:
-        mask = gen_erosion(mask, r_erode, r_erode)
+    # if r_erode > 0:
+    #     mask = gen_erosion(mask, r_erode, r_erode)
 
-    if mask.shape != (max_size, max_size):
+    # if mask.shape != (max_size, max_size):
 
-        mask = F.interpolate(
+    #     mask = F.interpolate(
 
-            mask.unsqueeze(0).unsqueeze(0),
-            size=(max_size, max_size),
-            mode="nearest-exact"
+    #         mask.unsqueeze(0).unsqueeze(0),
+    #         size=(max_size, max_size),
+    #         mode="nearest-exact"
 
-        )[0][0]
+    #     )[0][0]
 
     objects = [1]
     phas = []
@@ -323,10 +316,10 @@ def _matanyone_process_segment(matanyone_model, device, inference_core_cls, job:
         if ti == 0:
 
             output_prob = processor.step(image, mask, objects=objects)
-            output_prob = processor.step(image, first_frame_pred=True, force_permanent=True)
+            output_prob = processor.step(image, first_frame_pred=True, force_permanent=False)
 
         elif ti <= n_warmup:
-            output_prob = processor.step(image, first_frame_pred=True, force_permanent=True)
+            output_prob = processor.step(image, first_frame_pred=True, force_permanent=False)
 
         else:
             output_prob = processor.step(image)
@@ -431,8 +424,7 @@ def matanyone_inference(jobs: list[dict], on_segment_done, args) -> list[str]:
 
     return completed_paths
 
-def matanyone(segments: List[SegmentInfo], segments_dir: Path, mask_square: int, args: argparse.Namespace) -> List[SegmentInfo]:
- 
+def matanyone(segments: List[SegmentInfo], segments_dir: Path, mask_square: int, args: argparse.Namespace):
     print()
     print(f"MatAnyone inference. ... ♩ ♪ ♫ ♬")
     print(f"MatAnyone model: {args.matanyone_version}")
@@ -457,15 +449,10 @@ def matanyone(segments: List[SegmentInfo], segments_dir: Path, mask_square: int,
             'input_path': seg_left_video,
             'mask_path': seg.left_mask_path,
             'output_path': matanyout,
-            'max_size': args.mask_height,
-            'erode': args.erode,
-            'warmup': args.warmup,
-            'dilate': args.dilate,
             'matanyone_version': args.matanyone_version,
             'ma2_mem_every': args.ma2_mem_every,
             'ma2_max_mem_frames': args.ma2_max_mem_frames,
             'ma2_use_long_term': args.ma2_use_long_term,
-            'temporal_median_window': args.temporal_median_window,
             'op_num': len(jobs) + 1,
             'total_ops': total_ops,
             'label': f'seg{seg.index:02d}_left',
@@ -478,15 +465,10 @@ def matanyone(segments: List[SegmentInfo], segments_dir: Path, mask_square: int,
             'input_path': seg_right_video,
             'mask_path': seg.right_mask_path,
             'output_path': matanyout,
-            'max_size': args.mask_height,
-            'erode': args.erode,
-            'warmup': args.warmup,
-            'dilate': args.dilate,
             'matanyone_version': args.matanyone_version,
             'ma2_mem_every': args.ma2_mem_every,
             'ma2_max_mem_frames': args.ma2_max_mem_frames,
             'ma2_use_long_term': args.ma2_use_long_term,
-            'temporal_median_window': args.temporal_median_window,
             'op_num': len(jobs) + 1,
             'total_ops': total_ops,
             'label': f'seg{seg.index:02d}_right',
@@ -755,17 +737,17 @@ def main() -> int:
     start_time = time.time()
     parser = argparse.ArgumentParser(description='VR Video Masking Pipeline')
     parser.add_argument('input_path')
-    parser.add_argument('--mask-height', type=int, default=608)
-    parser.add_argument('--segment-length', type=float, default=1)
-    parser.add_argument('--erode', type=int, default=0)
-    parser.add_argument('--dilate', type=int, default=0)
+    parser.add_argument('--mask-height', type=int, default=640)
+    parser.add_argument('--segment-length', type=float, default=5)
+    parser.add_argument('--erode', type=int, default=6)
+    parser.add_argument('--dilate', type=int, default=-3)
     parser.add_argument('--prompt', type=str, default='one girl')
     parser.add_argument('--warmup', type=int, default=6)
     parser.add_argument('--seed-model', type=str, default='sam3video', choices=['sam3', 'sam3video', 'sam31video', 'sapiens', 'hybrid'], help='Seed mask mode (sam3, sam3video, sam31video, sapiens, or hybrid)')
     parser.add_argument('--sapiens-threshold', type=float, default=0.5, help='Threshold for converting Sapiens alpha matte to a binary mask')
     parser.add_argument('--gate-dilate', type=int, default=5, help='Dilate SAM3 gating in hybrid mode')
     parser.add_argument('--matanyone-version', type=str, default='v2', choices=['v1', 'v2'], help='Select MatAnyone runtime version')
-    parser.add_argument('--ma2-mem-every', type=int, default=1, help='Override MatAnyone mem_every (works for v1 and v2; e.g. 2 or 3 for faster refresh)')
+    parser.add_argument('--ma2-mem-every', type=int, default=3, help='Override MatAnyone mem_every (works for v1 and v2; e.g. 2 or 3 for faster refresh)')
     parser.add_argument('--ma2-max-mem-frames', type=int, default=2, help='Override MatAnyone memory window in frames (works for v1 and v2)')
     parser.add_argument('--ma2-use-long-term', type=str, default='off', choices=['auto', 'on', 'off'], help='Override MatAnyone long-term memory mode (works for v1 and v2)')
     parser.add_argument('--temporal-median-window', type=int, default=0, help='Temporal median window for alpha cleanup. 0 disables; use odd values >= 3 (e.g. 5)')
@@ -826,6 +808,8 @@ def main() -> int:
         video_args = argparse.Namespace(**vars(args), video=video_path)
         output_mask = process_video(video_path, args, temp_root, batch_mode=batch_mode)
         processed.append((video_path, output_mask))
+
+        # print(f'[{index}/{len(video_paths)}] Processing: {video_path}')
 
     for video_path, output_mask in processed:
 
