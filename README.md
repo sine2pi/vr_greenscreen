@@ -2,9 +2,7 @@
 
 how to use:
 
-Install whatever you need to run the ai models (sam3 prerequisites are bare minimum). At this point you probably know the routine. This works on windows and uses regular ffmpeg.
-
-https://github.com/facebookresearch/sam3/
+Install whatever you need to run the ai models. Pytorch cuda the usual suspects. This runs on windows and uses ffmpeg.
 
 python pipeline.py ./videos
 
