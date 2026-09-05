@@ -43,6 +43,8 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
         **kwargs,
     ):
         super().__init__(**kwargs)
+        self.max_num_objects = max_num_objects
+        self.num_obj_for_compile = num_obj_for_compile
         self.clear_non_cond_mem_around_input = clear_non_cond_mem_around_input
         self.clear_non_cond_mem_for_multi_obj = clear_non_cond_mem_for_multi_obj
         self.fill_hole_area = fill_hole_area

@@ -36,6 +36,8 @@ class Sam3MultiplexVideoPredictor(Sam3BasePredictor):
         default_output_prob_thresh=0.5,
         async_loading_frames=True,
         warm_up=False,
+        max_num_objects=1,
+        num_obj_for_compile=1,
     ):
         super().__init__()
         self.model = model

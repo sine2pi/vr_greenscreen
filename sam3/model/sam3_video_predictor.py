@@ -40,7 +40,7 @@ class Sam3VideoPredictor(Sam3BasePredictor):
         super().__init__()
         self.async_loading_frames = async_loading_frames
         self.video_loader_type = video_loader_type
-        from ..model_builder import build_sam3_video_model
+        from sam3.model_builder import build_sam3_video_model
 
         self.model = (
             build_sam3_video_model(
@@ -50,9 +50,9 @@ class Sam3VideoPredictor(Sam3BasePredictor):
                 geo_encoder_use_img_cross_attn=geo_encoder_use_img_cross_attn,
                 strict_state_dict_loading=strict_state_dict_loading,
                 apply_temporal_disambiguation=apply_temporal_disambiguation,
-                compile=compile,
+                compile=False,
                 max_num_objects=max_num_objects,
-                num_obj_for_compile=max_num_objects,
+                num_obj_for_compile=num_obj_for_compile,
                 use_fa3 = use_fa3,
             )
             .cuda()
@@ -103,7 +103,22 @@ class Sam3VideoPredictor(Sam3BasePredictor):
 
 class Sam3VideoPredictorMultiGPU(Sam3VideoPredictor):
 
-    def __init__(self, *model_args, gpus_to_use, is_sbs, max_num_objects, num_obj_for_compile, use_fa3, **model_kwargs):
+    def __init__(self, 
+    *model_args, 
+    checkpoint_path=None, 
+    bpe_path =None, 
+    has_presence_token = False, 
+    geo_encoder_use_img_cross_attn = False, 
+    strict_state_dict_loading = False, 
+    async_loading_frames = True, 
+    video_loader_type = "cv2", 
+    apply_temporal_disambiguation = True,
+    compile = False, 
+    max_num_objects = 1, 
+    num_obj_for_compile = 1, 
+    use_fa3 = False,
+    gpus_to_use = None, 
+    **model_kwargs):
 
         if gpus_to_use is None:
             gpus_to_use = [torch.cuda.current_device()]
@@ -124,19 +139,34 @@ class Sam3VideoPredictorMultiGPU(Sam3VideoPredictor):
         self.world_size = int(os.environ["WORLD_SIZE"])
         self.rank_str = f"rank={self.rank} with world_size={self.world_size}"
         self.device = torch.device(f"cuda:{self.gpus_to_use[self.rank]}")
+        self.max_num_objects = max_num_objects
+        self.num_obj_for_compile = num_obj_for_compile
+
         torch.cuda.set_device(self.device)
         self.has_shutdown = False
         if self.rank == 0:
             logger.info("\n\n\n\t*** START loading model on all ranks ***\n\n")
 
         logger.info(f"loading model on {self.rank_str} -- this could take a while ...")
-        super().__init__(*model_args, **model_kwargs)
+
+        super().__init__(
+            *model_args,
+            max_num_objects=max_num_objects,
+            num_obj_for_compile=num_obj_for_compile,
+            **model_kwargs,
+        )
+
         logger.info(f"loading model on {self.rank_str} -- DONE locally")
 
         if self.world_size > 1 and self.rank == 0:
             # start the worker processes *after* the model is loaded in the main process
             # so that the main process can run torch.compile and fill the cache first
-            self._start_worker_processes(*model_args, **model_kwargs)
+            self._start_worker_processes(
+                *model_args,
+                max_num_objects=max_num_objects,
+                num_obj_for_compile=num_obj_for_compile,
+                **model_kwargs,
+            )
             for rank in range(1, self.world_size):
                 self.command_queues[rank].put(("start_nccl_process_group", None))
             self._start_nccl_process_group()
@@ -185,7 +215,13 @@ class Sam3VideoPredictorMultiGPU(Sam3VideoPredictor):
         if self.world_size > 1:
             torch.distributed.barrier()  # wait for all ranks to finish
 
-    def _start_worker_processes(self, *model_args, **model_kwargs):
+    def _start_worker_processes(
+        self,
+        *model_args,
+        max_num_objects=1,
+        num_obj_for_compile=1,
+        **model_kwargs,
+    ):
         """Start worker processes for handling model inference."""
         world_size = self.world_size
         logger.info(f"spawning {world_size - 1} worker processes")
@@ -209,6 +245,8 @@ class Sam3VideoPredictorMultiGPU(Sam3VideoPredictor):
                     model_kwargs,
                     self.gpus_to_use,
                     parent_pid,
+                    max_num_objects,
+                    num_obj_for_compile,
                 ),
                 daemon=True,
             )
@@ -267,6 +305,8 @@ class Sam3VideoPredictorMultiGPU(Sam3VideoPredictor):
         model_kwargs,
         gpus_to_use,
         parent_pid,
+        max_num_objects,
+        num_obj_for_compile,
     ):
         """
         The command loop for each worker process. It listens to commands from the main process
@@ -279,7 +319,11 @@ class Sam3VideoPredictorMultiGPU(Sam3VideoPredictor):
         assert int(os.environ["WORLD_SIZE"]) == world_size
         # load the model in this worker process
         predictor = Sam3VideoPredictorMultiGPU(
-            *model_args, gpus_to_use=gpus_to_use, **model_kwargs
+            *model_args,
+            gpus_to_use=gpus_to_use,
+            max_num_objects=max_num_objects,
+            num_obj_for_compile=num_obj_for_compile,
+            **model_kwargs,
         )
         logger.info(f"started worker {rank=} with {world_size=}")
         # return the worker process id to the main process for bookkeeping
@@ -308,11 +352,7 @@ class Sam3VideoPredictorMultiGPU(Sam3VideoPredictor):
                 else:
                     predictor.handle_request(request)
             except queue.Empty:
-                # Usually Python's multiprocessing module will shutdown all the daemon worker
-                # processes when the main process exits gracefully. However, the user may kill
-                # the main process using SIGKILL and thereby leaving no chance for the main process
-                # to clean up its daemon child processes. So here we manually check whether the
-                # parent process still exists (every 5 sec as in `command_queue.get` timeout).
+
                 if not psutil.pid_exists(parent_pid):
                     logger.info(
                         f"stopping worker {rank=} as its parent process has exited"

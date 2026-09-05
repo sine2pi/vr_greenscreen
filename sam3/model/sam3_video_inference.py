@@ -47,7 +47,11 @@ class Sam3VideoInference(Sam3VideoBase):
             If `hotstart_delay` is set to 0, this parameter is ignored.
         hotstart_dup_thresh: int, remove the object if it has overlapped with another object this many frames within its hotstart_delay period.
         """
-        super().__init__(**kwargs)
+        super().__init__(
+            max_num_objects=max_num_objects,
+            num_obj_for_compile=num_obj_for_compile,
+            **kwargs,
+        )
         self.image_size = image_size
         self.image_mean = image_mean
         self.image_std = image_std
@@ -969,6 +973,8 @@ class Sam3VideoInferenceWithInstanceInteractivity(Sam3VideoInference):
         use_prev_mem_frame=False,
         use_stateless_refinement=False,
         refinement_detector_cond_frame_removal_window=16,
+        max_num_objects=1,
+        num_obj_for_compile=1,
         **kwargs,
     ):
         """
@@ -978,8 +984,14 @@ class Sam3VideoInferenceWithInstanceInteractivity(Sam3VideoInference):
             is within this many frames of a user refined frame. Set to a large value (e.g. 10000) to
             always remove detector conditioning frames if there is any user refinement in the video.
         """
-        super().__init__(**kwargs)
+        super().__init__(
+            max_num_objects=max_num_objects,
+            num_obj_for_compile=num_obj_for_compile,
+            **kwargs,
+        )
         self.use_prev_mem_frame = use_prev_mem_frame
+        self.max_num_objects = max_num_objects
+        self.num_obj_for_compile = num_obj_for_compile 
         self.use_stateless_refinement = use_stateless_refinement
         self.refinement_detector_cond_frame_removal_window = (
             refinement_detector_cond_frame_removal_window
