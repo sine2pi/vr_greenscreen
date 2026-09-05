@@ -5,7 +5,8 @@ from pathlib import Path
 from PIL import Image
 from typing import Callable, List
 from omegaconf import open_dict
-from ffmpeg import (
+# from torchvision.transforms import v2
+from ffmpeg_functions import (
  norm_video, 
  info, 
  concat_video, 
@@ -189,19 +190,35 @@ def _apply_temporal_median_filter(phas: np.ndarray, window: int) -> np.ndarray:
 def str_to_list(value):
     return list(map(int, value.split(',')))
 
-def gen_dilate(alpha, min_kernel_size, max_kernel_size):
-    kernel_size = random.randint(min_kernel_size, max_kernel_size)
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size,kernel_size))
-    fg_and_unknown = np.array(np.not_equal(alpha, 0).astype(np.float32))
-    dilate = cv2.dilate(fg_and_unknown, kernel, iterations=1)*255
-    return dilate.astype(np.float32)
+def _elliptical_kernel(kernel_size: int, *, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+    coordinates = torch.arange(kernel_size, device=device, dtype=dtype)
+    center = (kernel_size - 1) / 2
+    radius = kernel_size / 2
+    y, x = torch.meshgrid(coordinates, coordinates, indexing='ij')
+    return ((x - center).square() + (y - center).square() <= radius * radius).to(dtype)
 
-def gen_erosion(alpha, min_kernel_size, max_kernel_size):
+def gen_dilate(alpha: torch.Tensor, min_kernel_size: int, max_kernel_size: int) -> torch.Tensor:
     kernel_size = random.randint(min_kernel_size, max_kernel_size)
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size,kernel_size))
-    fg = np.array(np.equal(alpha, 255).astype(np.float32))
-    erode = cv2.erode(fg, kernel, iterations=1)*255
-    return erode.astype(np.float32)
+    kernel = _elliptical_kernel(kernel_size, device=alpha.device, dtype=alpha.dtype)
+    foreground_or_unknown = (alpha != 0).to(alpha.dtype)
+    dilated = F.conv2d(
+        foreground_or_unknown.unsqueeze(0).unsqueeze(0),
+        kernel.unsqueeze(0).unsqueeze(0),
+        padding=kernel_size // 2,
+    )
+    return (dilated[0, 0, :alpha.shape[-2], :alpha.shape[-1]] > 0).to(alpha.dtype) * 255
+
+def gen_erosion(alpha: torch.Tensor, min_kernel_size: int, max_kernel_size: int) -> torch.Tensor:
+    kernel_size = random.randint(min_kernel_size, max_kernel_size)
+    kernel = _elliptical_kernel(kernel_size, device=alpha.device, dtype=alpha.dtype)
+    foreground = (alpha == 255).to(alpha.dtype)
+    padded_foreground = F.pad(
+        foreground.unsqueeze(0).unsqueeze(0),
+        (kernel_size // 2,) * 4,
+        value=1,
+    )
+    eroded = F.conv2d(padded_foreground, kernel.unsqueeze(0).unsqueeze(0))
+    return (eroded[0, 0, :alpha.shape[-2], :alpha.shape[-1]] == kernel.sum()).to(alpha.dtype) * 255
 
 @torch.inference_mode()
 
@@ -215,7 +232,7 @@ def _matanyone_process_segment(matanyone_model, device, inference_core_cls, job:
     r_erode = int(job.get('erode', 0))
     r_dilate = int(job.get('dilate', 0))
     suffix = job.get('suffix', '')
-    temporal_median_window = int(job.get('temporal_median_window', 0))
+    temporal_median_window = int(job.get('temporal_median_window', args.temporal_median_window))
 
     _apply_matanyone_config_overrides(matanyone_model, job, verbose=(job.get('op_num', 1) == 1))
     processor = inference_core_cls(matanyone_model, cfg=matanyone_model.cfg)
@@ -235,6 +252,18 @@ def _matanyone_process_segment(matanyone_model, device, inference_core_cls, job:
     mask = Image.open(mask_path).convert('L')
     mask = np.array(mask)
 
+    mask = torch.from_numpy(mask).float().to(device)
+
+    if mask.shape != (max_size, max_size):
+
+        mask = F.interpolate(
+
+            mask.unsqueeze(0).unsqueeze(0),
+            size=(max_size, max_size),
+            mode="nearest-exact"
+
+        )[0][0]
+
     if r_dilate > 0:
         mask = gen_dilate(mask, r_dilate, r_dilate)
 
@@ -242,10 +271,14 @@ def _matanyone_process_segment(matanyone_model, device, inference_core_cls, job:
         mask = gen_erosion(mask, r_erode, r_erode)
 
     if mask.shape != (max_size, max_size):
-        
-        mask = cv2.resize(mask.astype(np.uint8), (max_size, max_size), interpolation=cv2.INTER_AREA).astype(np.float32)
 
-    mask = torch.from_numpy(mask).float().to(device)
+        mask = F.interpolate(
+
+            mask.unsqueeze(0).unsqueeze(0),
+            size=(max_size, max_size),
+            mode="nearest-exact"
+
+        )[0][0]
 
     objects = [1]
     phas = []
@@ -690,12 +723,12 @@ def main() -> int:
     start_time = time.time()
     parser = argparse.ArgumentParser(description='VR Video Masking Pipeline')
     parser.add_argument('input_path')
-    parser.add_argument('--mask-height', type=int, default=1200)
-    parser.add_argument('--segment-length', type=float, default=4)
+    parser.add_argument('--mask-height', type=int, default=608)
+    parser.add_argument('--segment-length', type=float, default=1)
     parser.add_argument('--erode', type=int, default=0)
     parser.add_argument('--dilate', type=int, default=0)
     parser.add_argument('--prompt', type=str, default='one girl')
-    parser.add_argument('--warmup', type=int, default=6)
+    parser.add_argument('--warmup', type=int, default=12)
     parser.add_argument('--seed-model', type=str, default='sam3video', choices=['sam3', 'sam3video', 'sam31video', 'sapiens', 'hybrid'], help='Seed mask mode (sam3, sam3video, sam31video, sapiens, or hybrid)')
     parser.add_argument('--sapiens-threshold', type=float, default=0.5, help='Threshold for converting Sapiens alpha matte to a binary mask')
     parser.add_argument('--gate-dilate', type=int, default=5, help='Dilate SAM3 gating in hybrid mode')
