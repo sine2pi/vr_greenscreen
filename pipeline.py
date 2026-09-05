@@ -5,7 +5,7 @@ from pathlib import Path
 from PIL import Image
 from typing import Callable, List
 from omegaconf import open_dict
-
+# from torchvision.transforms import v2
 from ffmpeg_functions import (
  norm_video, 
  info, 
@@ -208,9 +208,7 @@ def _apply_temporal_median_filter(phas, window: int):
     if window <= 1:
         return phas
 
-         # phas_np = np.array(phas, dtype=np.uint8)
-
-    return median_filter(phas, size=(window, 1, 1, 1), mode='nearest-exact').astype(np.uint8)
+    return median_filter(phas, size=(window, 1, 1), mode='nearest-exact').astype(np.uint8)
 
 def str_to_list(value):
     return list(map(int, value.split(',')))
@@ -226,14 +224,17 @@ def _binary_mask(alpha: torch.Tensor) -> torch.Tensor:
     return (alpha > 127).to(alpha.dtype)
 
 def gen_dilate(alpha: torch.Tensor, min_kernel_size: int, max_kernel_size: int) -> torch.Tensor:
+ 
     kernel_size = random.randint(min_kernel_size, max_kernel_size)
     kernel = _elliptical_kernel(kernel_size, device=alpha.device, dtype=alpha.dtype)
     binary = _binary_mask(alpha)
+ 
     dilated = F.conv2d(
         binary.unsqueeze(0).unsqueeze(0),
         kernel.unsqueeze(0).unsqueeze(0),
         padding=kernel_size // 2,
     )
+ 
     return (dilated[0, 0, :alpha.shape[-2], :alpha.shape[-1]] > 0).to(alpha.dtype) * 255
 
 def gen_erosion(alpha: torch.Tensor, min_kernel_size: int, max_kernel_size: int) -> torch.Tensor:
@@ -337,9 +338,9 @@ def _matanyone_process_segment(matanyone_model, device, inference_core_cls, job:
             pha = torch.clamp(pha, 0, 255).cpu()
             phas.append(pha)
 
-    # temporarily out of service
-    # if temporal_median_window > 1 and phas.shape[0] >= temporal_median_window:
-    #     phas = _apply_temporal_median_filter(phas, temporal_median_window)
+    if temporal_median_window > 1 and pha.shape[0] >= temporal_median_window:
+        print("The temporal_median_window is temporarily out of service for repairs")
+        # phas = _apply_temporal_median_filter(phas, temporal_median_window)
 
     output_file = os.path.join(output_path, f'{video_name}_pha.mp4')
 
@@ -431,6 +432,7 @@ def matanyone_inference(jobs: list[dict], on_segment_done, args) -> list[str]:
     return completed_paths
 
 def matanyone(segments: List[SegmentInfo], segments_dir: Path, mask_square: int, args: argparse.Namespace) -> List[SegmentInfo]:
+ 
     print()
     print(f"MatAnyone inference. ... ♩ ♪ ♫ ♬")
     print(f"MatAnyone model: {args.matanyone_version}")
@@ -824,8 +826,6 @@ def main() -> int:
         video_args = argparse.Namespace(**vars(args), video=video_path)
         output_mask = process_video(video_path, args, temp_root, batch_mode=batch_mode)
         processed.append((video_path, output_mask))
-
-        # print(f'[{index}/{len(video_paths)}] Processing: {video_path}')
 
     for video_path, output_mask in processed:
 
