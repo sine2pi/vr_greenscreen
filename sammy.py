@@ -260,7 +260,9 @@ class sam3_video_inference:
 
         if add_box:
 
-            boxes = torch.tensor(np.array([[0.1, 0.1, 0.8, 0.7]]), dtype=torch.float32)
+            boxes = torch.tensor(np.array([[0.1464466, 0.1464466, 0.7071068, 0.7071068]]), dtype=torch.float32)
+            # boxes = torch.tensor(np.array([[0.1, 0.1, 0.8, 0.7]]), dtype=torch.float32)
+            
             labels = torch.tensor(np.array([1]), dtype=torch.int32)
 
         else:
