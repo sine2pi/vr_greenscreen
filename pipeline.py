@@ -6,7 +6,7 @@ from PIL import Image
 from typing import Callable, List
 from omegaconf import open_dict
 from ffmpeg_functions import *
-from sammy import sam3_masks
+from sammy import sam3_masks, sam3_track_inference
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 def _setup_tf32() -> None:
@@ -554,7 +554,7 @@ def sam3_propagation(
             'label': f'seg{seg.index:02d}_right',
         })
 
-    completed_paths = matanyone_inference(jobs, on_segment_done=None, video_args=None)
+    completed_paths = sam3_track_inference(jobs, on_segment_done=None, video_args=args)
 
     if len(completed_paths) != len(jobs):
         raise RuntimeError(f'Not all SAM3 jobs completed successfully. Expected {len(jobs)}, got {len(completed_paths)}')
