@@ -5,15 +5,16 @@ from huggingface_hub import snapshot_download
 from sam3.model.sam3_image_processor import Sam3Processor
 from sam3.model_builder import build_sam3_image_model
 from sam3.model.box_ops import box_xywh_to_cxcywh
-from sam3.visualization_utils import normalize_bbox, plot_results
-from torchvision.transforms import v2
+# from torchvision.transforms import v2
 from typing import List, Optional, Callable
 from dataclasses import dataclass
 from enum import Enum
+
 from sam3.visualization_utils import (
     load_frame,
     prepare_masks_for_visualization,
     visualize_formatted_frame_output,
+    normalize_bbox, plot_results,
 )
 
 class SegmentType(Enum):
@@ -169,7 +170,7 @@ class sam3_video_inference:
                         type="propagate_in_video",
                         session_id=session_id,
                         propagation_direction="forward",
-                        output_prob_thresh = 0.4,
+                        output_prob_thresh = 0.1,
                         max_frame_num_to_track = None, #max_frame_num_to_track if max_frame_num_to_track != -1 else None, ## will results in blank masks if not correctly set. None is safest since it allows tracking all frames by default.
 
                     )):
@@ -438,7 +439,7 @@ def _sam3_video_inference(frames_dir, prompt, sam31, output_size, video_args) ->
         if image.height != output_size:
 
             full = image
-            image = full.resize((output_size, output_size), Image.Resampling.BILINEAR)
+            image = full.resize((output_size, output_size), Image.Resampling.LANCZOS)
             full.close()
 
         frame_shapes.append((image.height, image.width))
@@ -489,7 +490,7 @@ def _sam3_video_inference(frames_dir, prompt, sam31, output_size, video_args) ->
 
                 print("Confidence:", scores[best_idx])
 
-            best_soft = np.clip(best_soft, 0.0, 1.0)
+            best_soft = np.clip((best_soft - 0.5) * 10.0 + 0.5, 0.0, 1.0)
             soft_masks.append(best_soft)
             valid_flags.append(np.count_nonzero(best_soft >= 0.5) >= min_valid_pixels)
 
@@ -500,8 +501,18 @@ def _sam3_video_inference(frames_dir, prompt, sam31, output_size, video_args) ->
 
     for out_path, soft_mask in zip(output_paths, filled_masks):
 
-        mask = (soft_mask > 0.5).astype(np.uint8) * 255
-        Image.fromarray(mask, mode='L').save(out_path)
+        soft_mask = (
+            np.clip((soft_mask - 0.5) * 10.0 + 0.5, 0.0, 1.0) * 255
+        ).astype(np.uint8)
+        mask = Image.fromarray(soft_mask, mode="L")
+
+        # mask = ((soft_mask > 0.5) * 255).astype(np.uint8)
+        # mask = Image.fromarray(mask, mode="L")
+
+        mask = Image.fromarray(soft_mask, mode="L")
+        mask = mask.filter(ImageFilter.MinFilter(size=3))
+        mask = mask.filter(ImageFilter.GaussianBlur(radius=1))
+        mask.save(out_path)
 
     if seq_dir.exists():
         shutil.rmtree(seq_dir)
@@ -857,7 +868,7 @@ def estimate_alpha(image_bgr, model):
     outputs = F.interpolate(
         outputs,
         size=(h0, w0),
-        mode="bilinear",
+        mode="lanczos",
         align_corners=False,
     )
 
