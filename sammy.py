@@ -139,8 +139,8 @@ class sam3_video_inference:
                 video_loader_type = "cv2",
                 apply_temporal_disambiguation = True,
                 compile = False,
-                max_num_objects=2,
-                num_obj_for_compile=2,
+                max_num_objects=1,
+                num_obj_for_compile=1,
                 use_fa3 = False,
          
                 )
@@ -381,7 +381,7 @@ class sam3_video_inference:
                 )
             )
 
-            out = response["outputs"]
+            # out = response["outputs"]
             outputs = self.propagate_in_video(predictor, session_id)
 
         if show_plots:
