@@ -3,7 +3,7 @@ from pathlib import Path
 from PIL import Image, ImageFilter
 from huggingface_hub import snapshot_download
 from sam3.model.sam3_image_processor import Sam3Processor
-from sam3.model_builder import build_sam3_image_model
+from sam3.model_builder import build_sam3_image_model, build_sam3_video_predictor
 from sam3.model.box_ops import box_xywh_to_cxcywh
 # from torchvision.transforms import v2
 from typing import List, Optional, Callable
@@ -73,25 +73,25 @@ def sam3_box2(width: int, height: int, normalized_box_cxcywh: tuple[float, float
 
     return box
 
-def build_sam3_video_predictor(*model_args,
-                               checkpoint_path=None,
-                               gpus_to_use=None,
-                               is_sbs=False,
-                               max_num_objects=1,
-                               num_obj_for_compile=1,
-                               strict_state_dict_loading=False,
-                               **model_kwargs):
+# def build_sam3_video_predictor(*model_args,
+#                                checkpoint_path=None,
+#                                gpus_to_use=None,
+#                                is_sbs=False,
+#                                max_num_objects=1,
+#                                num_obj_for_compile=1,
+#                                strict_state_dict_loading=False,
+#                                **model_kwargs):
 
-    from sam3.model.sam3_video_predictor import Sam3VideoPredictorMultiGPU
+#     from sam3.model.sam3_video_predictor import Sam3VideoPredictorMultiGPU
 
-    return Sam3VideoPredictorMultiGPU(*model_args, 
-    checkpoint_path=checkpoint_path, 
-    gpus_to_use=gpus_to_use, 
-    is_sbs=is_sbs, 
-    max_num_objects=max_num_objects, 
-    num_obj_for_compile=num_obj_for_compile, 
-    strict_state_dict_loading=strict_state_dict_loading, 
-    **model_kwargs)
+#     return Sam3VideoPredictorMultiGPU(*model_args, 
+#     checkpoint_path=checkpoint_path, 
+#     gpus_to_use=gpus_to_use, 
+#     is_sbs=is_sbs, 
+#     max_num_objects=max_num_objects, 
+#     num_obj_for_compile=num_obj_for_compile, 
+#     strict_state_dict_loading=strict_state_dict_loading, 
+#     **model_kwargs)
 
 class sam3_video_inference:
 
@@ -102,15 +102,18 @@ class sam3_video_inference:
         self.seg_length = video_args.segment_length
         self.output_size = video_args.mask_height
         self.sam31 = sam31
+        self.show_plots = video_args.show_plots
 
+        bpe_path = "./assets/bpe_simple_vocab_16e6.txt.gz"
+   
         if sam31:
 
             from sam3.model_builder import build_sam3_multiplex_video_predictor
 
             self.predictor = build_sam3_multiplex_video_predictor(
-
-                bpe_path=None,
-                max_num_objects = 1,
+   
+                bpe_path=bpe_path,
+                max_num_objects = 2,
                 multiplex_count = 16,
                 use_fa3 = False,
                 use_rope_real = False,
@@ -118,28 +121,28 @@ class sam3_video_inference:
                 warm_up = False,
                 default_output_prob_thresh  = 0.5,
                 async_loading_frames  = True,
-                num_obj_for_compile=1,
-
+                num_obj_for_compile=2,
+          
                 )
 
         else:
 
             self.predictor = build_sam3_video_predictor(
-
-                bpe_path = None,
-                gpus_to_use = None,
-                has_presence_token = False,
+        
+                checkpoint_path=None, 
+                bpe_path=None, 
+                gpus_to_use=None, 
+                has_presence_token=False,
                 geo_encoder_use_img_cross_attn = False,
                 strict_state_dict_loading = False,
                 async_loading_frames = True,
                 video_loader_type = "cv2",
                 apply_temporal_disambiguation = True,
                 compile = False,
-                is_sbs = False,
-                max_num_objects=1,
-                num_obj_for_compile=1,
-                use_fa3 = False
-
+                max_num_objects=2,
+                num_obj_for_compile=2,
+                use_fa3 = False,
+         
                 )
 
     def propagate_in_video(self, predictor=None, session_id=None, max_frame_num_to_track=None):
@@ -190,9 +193,9 @@ class sam3_video_inference:
         else:
             raise ValueError(f"Unknown coord_type: {coord_type}")
 
-    def track(self, video_path = None, remove = False, add_box = False, sub_box = False, add_point = 0, show_plots = False):
+    def track(self, video_path = None, remove = False, add_box = False, sub_box = False, add_point = 0):
 
-        predictor, video_path, prompt = self.predictor, self.video_path, self.prompt
+        predictor, video_path, prompt, show_plots = self.predictor, self.video_path, self.prompt, self.show_plots
 
         if video_path is None:
             video_path = self.video_path
