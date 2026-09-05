@@ -99,7 +99,7 @@ def encoder_args(fps=None) -> list[str]:
         '-c:v', ENCODER,
         '-preset', 'p5',
         '-profile:v', 'main10',
-        '-pix_fmt', 'yuv420p',
+        # '-pix_fmt', 'yuv420p',
         '-g', '20',
         '-b:v', '80M',
         '-maxrate', '80M',
@@ -454,7 +454,7 @@ def extract_segment_frames(
         f"[full]split=2[fullL][fullR];"
         f"[fullL]select=eq(n\\,0),{frame_left}[frame_left];"
         f"[fullR]select=eq(n\\,0),{frame_right}[frame_right];"
-        f"[toscale]format=yuv420p,scale={scale_w}:{scale_h}:flags=lanczos,split=2[sL][sR];"
+        f"[toscale]format=nv12,scale={scale_w}:{scale_h}:flags=lanczos,split=2[sL][sR];"
         f"[sL]{video_left}[video_left];"
         f"[sR]{video_right}[video_right]"
     )
@@ -581,7 +581,7 @@ def mask_overlay(source_video: str, mask_video: str, output_path: str, backgroun
 
 def stereo_video(left_video: str, right_video: str, output_path: str) -> str:
 
-    fps = info(left_video)[2]
+    fps = info(aorb(left_video, right_video))[2]
     enc = encoder_args(fps=fps)
 
     filter_complex = "[0:v][1:v]hstack=inputs=2[out]"
