@@ -108,6 +108,7 @@ HWACCEL_UI_LABELS = {
 DEFAULT_HWACCEL_LABEL = "Auto"
 
 def _ffmpeg_has_encoder(encoder_name):
+    
     try:
         result = subprocess.run([FFMPEG_BIN, '-hide_banner', '-encoders'], capture_output=True, text=True, check=False)
     except Exception:
