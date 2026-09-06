@@ -73,26 +73,6 @@ def sam3_box2(width: int, height: int, normalized_box_cxcywh: tuple[float, float
 
     return box
 
-# def build_sam3_video_predictor(*model_args,
-#                                checkpoint_path=None,
-#                                gpus_to_use=None,
-#                                is_sbs=False,
-#                                max_num_objects=1,
-#                                num_obj_for_compile=1,
-#                                strict_state_dict_loading=False,
-#                                **model_kwargs):
-
-#     from sam3.model.sam3_video_predictor import Sam3VideoPredictorMultiGPU
-
-#     return Sam3VideoPredictorMultiGPU(*model_args, 
-#     checkpoint_path=checkpoint_path, 
-#     gpus_to_use=gpus_to_use, 
-#     is_sbs=is_sbs, 
-#     max_num_objects=max_num_objects, 
-#     num_obj_for_compile=num_obj_for_compile, 
-#     strict_state_dict_loading=strict_state_dict_loading, 
-#     **model_kwargs)
-
 class sam3_video_inference:
 
     def __init__(self, video_path, prompt, sam31, output_size, video_args):
@@ -873,8 +853,9 @@ def estimate_alpha(image_bgr, model):
     outputs = F.interpolate(
         outputs,
         size=(h0, w0),
-        mode="lanczos",
-        align_corners=False,
+        mode="area",
+        # align_corners=False,
+        # antialias=True
     )
 
     outputs = outputs.squeeze(0).float().cpu().numpy()
@@ -1166,6 +1147,75 @@ def load_sapiens():
     ckpt = hf_hub_download(repo_id=SAPIENS_REPO_ID, filename=SAPIENS_CHECKPOINT)
 
     return init_model(SAPIENS_CONFIG, ckpt, device=device)
+
+def sapiens_propagation_process(job: dict, sapiens_model, video_args) -> str:
+    """Run Sapiens matting per-frame across the whole clip as a standalone
+    propagation backend (an alternative to MatAnyone2). Unlike sam3_process's
+    refine_with_sapiens mode, this does NOT run SAM3 video tracking at all -
+    Sapiens alone produces the alpha matte for every frame."""
+
+    input_path = job['input_path']
+    output_path = job['output_path']
+
+    frames_rgb, fps = read_frames(input_path)
+
+    if sapiens_model is None:
+        raise RuntimeError("Sapiens model is required for sapiens propagation backend")
+
+    final_masks = []
+
+    with torch.inference_mode():
+        for frame_rgb in frames_rgb:
+            frame_bgr = frame_rgb[:, :, ::-1]
+            alpha = estimate_alpha(frame_bgr, sapiens_model)
+            final_masks.append(np.clip(alpha, 0.0, 1.0).astype(np.float32))
+
+    os.makedirs(output_path, exist_ok=True)
+
+    video_name = os.path.splitext(os.path.basename(input_path))[0]
+    output_file = os.path.join(output_path, f'{video_name}_pha.mp4')
+
+    masks_video(output_file, final_masks, fps)
+
+    del frames_rgb, final_masks
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    return output_file
+
+def sapiens_propagation_inference(jobs, on_segment_done, video_args):
+
+    if not jobs:
+        return []
+
+    print("Loading Sapiens matting model for propagation...")
+    sapiens_model = load_sapiens()
+
+    completed = []
+
+    try:
+        total_ops = len(jobs)
+
+        for i, job in enumerate(jobs, 1):
+
+            label = str(job.get('label', os.path.basename(str(job.get('input_path', 'job')))))
+            op_num = int(job.get('op_num', i))
+            total = int(job.get('total_ops', total_ops))
+
+            print(f"[{op_num}/{total}] {label}")
+            output_file = sapiens_propagation_process(job, sapiens_model=sapiens_model, video_args=video_args)
+            completed.append(output_file)
+
+            if on_segment_done:
+                on_segment_done(output_file)
+
+    finally:
+
+        del sapiens_model
+        gc.collect()
+        torch.cuda.empty_cache()
+
+    return completed
 
 def sam3_process(job: dict, sapiens_model, video_args) -> str:
 
