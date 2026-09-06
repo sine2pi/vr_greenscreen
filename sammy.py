@@ -5,7 +5,6 @@ from huggingface_hub import snapshot_download
 from sam3.model.sam3_image_processor import Sam3Processor
 from sam3.model_builder import build_sam3_image_model, build_sam3_video_predictor
 from sam3.model.box_ops import box_xywh_to_cxcywh
-# from torchvision.transforms import v2
 from typing import List, Optional, Callable
 from dataclasses import dataclass
 from enum import Enum
