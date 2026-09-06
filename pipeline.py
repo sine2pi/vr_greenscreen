@@ -650,7 +650,8 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path, batch_m
             mask_segments,
             orig_h,
             frames_dir,
-            segments_dir
+            segments_dir,
+            debug=video_args.debug,
 
             )
 
@@ -758,6 +759,7 @@ def extract_segments(
     orig_h: int,
     frames_dir: Path,
     segments_dir: Path,
+    debug = None,
 ) -> List[SegmentInfo]:
 
     print(f'Total: {len(segments)} segments')
@@ -770,7 +772,10 @@ def extract_segments(
             f'{format_timestamp(seg.start_time)} → {format_timestamp(seg.end_time)} ({dur:.1f}s)')
     print()
 
-    for i, seg in enumerate(mask_segments):
+    for i, seg in enumerate(mask_segments) if debug is None else enumerate(mask_segments[:debug]):
+
+        # while i < debug if debug is not None else False:
+            # break
 
         left_frame = str(frames_dir / f'seg{seg.index:02d}_left.png')
         right_frame = str(frames_dir / f'seg{seg.index:02d}_right.png')
@@ -821,10 +826,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description='VR Video Masking Pipeline')
     parser.add_argument('input_path')
     parser.add_argument('--mask-height', type=int, default=1200)
-    parser.add_argument('--segment-length', type=float, default=4)
-    parser.add_argument('--erode', type=int, default=0)
+    parser.add_argument('--segment-length', type=float, default=5)
+    parser.add_argument('--erode', type=int, default=3)
     parser.add_argument('--dilate', type=int, default=0)
-    parser.add_argument('--prompt', type=str, default='one girl')
+    parser.add_argument('--prompt', type=str, default='woman')
     parser.add_argument('--warmup', type=int, default=6)
     parser.add_argument('--seed-model', type=str, default='sam3video', choices=['sam3', 'sam3video', 'sam31video', 'sapiens', 'hybrid'], help='Seed mask mode (sam3, sam3video, sam31video, sapiens, or hybrid)')
     parser.add_argument('--sapiens-threshold', type=float, default=0.5, help='Threshold for converting Sapiens alpha matte to a binary mask')
@@ -849,6 +854,7 @@ def main() -> int:
     parser.add_argument('--alpha', type=bool, default=False, help='Run alpha packer instead of overlay within pipeline. --alpha <true|false> default is False')
     parser.add_argument('--show-plots', type=bool, default=False, help='Sam3 mask plots will be displayed if True. Default is False')
     parser.add_argument('--fisheye180', nargs='?', const=FISHEYE180_PIPELINE_MODE, default=None, help='Convert an SBS equirectangular input video or folder to SBS fisheye180')
+    parser.add_argument('--debug', type=int, default=None, help='Debug mode: process only the first N segments')
 
     args = parser.parse_args()
     args.matanyone_version = str(args.matanyone_version).lower()
