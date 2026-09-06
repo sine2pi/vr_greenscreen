@@ -6,7 +6,7 @@ from PIL import Image
 from typing import Callable, List
 from omegaconf import open_dict
 from ffmpeg_functions import *
-from sammy import sam3_masks, sam3_track_inference
+from sammy import sam3_masks, sam3_track_inference, sapiens_propagation_inference
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 def _setup_tf32() -> None:
@@ -491,6 +491,70 @@ def matanyone(segments: List[SegmentInfo], segments_dir: Path, mask_square: int,
 
     return segments
 
+def sapiens_propagation(segments: List[SegmentInfo], segments_dir: Path, args: argparse.Namespace) -> List[SegmentInfo]:
+    """Standalone propagation backend using Sapiens matting per-frame across
+    the whole clip, as an experimental alternative to MatAnyone2. SAM3's
+    first-frame mask is not used here (Sapiens ignores it and just runs its
+    own per-frame matting for the entire segment)."""
+
+    print()
+    print("Propagation backend: sapiens")
+
+    sapiensout = str(segments_dir / 'sapiens_output')
+    os.makedirs(sapiensout, exist_ok=True)
+
+    mask_segments = [s for s in segments if s.seg_type == SegmentType.MASK]
+    total_ops = len(mask_segments) * 2
+
+    jobs = []
+
+    for seg in mask_segments:
+
+        seg_left_video = str(segments_dir / f'seg{seg.index:02d}_left.mp4')
+        seg_right_video = str(segments_dir / f'seg{seg.index:02d}_right.mp4')
+
+        jobs.append({
+            'input_path': seg_left_video,
+            'output_path': sapiensout,
+            'op_num': len(jobs) + 1,
+            'total_ops': total_ops,
+            'label': f'seg{seg.index:02d}_left',
+        })
+
+        jobs.append({
+            'input_path': seg_right_video,
+            'output_path': sapiensout,
+            'op_num': len(jobs) + 1,
+            'total_ops': total_ops,
+            'label': f'seg{seg.index:02d}_right',
+        })
+
+    completed_paths = sapiens_propagation_inference(jobs, on_segment_done=None, video_args=args)
+
+    if len(completed_paths) != len(jobs):
+        raise RuntimeError(f'Not all Sapiens jobs completed successfully. Expected {len(jobs)}, got {len(completed_paths)}')
+
+    for seg in mask_segments:
+
+        left_basename = os.path.splitext(os.path.basename(f'seg{seg.index:02d}_left.mp4'))[0]
+        right_basename = os.path.splitext(os.path.basename(f'seg{seg.index:02d}_right.mp4'))[0]
+
+        left_pha = os.path.join(sapiensout, f'{left_basename}_pha.mp4')
+        right_pha = os.path.join(sapiensout, f'{right_basename}_pha.mp4')
+
+        if not os.path.exists(left_pha) or not os.path.exists(right_pha):
+            raise RuntimeError(f'Could not find generated Sapiens masks for segment {seg.index}')
+
+        stereo_output = str(segments_dir / f'seg{seg.index:02d}_stereo.mp4')
+
+        seg.video_path = stereo_video(
+            left_pha,
+            right_pha,
+            stereo_output
+        )
+
+    return segments
+
 def sam3_propagation(
 
     segments: List[SegmentInfo],
@@ -675,6 +739,9 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path, batch_m
         elif video_args.propagation_backend == 'sam3_sapiens':
             segments = sam3_propagation(segments, segments_dir, video_args, refine_with_sapiens=True)
 
+        elif video_args.propagation_backend == 'sapiens':
+            segments = sapiens_propagation(segments, segments_dir, video_args)
+
         output_mask = finalize(
 
             segments,
@@ -835,7 +902,7 @@ def main() -> int:
     parser.add_argument('--sapiens-threshold', type=float, default=0.5, help='Threshold for converting Sapiens alpha matte to a binary mask')
     parser.add_argument('--gate-dilate', type=int, default=5, help='Dilate SAM3 gating in hybrid mode')
 
-    parser.add_argument('--propagation-backend', type=str, default='matanyone', choices=['matanyone', 'sam3', 'sam3_sapiens'], help='Temporal propagation backend (matanyone, sam3, sam3_sapiens)')
+    parser.add_argument('--propagation-backend', type=str, default='matanyone', choices=['matanyone', 'sam3', 'sam3_sapiens', 'sapiens'], help='Temporal propagation backend (matanyone, sam3, sam3_sapiens, sapiens)')
     parser.add_argument('--refine-fg-threshold', type=float, default=0.95, help='SAM confidence threshold for sure foreground in sam3_sapiens refinement')
     parser.add_argument('--refine-bg-threshold', type=float, default=0.05, help='SAM confidence threshold for sure background in sam3_sapiens refinement')
     parser.add_argument('--refine-unknown-dilate', type=int, default=5, help='Dilate unknown/boundary region before Sapiens edge refinement (sam3_sapiens)')
