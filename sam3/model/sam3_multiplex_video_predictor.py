@@ -44,6 +44,8 @@ class Sam3MultiplexVideoPredictor(Sam3BasePredictor):
         self.session_expiration_sec = session_expiration_sec
         self.default_output_prob_thresh = default_output_prob_thresh
         self.async_loading_frames = async_loading_frames
+        self.num_obj_for_compile=num_obj_for_compile
+        self.max_num_objects=max_num_objects
 
         # turn on tfloat32 for Ampere GPUs
         torch.backends.cuda.matmul.allow_tf32 = True

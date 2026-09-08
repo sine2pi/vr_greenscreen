@@ -271,6 +271,8 @@ class Sam3VideoBase(nn.Module):
         self.assoc_iou_thresh = assoc_iou_thresh
         self.trk_assoc_iou_thresh = trk_assoc_iou_thresh
         self.new_det_thresh = new_det_thresh
+        self.max_num_objects=max_num_objects
+        self.num_obj_for_compile=num_obj_for_compile
 
         if hotstart_delay > 0:
             assert hotstart_unmatch_thresh <= hotstart_delay
@@ -645,6 +647,7 @@ class Sam3VideoBase(nn.Module):
         tracker_metadata_prev: Dict[str, npt.NDArray],
         tracker_states_local: List[Any],
         is_image_only: bool = False,
+  
     ):
         tracker_metadata_new = self._create_planning_metadata(tracker_metadata_prev)
 

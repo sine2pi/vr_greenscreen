@@ -41,7 +41,6 @@ from sam3.model.data_misc import (
 from sam3.model.geometry_encoders import Prompt
 from sam3.model.io_utils import load_resource_as_video_frames
 
-
 def recursive_to(data, *args, **kwargs):
     if isinstance(data, torch.Tensor):
         ret = data.to(*args, **kwargs)
@@ -70,9 +69,7 @@ def recursive_to(data, *args, **kwargs):
         ret = data
     return ret
 
-
 DUMMY_OUTPUT = "DUMMY_OUTPUT"
-
 
 class Sam3MultiplexTracking(Sam3MultiplexBase):
     def __init__(
@@ -1819,7 +1816,6 @@ class Sam3MultiplexTracking(Sam3MultiplexBase):
         self.world_size = self.detector.world_size = orig_world_size
         return {video_id: preds}
 
-
 class Sam3MultiplexTrackingProd(Sam3MultiplexTracking):
     """
     Subclass of Sam3MultiplexTracking with support for batched processing.
@@ -2191,13 +2187,14 @@ class Sam3MultiplexTrackingProd(Sam3MultiplexTracking):
                     f"Bucket utilization rate: {bucket_utilization_rate:.2f}%, subscription rate: {subscription_rate:.2f}%"
                 )
 
-
 class Sam3MultiplexTrackingWithInteractivity(Sam3MultiplexTracking):
     def __init__(
         self,
         use_prev_mem_frame=False,
         use_stateless_refinement=False,
         refinement_detector_cond_frame_removal_window=30 * 4,
+        num_obj_for_compile=1,
+        max_num_objects: int = 1,
         **kwargs,
     ):
         """

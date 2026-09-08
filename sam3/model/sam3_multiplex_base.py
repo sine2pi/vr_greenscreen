@@ -235,7 +235,8 @@ class Sam3MultiplexBase(Sam3VideoBase):
         fill_hole_area=16,
         sprinkle_removal_area=16,
         # The maximum number of objects (masklets) to track across all GPUs (for no limit, set it to -1)
-        max_num_objects=128,  # 128 objects (total across all GPUs) should be able to cover nearly all cases
+        max_num_objects=1,  # 128 objects (total across all GPUs) should be able to cover nearly all cases
+        num_obj_for_compile=1,
         max_num_kboxes=20,
         recondition_every_nth_frame=-1,
         use_iom_recondition=False,
@@ -2841,6 +2842,8 @@ class Sam3MultiplexPredictorWrapper(Sam3MultiplexTrackerPredictor):
         fill_hole_area=0,
         is_multiplex=True,
         is_multiplex_dynamic=True,
+        num_obj_for_compile=1,
+        max_num_objects: int = 1,
     ):
         # Skip Sam3MultiplexTrackerPredictor.__init__ (requires Hydra) — call nn.Module.__init__ directly
         nn.Module.__init__(self)

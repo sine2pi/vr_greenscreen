@@ -260,6 +260,9 @@ class VideoTrackingMultiplex(nn.Module):
         is_dynamic_model: bool = False,
         object_score_logit_threshold: float = 0.0,
         stability_score_attentuation: bool = False,  # select from multimask based on iou*stability_score
+        max_num_objects=1,
+        num_obj_for_compile=1,
+
     ):
         super().__init__()
 
@@ -277,6 +280,8 @@ class VideoTrackingMultiplex(nn.Module):
 
         # Part 1: the image backbone
         self.backbone = backbone
+        self.num_obj_for_compile=num_obj_for_compile
+        self.max_num_objects=max_num_objects
         # Use level 0, 1, 2 for high-res setting, or just level 2 for the default setting
         self.use_high_res_features_in_sam = use_high_res_features_in_sam
         self.num_feature_levels = 3 if use_high_res_features_in_sam else 1

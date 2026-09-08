@@ -33,6 +33,9 @@ class VideoTrackingMultiplexDemo(VideoTrackingDynamicMultiplex):
         clear_non_cond_mem_for_multi_obj=False,
         # if fill_hole_area > 0, we fill small holes in the final masks up to this area (after resizing them to the original video resolution)
         fill_hole_area=0,
+        max_num_objects=1,
+        num_obj_for_compile=1,
+
         # if always_start_from_first_ann_frame is True, we always start tracking from the frame where we receive the first annotation (clicks or mask)
         # and ignore the `start_frame_idx` passed to `propagate_in_video`
         always_start_from_first_ann_frame=False,
@@ -46,6 +49,8 @@ class VideoTrackingMultiplexDemo(VideoTrackingDynamicMultiplex):
     ):
         super().__init__(**kwargs)
 
+        self.num_obj_for_compile=num_obj_for_compile
+        self.max_num_objects=max_num_objects
         self.clear_non_cond_mem_around_input = clear_non_cond_mem_around_input
         self.clear_non_cond_mem_for_multi_obj = clear_non_cond_mem_for_multi_obj
         self.fill_hole_area = fill_hole_area
