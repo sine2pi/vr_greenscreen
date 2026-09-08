@@ -83,6 +83,8 @@ class sam3_video_inference:
         self.output_size = video_args.mask_height
         self.sam31 = sam31
         self.show_plots = video_args.show_plots
+        self.add_box = video_args.add_box
+        self.sub_box = video_args.sub_box
 
         bpe_path = "./assets/bpe_simple_vocab_16e6.txt.gz"
    
@@ -173,9 +175,9 @@ class sam3_video_inference:
         else:
             raise ValueError(f"Unknown coord_type: {coord_type}")
 
-    def track(self, video_path = None, remove = False, add_box = True, sub_box = False, add_point = 0):
+    def track(self, video_path = None, remove = False, sub_box = False, add_point = 0):
 
-        predictor, video_path, prompt, show_plots = self.predictor, self.video_path, self.prompt, self.show_plots
+        predictor, video_path, prompt, show_plots, add_box, sub_box = self.predictor, self.video_path, self.prompt, self.show_plots, self.add_box, self.sub_box
 
         if video_path is None:
             video_path = self.video_path
