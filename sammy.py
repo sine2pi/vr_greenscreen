@@ -101,6 +101,7 @@ class sam3_video_inference:
                 default_output_prob_thresh  = 0.5,
                 async_loading_frames  = True,
                 num_obj_for_compile=1,
+                max_num_objects=1,
           
                 )
 
@@ -115,7 +116,7 @@ class sam3_video_inference:
                 geo_encoder_use_img_cross_attn = False,
                 strict_state_dict_loading = False,
                 async_loading_frames = True,
-                video_loader_type = "cv2",
+                video_loader_type = "torchcodec",
                 apply_temporal_disambiguation = True,
                 compile = False,
                 max_num_objects=1,
@@ -151,7 +152,7 @@ class sam3_video_inference:
                     request=dict(
                         type="propagate_in_video",
                         session_id=session_id,
-                        propagation_direction="forward",
+                        propagation_direction="both",
                         output_prob_thresh = 0.1,
                         max_frame_num_to_track = None, #max_frame_num_to_track if max_frame_num_to_track != -1 else None, ## will results in blank masks if not correctly set. None is safest since it allows tracking all frames by default.
 
@@ -172,7 +173,7 @@ class sam3_video_inference:
         else:
             raise ValueError(f"Unknown coord_type: {coord_type}")
 
-    def track(self, video_path = None, remove = False, add_box = False, sub_box = False, add_point = 0):
+    def track(self, video_path = None, remove = False, add_box = True, sub_box = False, add_point = 0):
 
         predictor, video_path, prompt, show_plots = self.predictor, self.video_path, self.prompt, self.show_plots
 
@@ -1147,24 +1148,38 @@ def load_sapiens():
 
     return init_model(SAPIENS_CONFIG, ckpt, device=device)
 
-def sapiens_propagation_process(job: dict, sapiens_model, video_args) -> str:
-    """Run Sapiens matting per-frame across the whole clip as a standalone
-    propagation backend (an alternative to MatAnyone2). Unlike sam3_process's
-    refine_with_sapiens mode, this does NOT run SAM3 video tracking at all -
-    Sapiens alone produces the alpha matte for every frame."""
+def s_propagation(job: dict, sapiens_model, video_args) -> str:
 
     input_path = job['input_path']
     output_path = job['output_path']
+    mask_path = job.get('mask_path')
 
     frames_rgb, fps = read_frames(input_path)
 
     if sapiens_model is None:
         raise RuntimeError("Sapiens model is required for sapiens propagation backend")
 
+    if not mask_path:
+        raise RuntimeError("sapiens propagation backend requires a SAM3 seed 'mask_path'")
+
+    seed_mask = Image.open(mask_path).convert('L')
+    seed_mask = np.array(seed_mask).astype(np.float32) / 255.0
+
+    if seed_mask.shape[:2] != frames_rgb[0].shape[:2]:
+        seed_mask = cv2.resize(
+            seed_mask,
+            (frames_rgb[0].shape[1], frames_rgb[0].shape[0]),
+            interpolation=cv2.INTER_LINEAR,
+        )
+
     final_masks = []
 
     with torch.inference_mode():
-        for frame_rgb in frames_rgb:
+        for i, frame_rgb in enumerate(frames_rgb):
+            if i == 0:
+                final_masks.append(np.clip(seed_mask, 0.0, 1.0).astype(np.float32))
+                continue
+
             frame_bgr = frame_rgb[:, :, ::-1]
             alpha = estimate_alpha(frame_bgr, sapiens_model)
             final_masks.append(np.clip(alpha, 0.0, 1.0).astype(np.float32))
@@ -1182,7 +1197,7 @@ def sapiens_propagation_process(job: dict, sapiens_model, video_args) -> str:
 
     return output_file
 
-def sapiens_propagation_inference(jobs, on_segment_done, video_args):
+def s_inference(jobs, on_segment_done, video_args):
 
     if not jobs:
         return []
@@ -1202,7 +1217,7 @@ def sapiens_propagation_inference(jobs, on_segment_done, video_args):
             total = int(job.get('total_ops', total_ops))
 
             print(f"[{op_num}/{total}] {label}")
-            output_file = sapiens_propagation_process(job, sapiens_model=sapiens_model, video_args=video_args)
+            output_file = s_propagation(job, sapiens_model=sapiens_model, video_args=video_args)
             completed.append(output_file)
 
             if on_segment_done:
