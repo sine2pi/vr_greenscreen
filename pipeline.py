@@ -1,12 +1,12 @@
-import argparse, shutil, gc, os, sys, functools, time, torch, cv2, imageio, numpy as np, tqdm, random, torch.nn.functional as F
-from dataclasses import dataclass
+import argparse, shutil, gc, os, sys, functools, time, math, torch, cv2, imageio, numpy as np, tqdm, random, torch.nn.functional as F
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from PIL import Image
-from typing import Callable, List
+from typing import Callable, List, Optional
 from omegaconf import open_dict
 from ffmpeg_functions import *
-from sammy import sam3_masks, sam3_track_inference, sapiens_propagation_inference
+from sammy import sam3_masks, sam3_track_inference, s_inference, seed_mask_batch
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 def _setup_tf32() -> None:
@@ -62,6 +62,8 @@ class SegmentInfo:
     left_mask_path: str = ''
     right_mask_path: str = ''
     video_path: str = ''
+    left_tta_pairs: list = field(default_factory=list)   # list of (frame_path, mask_path) from extra SAM3-seeded frames, for TTA training
+    right_tta_pairs: list = field(default_factory=list)
 
 _matanyone_is_first_status = True
 _matanyone_tqdm_lines = 1
@@ -246,6 +248,167 @@ def gen_erosion(alpha: torch.Tensor, min_kernel_size: int, max_kernel_size: int)
 
     return (eroded[0, 0, :alpha.shape[-2], :alpha.shape[-1]] == kernel.sum()).to(alpha.dtype) * 255
 
+def _load_tta_frame(path: str, size: int, device) -> torch.Tensor:
+
+    if str(path).lower().endswith(VIDEO_EXTENSIONS):
+        frames, _, _, _ = read_frame_from_videos(str(path), size)
+        return (frames[0] / 255.).float().to(device)
+
+    image = Image.open(path).convert('RGB')
+    arr = np.array(image)
+    tensor = torch.from_numpy(arr).permute(2, 0, 1).float().to(device)
+
+    if tensor.shape[-2:] != (size, size):
+        tensor = torch.nn.functional.interpolate(
+            tensor.unsqueeze(0), size=(size, size), mode="area",
+        )[0]
+
+    return tensor / 255.
+
+def _load_tta_mask(path: str, size: int, device) -> torch.Tensor:
+    mask = Image.open(path).convert('L')
+    mask = np.array(mask)
+    mask = torch.from_numpy(mask).float().to(device)
+
+    if mask.shape != (size, size):
+        mask = torch.nn.functional.interpolate(
+            mask.unsqueeze(0).unsqueeze(0),
+            size=(size, size),
+            mode="nearest-exact",
+        )[0, 0]
+
+    return (mask / 255.).clamp(0.0, 1.0)
+
+def _matanyone_tta_adapt(matanyone_model, device, inference_core_cls, job: dict, args) -> Optional[dict]:
+
+    if not getattr(args, 'tta_enable', False):
+        return None
+
+    steps = int(getattr(args, 'tta_steps', 8))
+    lr = float(getattr(args, 'tta_lr', 1e-4))
+    settle_steps = max(0, int(getattr(args, 'tta_warmup_steps', 3)))
+    supervised_weight = float(getattr(args, 'tta_supervised_weight', 1.0))
+
+    if steps <= 0:
+        return None
+
+    input_path = job['input_path']
+    mask_path = job['mask_path']
+    max_size = args.mask_height
+    tta_max_size = int(getattr(args, 'tta_max_size', 0)) or max_size
+    tta_max_size = min(tta_max_size, max_size)
+
+    # training pairs: primary seed frame/mask first, then any extra
+    # SAM3-seeded real frames for this segment/eye, cycled if steps > pairs
+    pairs = [(input_path, mask_path)] + list(job.get('tta_pairs', []) or [])
+
+    tta_modules = [matanyone_model.mask_decoder, matanyone_model.pixel_fuser]
+    snapshot = {
+        name: {p_name: p.detach().clone() for p_name, p in module.named_parameters()}
+        for name, module in zip(('mask_decoder', 'pixel_fuser'), tta_modules)
+    }
+
+    trainable_params = [p for module in tta_modules for p in module.parameters()]
+    for p in trainable_params:
+        p.requires_grad_(True)
+
+    optimizer = torch.optim.Adam(trainable_params, lr=lr)
+
+    def _settle_and_predict(image: torch.Tensor, mask: torch.Tensor):
+
+        processor = inference_core_cls(matanyone_model, cfg=matanyone_model.cfg)
+
+        with torch.no_grad():
+            processor.step(image, mask, objects=[1])
+
+            for _ in range(max(0, settle_steps - 1)):
+                processor.step(image, first_frame_pred=True, force_permanent=False)
+
+        prob = processor.step(image, first_frame_pred=True, force_permanent=False)
+        pred = processor.output_prob_to_mask(prob, matting=True)
+        return pred
+
+    was_training = matanyone_model.training
+    matanyone_model.train()
+
+    label = str(job.get('label', 'segment'))
+    loss_history = []
+
+    try:
+        with torch.enable_grad(), safe_autocast():
+
+            for step_idx in range(steps):
+
+                frame_path, gt_mask_path = pairs[step_idx % len(pairs)]
+                image = _load_tta_frame(frame_path, tta_max_size, device)
+                mask_gt = _load_tta_mask(gt_mask_path, tta_max_size, device)
+
+                pred = _settle_and_predict(image, mask_gt)
+                loss = supervised_weight * F.l1_loss(pred, mask_gt)
+
+                optimizer.zero_grad(set_to_none=True)
+                loss.backward()
+                optimizer.step()
+
+                loss_val = float(loss.detach())
+                loss_history.append(loss_val)
+
+                bar_width = 30
+                start_loss = loss_history[0]
+                frac = min(1.0, loss_val / start_loss) if start_loss > 1e-8 else 0.0
+                filled = int(round((1.0 - frac) * bar_width))
+                filled = max(0, min(bar_width, filled))
+                bar = '#' * filled + '-' * (bar_width - filled)
+
+                trend = ''
+                if step_idx > 0:
+                    delta = loss_val - loss_history[-2]
+                    trend = ' v' if delta < 0 else (' ^' if delta > 0 else ' =')
+
+                pair_idx = step_idx % len(pairs)
+                sys.stderr.write(
+                    f"\r  TTA [{label}] step {step_idx + 1:>3}/{steps} "
+                    f"|{bar}| loss={loss_val:.5f} (pair {pair_idx + 1}/{len(pairs)}){trend}\033[K"
+                )
+                sys.stderr.flush()
+
+                del image, mask_gt, pred, loss
+
+    finally:
+        matanyone_model.train(was_training)
+        for p in trainable_params:
+            p.requires_grad_(False)
+
+    if loss_history:
+        sys.stderr.write("\n")
+        improvement = (1.0 - loss_history[-1] / loss_history[0]) * 100.0 if loss_history[0] > 1e-8 else 0.0
+        sys.stderr.write(
+            f"  TTA [{label}] done: loss {loss_history[0]:.5f} -> {loss_history[-1]:.5f} "
+            f"({improvement:+.1f}%)\n"
+        )
+        sys.stderr.flush()
+
+    del optimizer, trainable_params
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    return snapshot
+
+def _matanyone_tta_restore(matanyone_model, snapshot: Optional[dict]) -> None:
+    """Restore mask_decoder/pixel_fuser parameters to their pre-TTA values,
+    undoing the adaptation performed in _matanyone_tta_adapt for this job."""
+
+    if not snapshot:
+        return
+
+    modules = {'mask_decoder': matanyone_model.mask_decoder, 'pixel_fuser': matanyone_model.pixel_fuser}
+
+    with torch.no_grad():
+        for name, module in modules.items():
+            for p_name, p in module.named_parameters():
+                p.copy_(snapshot[name][p_name])
+
 @torch.inference_mode()
 @safe_autocast()
 
@@ -365,14 +528,22 @@ def matanyone_inference(jobs: list[dict], on_segment_done, args) -> list[str]:
 
                 _update_status(job['op_num'], job['total_ops'], job['label'], job['duration'])
 
-                output_file = _matanyone_process_segment(
+                tta_snapshot = None
 
-                    matanyone_model,
-                    device,
-                    inference_core_cls,
-                    job,
-                    args=args,
-                )
+                try:
+                    tta_snapshot = _matanyone_tta_adapt(matanyone_model, device, inference_core_cls, job, args)
+
+                    output_file = _matanyone_process_segment(
+
+                        matanyone_model,
+                        device,
+                        inference_core_cls,
+                        job,
+                        args=args,
+                    )
+
+                finally:
+                    _matanyone_tta_restore(matanyone_model, tta_snapshot)
 
                 batch_completed.append(output_file)
 
@@ -443,7 +614,8 @@ def matanyone(segments: List[SegmentInfo], segments_dir: Path, mask_square: int,
             'op_num': len(jobs) + 1,
             'total_ops': total_ops,
             'label': f'seg{seg.index:02d}_left',
-            'duration': seg.end_time - seg.start_time
+            'duration': seg.end_time - seg.start_time,
+            'tta_pairs': seg.left_tta_pairs,
 
             })
 
@@ -459,7 +631,8 @@ def matanyone(segments: List[SegmentInfo], segments_dir: Path, mask_square: int,
             'op_num': len(jobs) + 1,
             'total_ops': total_ops,
             'label': f'seg{seg.index:02d}_right',
-            'duration': seg.end_time - seg.start_time
+            'duration': seg.end_time - seg.start_time,
+            'tta_pairs': seg.right_tta_pairs,
 
             })
 
@@ -492,10 +665,6 @@ def matanyone(segments: List[SegmentInfo], segments_dir: Path, mask_square: int,
     return segments
 
 def sapiens_propagation(segments: List[SegmentInfo], segments_dir: Path, args: argparse.Namespace) -> List[SegmentInfo]:
-    """Standalone propagation backend using Sapiens matting per-frame across
-    the whole clip, as an experimental alternative to MatAnyone2. SAM3's
-    first-frame mask is not used here (Sapiens ignores it and just runs its
-    own per-frame matting for the entire segment)."""
 
     print()
     print("Propagation backend: sapiens")
@@ -510,11 +679,15 @@ def sapiens_propagation(segments: List[SegmentInfo], segments_dir: Path, args: a
 
     for seg in mask_segments:
 
+        if not seg.left_mask_path or not seg.right_mask_path:
+            raise RuntimeError(f'Segment [{seg.index}] missing SAM3 masks')
+
         seg_left_video = str(segments_dir / f'seg{seg.index:02d}_left.mp4')
         seg_right_video = str(segments_dir / f'seg{seg.index:02d}_right.mp4')
 
         jobs.append({
             'input_path': seg_left_video,
+            'mask_path': seg.left_mask_path,
             'output_path': sapiensout,
             'op_num': len(jobs) + 1,
             'total_ops': total_ops,
@@ -523,13 +696,14 @@ def sapiens_propagation(segments: List[SegmentInfo], segments_dir: Path, args: a
 
         jobs.append({
             'input_path': seg_right_video,
+            'mask_path': seg.right_mask_path,
             'output_path': sapiensout,
             'op_num': len(jobs) + 1,
             'total_ops': total_ops,
             'label': f'seg{seg.index:02d}_right',
         })
 
-    completed_paths = sapiens_propagation_inference(jobs, on_segment_done=None, video_args=args)
+    completed_paths = s_inference(jobs, on_segment_done=None, video_args=args)
 
     if len(completed_paths) != len(jobs):
         raise RuntimeError(f'Not all Sapiens jobs completed successfully. Expected {len(jobs)}, got {len(completed_paths)}')
@@ -701,7 +875,8 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path, batch_m
         segments = calculate_segments(
 
             duration,
-            video_args.segment_length
+            video_args.segment_length,
+            debug=video_args.debug,
 
             )
 
@@ -729,6 +904,13 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path, batch_m
             video_args=video_args,
 
         )
+
+        if getattr(video_args, 'tta_enable', False):
+            mask_segments = seed_tta_pairs(
+                mask_segments, segments_dir, masks_dir,
+                video_args,
+                int(getattr(video_args, 'warmup', 0)),
+            )
 
         if video_args.propagation_backend == 'matanyone':
             segments = matanyone(segments, segments_dir, mask_square, video_args)
@@ -799,13 +981,13 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path, batch_m
 
         return overlay_video
 
-def calculate_segments(video_duration: float, max_segment_length: float = 5.0) -> List[SegmentInfo]:
+def calculate_segments(video_duration: float, max_segment_length: float = 5.0, debug = None) -> List[SegmentInfo]:
 
     segments: List[SegmentInfo] = []
     chunk_start = 0.0
     index = 0
 
-    while chunk_start < video_duration:
+    while chunk_start < (video_duration if debug is None else debug):
         chunk_end = min(chunk_start + max_segment_length, video_duration)
 
         if 0 < video_duration - chunk_end < 1.0:
@@ -818,6 +1000,61 @@ def calculate_segments(video_duration: float, max_segment_length: float = 5.0) -
         chunk_start = chunk_end
 
     return segments
+
+def seed_tta_pairs(mask_segments: List[SegmentInfo], segments_dir: Path, masks_dir: Path, video_args, num_frames: int) -> List[SegmentInfo]:
+
+    if num_frames <= 0:
+        return mask_segments
+
+    tta_frames_dir = masks_dir / 'tta_frames'
+    all_frame_paths = []
+    frame_to_seg_eye = {}
+
+    for seg in mask_segments:
+
+        seg_left_video = str(segments_dir / f'seg{seg.index:02d}_left.mp4')
+        seg_right_video = str(segments_dir / f'seg{seg.index:02d}_right.mp4')
+
+        if os.path.exists(seg_left_video):
+            left_paths = extract_tta_frames(seg_left_video, str(tta_frames_dir), f'seg{seg.index:02d}_left', num_frames)
+            for p in left_paths:
+                all_frame_paths.append(p)
+                frame_to_seg_eye[p] = (seg, 'left')
+
+        if os.path.exists(seg_right_video):
+            right_paths = extract_tta_frames(seg_right_video, str(tta_frames_dir), f'seg{seg.index:02d}_right', num_frames)
+            for p in right_paths:
+                all_frame_paths.append(p)
+                frame_to_seg_eye[p] = (seg, 'right')
+
+    if not all_frame_paths:
+        return mask_segments
+
+    print(f"Seeding {len(all_frame_paths)} real per-warmup-frame masks for TTA (seed model: {video_args.seed_model})...")
+    seed_mask_batch(
+        str(tta_frames_dir),
+        output_size=video_args.mask_height,
+        prompt=video_args.prompt,
+        sam31=getattr(video_args, 'sam31', False),
+        seed_model=video_args.seed_model,
+        sapiens_threshold=video_args.sapiens_threshold,
+        gate_dilate=video_args.gate_dilate,
+        video_args=video_args,
+    )
+
+    # preserve ascending frame-index order (frame filenames are zero-padded, e.g. _tta01, _tta02, ...)
+    for frame_path in all_frame_paths:
+        stem = Path(frame_path).stem
+        mask_path = tta_frames_dir / f'{stem}_mask.png'
+        if not mask_path.exists():
+            continue
+        seg, eye = frame_to_seg_eye[frame_path]
+        if eye == 'left':
+            seg.left_tta_pairs.append((frame_path, str(mask_path)))
+        else:
+            seg.right_tta_pairs.append((frame_path, str(mask_path)))
+
+    return mask_segments
 
 def extract_segments(
     args: argparse.Namespace,
@@ -892,8 +1129,8 @@ def main() -> int:
     start_time = time.time()
     parser = argparse.ArgumentParser(description='VR Video Masking Pipeline')
     parser.add_argument('input_path')
-    parser.add_argument('--mask-height', type=int, default=1200)
-    parser.add_argument('--segment-length', type=float, default=5)
+    parser.add_argument('--mask-height', type=int, default=1600)
+    parser.add_argument('--segment-length', type=float, default=2)
     parser.add_argument('--erode', type=int, default=3)
     parser.add_argument('--dilate', type=int, default=0)
     parser.add_argument('--prompt', type=str, default='woman')
@@ -912,6 +1149,12 @@ def main() -> int:
     parser.add_argument('--ma2-max-mem-frames', type=int, default=2, help='Override MatAnyone memory window in frames (works for v1 and v2)')
     parser.add_argument('--ma2-use-long-term', type=str, default='off', choices=['auto', 'on', 'off'], help='Override MatAnyone long-term memory mode (works for v1 and v2)')
     parser.add_argument('--temporal-median-window', type=int, default=0, help='Temporal median window for alpha cleanup. 0 disables; use odd values >= 3 (e.g. 5)')
+    parser.add_argument('--tta-enable', action='store_true', help='Enable self-supervised test-time adaptation (TTA) for MatAnyone before propagating each segment')
+    parser.add_argument('--tta-steps', type=int, default=8, help='Number of TTA gradient steps per segment/eye (only used with --tta-enable); cycles through available real (frame, SAM3 mask) pairs if steps > pairs')
+    parser.add_argument('--tta-lr', type=float, default=1e-4, help='Learning rate for TTA adaptation (only used with --tta-enable)')
+    parser.add_argument('--tta-warmup-steps', type=int, default=3, help='Sensory-memory settle passes per TTA step before scoring the prediction (only used with --tta-enable)')
+    parser.add_argument('--tta-supervised-weight', type=float, default=1.0, help='Weight for the supervised L1 loss against each SAM3 mask (only used with --tta-enable)')
+    parser.add_argument('--tta-max-size', type=int, default=0, help='Working resolution cap for TTA frames/masks (0 = use --mask-height). Lower this (e.g. 512) to cut VRAM usage on large inputs; only affects the adaptation phase, not final propagation resolution')
     parser.add_argument('--no-normalize-input', dest='normalize_input', action='store_false', help='Skip upfront input normalization/transcoding')
     parser.set_defaults(normalize_input=True)
     parser.add_argument('--overlay-output', type=str, default='input_path', help='Write a composited video with the mask over the original source')
