@@ -93,7 +93,6 @@ class sam3_video_inference:
             self.predictor = build_sam3_multiplex_video_predictor(
    
                 bpe_path=bpe_path,
-                max_num_objects = 2,
                 multiplex_count = 16,
                 use_fa3 = False,
                 use_rope_real = False,
@@ -101,7 +100,7 @@ class sam3_video_inference:
                 warm_up = False,
                 default_output_prob_thresh  = 0.5,
                 async_loading_frames  = True,
-                num_obj_for_compile=2,
+                num_obj_for_compile=1,
           
                 )
 
