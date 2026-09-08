@@ -1035,8 +1035,8 @@ def build_sam3_multiplex_video_model(
         },
         compile_all_components=compile,
         use_memory_selection=False,
-        max_num_objects=1,
-        num_obj_for_compile=1,
+        max_num_objects=max_num_objects,
+        num_obj_for_compile=num_obj_for_compile,
         # is_sbs=True,
     )
 
