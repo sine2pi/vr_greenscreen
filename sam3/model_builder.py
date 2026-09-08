@@ -82,7 +82,7 @@ def _create_vit_backbone(compile_mode=None, use_fa3=False, use_rope_real=True):
         drop_path_rate=0.1,
         qkv_bias=True,
         use_abs_pos=True,
-        tile_abs_pos=False,
+        tile_abs_pos=True,
         global_att_blocks=(7, 15, 23, 31),
         rel_pos_blocks=(),
         use_rope=True,
@@ -96,7 +96,7 @@ def _create_vit_backbone(compile_mode=None, use_fa3=False, use_rope_real=True):
         bias_patch_embed=False,
         compile_mode=compile_mode,
         use_fa3=use_fa3,
-        use_rope_real=True,
+        use_rope_real=False,
     )
 
 def _create_vit_neck(position_encoding, vit_backbone, enable_inst_interactivity=False):
@@ -1035,8 +1035,8 @@ def build_sam3_multiplex_video_model(
         },
         compile_all_components=compile,
         use_memory_selection=False,
-        max_num_objects=max_num_objects,
-        num_obj_for_compile=num_obj_for_compile,
+        max_num_objects=1,
+        num_obj_for_compile=1,
         # is_sbs=True,
     )
 
@@ -1046,7 +1046,7 @@ def build_sam3_multiplex_video_model(
 def build_sam3_multiplex_video_predictor(
     checkpoint_path: Optional[str] = None,
     bpe_path: Optional[str] = None,
-    max_num_objects: int = 16,
+    max_num_objects: int = 1,
     multiplex_count: int = 16,
     use_fa3: bool = True,
     use_rope_real: bool = False,
