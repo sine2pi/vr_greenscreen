@@ -1106,7 +1106,9 @@ def decompose_alpha_video(
 
     center_x = (src_w - overlay_size) // 2
     right_eye_x = src_w - eye_size
-    circle_gate = "geq=lum='if(lte(pow(X-W/2,2)+pow(Y-H/2,2),pow(min(W,H)/2,2)),lum(X,Y),0)'"
+
+    circle_gate = "geq=lum='if(lte((X-W/2)*(X-W/2)+(Y-H/2)*(Y-H/2),(min(W,H)/2)*(min(W,H)/2)),min(lum(X,Y)*4.5,255),0)':cb=128:cr=128"
+
     filter_parts = [
         f"[0:v]crop={overlay_size}:{half_overlay}:{center_x}:{src_h-half_overlay}[left_top]",
         f"[0:v]crop={overlay_size}:{half_overlay}:{center_x}:0[left_bottom]",
@@ -1124,7 +1126,8 @@ def decompose_alpha_video(
 
         "[0:v]format=gray,geq=lum='0'[mask_bg]",
         "[mask_bg][left_eye]overlay=0:0[mask_left]",
-        f"[mask_left][right_eye]overlay={right_eye_x}:0[out]",
+        f"[mask_left][right_eye]overlay={right_eye_x}:0[mask_comp]",
+        "[mask_comp]scale=in_range=tv:out_range=pc,format=gray[out]",
     ]
 
     mask_cmd = [
@@ -1139,6 +1142,7 @@ def decompose_alpha_video(
         '-an',
         str(mask_out),
     ]
+
     mask_rc, mask_stderr = ffmpeg_progress(mask_cmd, progress_prefix=f"{progress_prefix}[MASK] ")
     if mask_rc != 0:
         raise RuntimeError(
