@@ -144,45 +144,6 @@ def ffmpeg_progress(cmd: list[str], progress_prefix: str = "", cwd: str | None =
 
     return process.returncode, "".join(stderr_lines)
 
-# @functools.lru_cache(maxsize=128)
-# def get_video_info(file_path):
-#     cmd = [
-#         FFPROBE_BIN,
-#         '-v', 'error',
-#         '-select_streams', 'v:0',
-#         '-show_entries', 'stream=width,height,codec_name,r_frame_rate',
-#         '-of', 'json',
-#         file_path
-#     ]
-#     result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-#     info = json.loads(result.stdout)
-#     if 'streams' not in info or not info['streams']:
-#         raise ValueError(f"No video streams found in {file_path}")
-#     stream = info['streams'][0]
-#     fps_str = stream.get('r_frame_rate', '30/1')
-#     num, denom = map(int, fps_str.split('/'))
-#     fps = num / denom if denom != 0 else 30.0
-#     codec = stream.get('codec_name', '')
-#     width = int(stream.get('width', 0))
-#     height = int(stream.get('height', 0))
-
-#     return {
-#         'fps': fps,
-#         'codec': codec,
-#         'width': width,
-#         'height': height
-#     }
-
-# def frame_rate(file_path):
-#     return get_video_info(file_path)['fps']
-
-# def vcodec(file_path):
-#     return get_video_info(file_path)['codec']
-
-# def vresolution(file_path):
-#     info = get_video_info(file_path)
-#     return info['width'], info['height']
-
 @functools.lru_cache(maxsize=128)
 def info(video_path: str):
 
@@ -253,7 +214,7 @@ def info(video_path: str):
     is_vfr = False
     if fps_str != fps_avg:
         is_vfr = True
-    # print(f"Video info: {w}x{h} @ {fps:.6f} fps (avg {fps_avg:.6f}) duration {duration:.3f}s, VFR={is_vfr}, pix_fmt={pix_fmt}")
+  
     return int(w), int(h), fps, duration, is_vfr, pix_fmt
 
 def frame_count(video_path: str) -> int:
@@ -601,9 +562,7 @@ def mask_overlay(source_video: str, mask_video: str, output_path: str, backgroun
 
     resolved_path = overlay_path(source_video, output_path)
     src_w, src_h, src_fps, src_duration, src_vfr, src_fmt = info(source_video)
-    # print(f"@@@@@@@@@@-- overlaying mask  duration {src_duration:.3f}s, fps={src_fps:.6f}")
     mask_w, mask_h, mask_fps, mask_duration, mask_vfr, mask_fmt = info(mask_video)
-    # print(f"@@@@@@@@@@-- mask video info:{mask_fps:.6f} fps, duration {mask_duration:.3f}s")
 
     enc = encoder_args(fps=src_fps, pix_fmt=src_fmt)
 
@@ -657,7 +616,6 @@ def mask_overlay(source_video: str, mask_video: str, output_path: str, backgroun
 def stereo_video(left_video: str, right_video: str, output_path: str) -> str:
 
     w, h, fps, dur, vfr, pix_fmt = info(aorb(left_video, right_video))
-
     enc = encoder_args(fps=fps, pix_fmt=pix_fmt)
 
     filter_complex = "[0:v][1:v]hstack=inputs=2[out]"
@@ -681,14 +639,6 @@ def stereo_video(left_video: str, right_video: str, output_path: str) -> str:
     return output_path
 
 def extract_tta_frames(segment_video: str, out_dir: str, base_name: str, num_frames: int) -> List[str]:
-    """Extract the first `num_frames` consecutive frames *after* frame 0
-    (i.e. frames 1..num_frames) from an already-encoded segment video (e.g.
-    seg00_left.mp4) as individual PNGs, in order. These line up with
-    MatAnyone2's --warmup window so TTA can train on real per-warmup-frame
-    (frame, SAM3-mask) pairs instead of frame 0 repeated. Returns the frame
-    paths in ascending frame-index order (empty if num_frames <= 0 or the
-    segment has too few frames)."""
-
     if num_frames <= 0:
         return []
 
