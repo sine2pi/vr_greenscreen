@@ -680,6 +680,50 @@ def stereo_video(left_video: str, right_video: str, output_path: str) -> str:
 
     return output_path
 
+def extract_tta_frames(segment_video: str, out_dir: str, base_name: str, num_frames: int) -> List[str]:
+    """Extract the first `num_frames` consecutive frames *after* frame 0
+    (i.e. frames 1..num_frames) from an already-encoded segment video (e.g.
+    seg00_left.mp4) as individual PNGs, in order. These line up with
+    MatAnyone2's --warmup window so TTA can train on real per-warmup-frame
+    (frame, SAM3-mask) pairs instead of frame 0 repeated. Returns the frame
+    paths in ascending frame-index order (empty if num_frames <= 0 or the
+    segment has too few frames)."""
+
+    if num_frames <= 0:
+        return []
+
+    total = frame_count(segment_video)
+
+    if total <= 1:
+        return []
+
+    count = min(num_frames, total - 1)
+    indices = list(range(1, count + 1))
+
+    if not indices:
+        return []
+
+    os.makedirs(out_dir, exist_ok=True)
+    select_expr = "+".join(f"eq(n\\,{idx})" for idx in indices)
+    out_pattern = os.path.join(out_dir, f"{base_name}_tta%02d.png")
+
+    cmd = [
+        'ffmpeg', '-y', '-hide_banner',
+        '-i', segment_video,
+        '-vf', f"select='{select_expr}'",
+        '-compression_level', '1',
+        out_pattern,
+    ]
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+
+    if result.returncode != 0:
+        print(f"Warning: TTA frame extraction failed for {segment_video}: {result.stderr[-400:]}")
+        return []
+
+    out_paths = sorted(Path(out_dir).glob(f"{base_name}_tta*.png"), key=lambda p: p.name)
+    return [str(p) for p in out_paths]
+
 def read_frame_from_videos(frame_root, max_size):
 
     if frame_root.endswith(VIDEO_EXTENSIONS):
@@ -905,7 +949,7 @@ def pack_video(
     sync_frames = None,
     progress_prefix: str = "[ALPHA] "
 
-) -> int:
+) -> str:
 
     if not output_path:
         base, ext = os.path.splitext(video_path)
@@ -949,7 +993,7 @@ def pack_video(
     if synced_tmp and os.path.exists(synced_tmp):
         os.remove(synced_tmp)
 
-    print(f" Failed to pack {video_path}")
+    print(f"Alpha packed: {output_path}")
 
     return output_path
 
@@ -961,18 +1005,170 @@ def packer(input_path: str, sync_frames=None) -> int:
     for index, (video_path, mask_path) in enumerate(input_pairs, 1):
 
         print(f"[{index}/{len(input_pairs)}] Processing: {video_path.name} <- {mask_path.name}")
-        rc = pack_video(str(video_path), str(mask_path), sync_frames=None)
-
-        if rc == 0:
-            processed.append((str(video_path), str(mask_path)))
+        packed_path = pack_video(str(video_path), str(mask_path), sync_frames=None)
+        processed.append((str(video_path), str(mask_path), packed_path))
         print()
 
     if not processed:
         print(" No files were packed successfully")
         return 1
 
-    for video_path, mask_path in processed:
-        print(f"{video_path} <- {mask_path}")
+    for video_path, mask_path, packed_path in processed:
+        print(f"{video_path} <- {mask_path} -> {packed_path}")
+
+    return 0
+
+def _decompose_output_paths(packed_video: Path) -> tuple[Path, Path]:
+    stem = packed_video.stem
+
+    if stem.endswith('_alpha'):
+        base_stem = stem[:-6]
+    else:
+        base_stem = f'{stem}_decomposed'
+
+    video_output = packed_video.with_name(f'{base_stem}{packed_video.suffix}')
+    mask_output = packed_video.with_name(f'{base_stem}_mask{packed_video.suffix}')
+    return video_output, mask_output
+
+def decompose_alpha_video(
+    packed_video: str,
+    video_output: str | None = None,
+    mask_output: str | None = None,
+    cleanup_mask_path: str | None = None,
+    progress_prefix: str = "[DECOMPOSE] ",
+) -> tuple[str, str]:
+
+    packed_path = Path(packed_video).expanduser().resolve()
+    if not packed_path.exists():
+        raise FileNotFoundError(f'Packed video not found: {packed_video}')
+
+    if packed_path.suffix.lower() not in VIDEO_EXTENSIONS:
+        raise RuntimeError(f'Unsupported video file: {packed_video}')
+
+    src_w, src_h, src_fps, _, _, src_pix_fmt = info(str(packed_path))
+    eye_size = src_h
+    overlay_size = int(src_h * 0.4)
+    overlay_size = (overlay_size // 4) * 4
+    half_overlay = overlay_size // 2
+
+    if overlay_size <= 0 or half_overlay <= 0:
+        raise RuntimeError(f'Packed video is too small to decode alpha payload: {src_w}x{src_h}')
+    if src_w < overlay_size or src_h < overlay_size:
+        raise RuntimeError(f'Packed video dimensions are invalid for alpha payload decode: {src_w}x{src_h}')
+
+    default_video_out, default_mask_out = _decompose_output_paths(packed_path)
+    video_out = Path(video_output).expanduser().resolve() if video_output else default_video_out
+    mask_out = Path(mask_output).expanduser().resolve() if mask_output else default_mask_out
+
+    print(f"{'='*60}")
+    print(f"Decomposing alpha-packed video: {packed_path.name}")
+    print(f"{'='*60}")
+
+    video_out.parent.mkdir(parents=True, exist_ok=True)
+    mask_out.parent.mkdir(parents=True, exist_ok=True)
+
+    if cleanup_mask_path is not None:
+        cleanup_mask = Path(cleanup_mask_path).expanduser().resolve()
+        if not cleanup_mask.exists():
+            raise FileNotFoundError(f'Decompose cleanup mask not found: {cleanup_mask_path}')
+        if cleanup_mask.suffix.lower() != '.png':
+            raise RuntimeError(f'Decompose cleanup mask must be a PNG image: {cleanup_mask_path}')
+
+        clean_filter = (
+            "[1:v]format=rgba[mask_src];"
+            "[mask_src][0:v]scale2ref[mask][video];"
+            "[video][mask]overlay=0:0:format=auto[out]"
+        )
+        copy_cmd = [
+            'ffmpeg', '-y', '-hide_banner',
+            '-i', str(packed_path),
+            '-i', str(cleanup_mask),
+            '-filter_complex', clean_filter,
+            '-map', '[out]',
+            *encoder_args(fps=src_fps, pix_fmt=src_pix_fmt),
+            str(video_out),
+        ]
+    else:
+        copy_cmd = [
+            'ffmpeg', '-y', '-hide_banner',
+            '-i', str(packed_path),
+            '-map', '0',
+            '-c', 'copy',
+            str(video_out),
+        ]
+
+    copy_rc, copy_stderr = ffmpeg_progress(copy_cmd, progress_prefix=f"{progress_prefix}[VIDEO] ")
+    if copy_rc != 0:
+        raise RuntimeError(
+            "Video extraction failed.\n\nFFmpeg tail:\n"
+            + ''.join(copy_stderr.splitlines(True)[-40:])
+        )
+
+    center_x = (src_w - overlay_size) // 2
+    right_eye_x = src_w - eye_size
+    circle_gate = "geq=lum='if(lte(pow(X-W/2,2)+pow(Y-H/2,2),pow(min(W,H)/2,2)),lum(X,Y),0)'"
+    filter_parts = [
+        f"[0:v]crop={overlay_size}:{half_overlay}:{center_x}:{src_h-half_overlay}[left_top]",
+        f"[0:v]crop={overlay_size}:{half_overlay}:{center_x}:0[left_bottom]",
+        "[left_top][left_bottom]vstack=inputs=2[left_circle_raw]",
+        f"[left_circle_raw]format=gray,{circle_gate},scale={eye_size}:{eye_size}:flags=lanczos[left_eye]",
+
+        f"[0:v]crop={half_overlay}:{half_overlay}:{src_w-half_overlay}:{src_h-half_overlay}[r1]",
+        f"[0:v]crop={half_overlay}:{half_overlay}:0:{src_h-half_overlay}[r2]",
+        f"[0:v]crop={half_overlay}:{half_overlay}:{src_w-half_overlay}:0[r3]",
+        f"[0:v]crop={half_overlay}:{half_overlay}:0:0[r4]",
+        "[r1][r2]hstack=inputs=2[right_top]",
+        "[r3][r4]hstack=inputs=2[right_bottom]",
+        "[right_top][right_bottom]vstack=inputs=2[right_circle_raw]",
+        f"[right_circle_raw]format=gray,{circle_gate},scale={eye_size}:{eye_size}:flags=lanczos[right_eye]",
+
+        "[0:v]format=gray,geq=lum='0'[mask_bg]",
+        "[mask_bg][left_eye]overlay=0:0[mask_left]",
+        f"[mask_left][right_eye]overlay={right_eye_x}:0[out]",
+    ]
+
+    mask_cmd = [
+        'ffmpeg', '-y', '-hide_banner',
+        '-i', str(packed_path),
+        '-filter_complex', ';'.join(filter_parts),
+        '-map', '[out]',
+        '-r', str(src_fps),
+        '-c:v', ENCODER,
+        '-preset', 'p5',
+        '-pix_fmt', 'yuv420p',
+        '-an',
+        str(mask_out),
+    ]
+    mask_rc, mask_stderr = ffmpeg_progress(mask_cmd, progress_prefix=f"{progress_prefix}[MASK] ")
+    if mask_rc != 0:
+        raise RuntimeError(
+            "Mask extraction failed.\n\nFFmpeg tail:\n"
+            + ''.join(mask_stderr.splitlines(True)[-40:])
+        )
+
+    print(f"Decomposed video: {video_out}")
+    print(f"Decomposed mask: {mask_out}")
+    return str(video_out), str(mask_out)
+
+def decompose_alpha(input_path: str, cleanup_mask_path: str | None = None) -> int:
+    packed_videos = _input_videos(input_path)
+    outputs: list[tuple[str, str, str]] = []
+
+    for index, packed_video in enumerate(packed_videos, 1):
+        print(f"[{index}/{len(packed_videos)}] Decompose: {packed_video.name}")
+        video_out, mask_out = decompose_alpha_video(
+            str(packed_video),
+            cleanup_mask_path=cleanup_mask_path,
+        )
+        outputs.append((str(packed_video), video_out, mask_out))
+        print()
+
+    print('=' * 60)
+    print('Alpha decomposition complete')
+    print('=' * 60)
+    for packed_video, video_out, mask_out in outputs:
+        print(f"{packed_video} -> {video_out}")
+        print(f"{packed_video} -> {mask_out}")
 
     return 0
 
