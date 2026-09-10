@@ -81,8 +81,8 @@ def _create_vit_backbone(compile_mode=None, use_fa3=False, use_rope_real=True):
         norm_layer="LayerNorm",
         drop_path_rate=0.1,
         qkv_bias=True,
-        use_abs_pos=True,
-        tile_abs_pos=True,
+        use_abs_pos=False,
+        tile_abs_pos=False,
         global_att_blocks=(7, 15, 23, 31),
         rel_pos_blocks=(),
         use_rope=True,
@@ -1090,7 +1090,7 @@ def build_sam3_multiplex_video_predictor(
 
     sam2_predictor = Sam3MultiplexPredictorWrapper(
         model=tracker_model,
-        per_obj_inference=False,
+        per_obj_inference=True,
         fill_hole_area=0,
         is_multiplex=True,
         is_multiplex_dynamic=False,
