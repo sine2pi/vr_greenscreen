@@ -95,7 +95,6 @@ def encoder_args(fps=None, pix_fmt=None) -> list[str]:
         '-fps_mode', 'cfr',
         '-r', str(fps) if fps is not None else '60',
         '-c:v', ENCODER,
-        # '-load_plugin', 'hevc_hw',
         '-preset', 'p5',
         '-profile:v', 'main10',
         '-pix_fmt', str(pix_fmt) if pix_fmt is not None else 'p010le',
@@ -214,7 +213,7 @@ def info(video_path: str):
     is_vfr = False
     if fps_str != fps_avg:
         is_vfr = True
-  
+
     return int(w), int(h), fps, duration, is_vfr, pix_fmt
 
 def frame_count(video_path: str) -> int:
@@ -449,7 +448,6 @@ def extract_segment_frames(
     progress_prefix: str = "",
 ) -> tuple[str, str, str, str]:
 
-    # fps = info(stereo_video)[2]
     wi, hi, fps, duration, is_vfr, pix_fmt = info(stereo_video)
     enc = encoder_args(fps=fps, pix_fmt=pix_fmt)
 
@@ -616,6 +614,7 @@ def mask_overlay(source_video: str, mask_video: str, output_path: str, backgroun
 def stereo_video(left_video: str, right_video: str, output_path: str) -> str:
 
     w, h, fps, dur, vfr, pix_fmt = info(aorb(left_video, right_video))
+
     enc = encoder_args(fps=fps, pix_fmt=pix_fmt)
 
     filter_complex = "[0:v][1:v]hstack=inputs=2[out]"
@@ -639,6 +638,7 @@ def stereo_video(left_video: str, right_video: str, output_path: str) -> str:
     return output_path
 
 def extract_tta_frames(segment_video: str, out_dir: str, base_name: str, num_frames: int) -> List[str]:
+
     if num_frames <= 0:
         return []
 
@@ -725,25 +725,34 @@ def get_circle_mask(size: int) -> str:
 
     try:
 
-        scale = 4
+        scale = 4 
         size_hr = size * scale
+        print(f"High-resolution mask size: {size_hr}")
         circle_img = Image.new("L", (size_hr, size_hr), 0)
 
         draw = ImageDraw.Draw(circle_img)
         draw.ellipse([0, 0, size_hr - 1, size_hr - 1], fill=255)
 
+        print(f" circle_img size before resize: {circle_img.size}")
+
         circle_img = circle_img.resize((size, size), Image.Resampling.LANCZOS)
+        print(f"Resized mask size: {size}")
+        print(f" circle_img size before blur: {circle_img.size}")
         circle_img = circle_img.filter(ImageFilter.GaussianBlur(radius=1))
         circle_img.save(str(mask_path))
 
     except ImportError:
         cmd = [
-
-            "ffmpeg", "-y", "-f", "lavfi", "-i",
+            "ffmpeg",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
             f"color=c=white:s={size}x{size}:d=1,format=gray",
             "-vf",
-            "geq=lum='if(lte(pow(X-W/2,2)+pow(Y-H/2,2),pow(min(W,H)/2,2)),255,0)'",
-            "-frames:v", "1",
+            "geq=lum='if(lte((X-W/2)*(X-W/2)+(Y-H/2)*(Y-H/2),(min(W,H)/2)*(min(W,H)/2)),255,0)'"
+            "-frames:v",
+            "1",
             str(mask_path),
         ]
 
@@ -809,8 +818,10 @@ def alpha_command(
         print(f"NVENC-aligned output: {out_w}x{out_h}")
 
     overlay_size = int(out_h * 0.4)
+    print(f"Initial overlay size: {overlay_size}")
     overlay_size = (overlay_size // 4) * 4
     half_overlay = overlay_size // 2
+    print(f"Half overlay size: {half_overlay}, overlay size: {overlay_size}, out_w: {out_w}, out_h: {out_h}")
 
     if video_h <= 2400:
         erosion_threshold = 32768
@@ -827,6 +838,7 @@ def alpha_command(
 
     print(f"Mask Gen Params: gblur={sigma:.1f}, erosion={erosion_threshold}, contrast={contrast}, gamma={gamma}")
 
+    print(f"Adjusted overlay size: {overlay_size}")
     circle_mask = get_circle_mask(overlay_size)
 
     filter_parts: list[str] = [
@@ -1060,24 +1072,22 @@ def decompose_alpha_video(
     circle_gate = "geq=lum='if(lte((X-W/2)*(X-W/2)+(Y-H/2)*(Y-H/2),(min(W,H)/2)*(min(W,H)/2)),min(lum(X,Y)*4.5,255),0)':cb=128:cr=128"
 
     filter_parts = [
-        f"[0:v]crop={overlay_size}:{half_overlay}:{center_x}:{src_h-half_overlay}[left_top]",
+        f"[0:v]crop={overlay_size}:{half_overlay}:{center_x}:{src_h - half_overlay}[left_top]",
         f"[0:v]crop={overlay_size}:{half_overlay}:{center_x}:0[left_bottom]",
         "[left_top][left_bottom]vstack=inputs=2[left_circle_raw]",
-        f"[left_circle_raw]format=gray,{circle_gate},scale={eye_size}:{eye_size}:flags=lanczos[left_eye]",
-
-        f"[0:v]crop={half_overlay}:{half_overlay}:{src_w-half_overlay}:{src_h-half_overlay}[r1]",
-        f"[0:v]crop={half_overlay}:{half_overlay}:0:{src_h-half_overlay}[r2]",
-        f"[0:v]crop={half_overlay}:{half_overlay}:{src_w-half_overlay}:0[r3]",
+        f"[left_circle_raw]format=gray,{circle_gate},scale={eye_size}:{eye_size}:flags=bilinear[left_eye]",
+        f"[0:v]crop={half_overlay}:{half_overlay}:{src_w - half_overlay}:{src_h - half_overlay}[r1]",
+        f"[0:v]crop={half_overlay}:{half_overlay}:0:{src_h - half_overlay}[r2]",
+        f"[0:v]crop={half_overlay}:{half_overlay}:{src_w - half_overlay}:0[r3]",
         f"[0:v]crop={half_overlay}:{half_overlay}:0:0[r4]",
         "[r1][r2]hstack=inputs=2[right_top]",
         "[r3][r4]hstack=inputs=2[right_bottom]",
         "[right_top][right_bottom]vstack=inputs=2[right_circle_raw]",
-        f"[right_circle_raw]format=gray,{circle_gate},scale={eye_size}:{eye_size}:flags=lanczos[right_eye]",
-
+        f"[right_circle_raw]format=gray,{circle_gate},scale={eye_size}:{eye_size}:flags=bilinear[right_eye]",
         "[0:v]format=gray,geq=lum='0'[mask_bg]",
         "[mask_bg][left_eye]overlay=0:0[mask_left]",
         f"[mask_left][right_eye]overlay={right_eye_x}:0[mask_comp]",
-        "[mask_comp]scale=in_range=tv:out_range=pc,format=gray[out]",
+        "[mask_comp]scale=in_range=tv:out_range=tv,format=gray[out]",
     ]
 
     mask_cmd = [
@@ -1087,7 +1097,7 @@ def decompose_alpha_video(
         '-map', '[out]',
         '-r', str(src_fps),
         '-c:v', ENCODER,
-        '-preset', 'p5',
+        '-preset', 'p7',
         '-pix_fmt', 'yuv420p',
         '-an',
         str(mask_out),

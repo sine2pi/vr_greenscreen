@@ -5,7 +5,6 @@ from huggingface_hub import snapshot_download
 from sam3.model.sam3_image_processor import Sam3Processor
 from sam3.model_builder import build_sam3_image_model, build_sam3_video_predictor
 from sam3.model.box_ops import box_xywh_to_cxcywh
-# from torchvision.transforms import v2
 from typing import List, Optional, Callable
 from dataclasses import dataclass
 from enum import Enum
@@ -45,8 +44,6 @@ SAM3_REPO_ID = "sin2piusc/sam3_fta"
 
 SAM3_BOX_CXCYWH_NORM = (0.5, 0.4, 0.5, 0.5)
 SAM3_BOX2_CXCYWH_NORM = (0.5, 0.9, 0.9, 0.18)
-# SAM3_BOX3_CXCYWH_NORM = (0.1, 0.9, 0.9, 0.18)
-
 SAPIENS_REPO_ID = "facebook/sapiens2-matting-1b"
 SAPIENS_CHECKPOINT = "sapiens2_1b_matting.safetensors"
 SAPIENS_CONFIG = "assets/sapiens2_1b_matting_gss_p3m_metasim-1024x768.py"
@@ -132,7 +129,7 @@ class sam3_video_inference:
         print()
         print(f"Sam3 inference. ... ♩ ♪ ♫ ♬")
 
-        max_frame_num_to_track=int(self.seg_length * 60) # assumes 60 fps
+        max_frame_num_to_track=int(self.seg_length * 60)
         predictor=self.predictor
         outputs = {}
 
@@ -156,7 +153,7 @@ class sam3_video_inference:
                         session_id=session_id,
                         propagation_direction="both",
                         output_prob_thresh = 0.1,
-                        max_frame_num_to_track = None, #max_frame_num_to_track if max_frame_num_to_track != -1 else None, ## will results in blank masks if not correctly set. None is safest since it allows tracking all frames by default.
+                        max_frame_num_to_track = None,
 
                     )):
 
@@ -246,8 +243,6 @@ class sam3_video_inference:
         if add_box:
 
             boxes = torch.tensor(np.array([[0.1464466, 0.1464466, 0.7071068, 0.7071068]]), dtype=torch.float32)
-            # boxes = torch.tensor(np.array([[0.1, 0.1, 0.8, 0.7]]), dtype=torch.float32)
-            
             labels = torch.tensor(np.array([1]), dtype=torch.int32)
 
         else:
@@ -301,10 +296,10 @@ class sam3_video_inference:
             points_abs = np.array(
 
                 [
-                    [740, 450],  # +
-                    [760, 630],  # -
-                    [840, 640],  # -
-                    [760, 550],  # +
+                    [740, 450],
+                    [760, 630],
+                    [840, 640],
+                    [760, 550],
                 ]
             )
 
@@ -363,7 +358,6 @@ class sam3_video_inference:
                 )
             )
 
-            # out = response["outputs"]
             outputs = self.propagate_in_video(predictor, session_id)
 
         if show_plots:
@@ -492,9 +486,6 @@ def _sam3_video_inference(frames_dir, prompt, sam31, output_size, video_args) ->
             np.clip((soft_mask - 0.5) * 10.0 + 0.5, 0.0, 1.0) * 255
         ).astype(np.uint8)
         mask = Image.fromarray(soft_mask, mode="L")
-
-        # mask = ((soft_mask > 0.5) * 255).astype(np.uint8)
-        # mask = Image.fromarray(mask, mode="L")
 
         mask = Image.fromarray(soft_mask, mode="L")
         mask = mask.filter(ImageFilter.MinFilter(size=3))
@@ -856,8 +847,6 @@ def estimate_alpha(image_bgr, model):
         outputs,
         size=(h0, w0),
         mode="area",
-        # align_corners=False,
-        # antialias=True
     )
 
     outputs = outputs.squeeze(0).float().cpu().numpy()
