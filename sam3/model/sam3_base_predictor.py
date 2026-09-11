@@ -19,7 +19,7 @@ from sam3.logger import get_logger
 
 logger = get_logger(__name__)
 
-_CLEAR_CACHE_THRESHOLD = 50
+_CLEAR_CACHE_THRESHOLD = 100
 
 class Sam3BasePredictor:
     """
@@ -39,7 +39,7 @@ class Sam3BasePredictor:
     def set_cache_threshold(self, max_frame=None):
         """Set the threshold for clearing the CUDA cache on session close."""
         global _CLEAR_CACHE_THRESHOLD
-        _CLEAR_CACHE_THRESHOLD = min(max_frame, 50) if max_frame is not None else 10
+        _CLEAR_CACHE_THRESHOLD = min(max_frame, 50) if max_frame is not None else 100
 
     @torch.inference_mode()
     def handle_request(self, request):
@@ -278,7 +278,7 @@ class Sam3BasePredictor:
             print(f'max_frame_num_to_track: {max_frame_num_to_track}')
             print(f'propagation_direction: {propagation_direction}')
             print(f'output_prob_thresh: {output_prob_thresh}')
-            self.set_cache_threshold(max_frame_num_to_track)
+            # self.set_cache_threshold(max_frame_num_to_track)
             # Only pass output_prob_thresh / extra kwargs if the model supports them
             import inspect
 

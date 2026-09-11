@@ -58,6 +58,51 @@ _setup_tf32()
 
 IMAGE_SIZE = 1008
 
+def _slice_tensor_to_shape_if_possible(src: torch.Tensor, target_shape: torch.Size):
+    """Slice src to target_shape when every target dim is <= src dim."""
+    if src.ndim != len(target_shape):
+        return None
+    for src_dim, tgt_dim in zip(src.shape, target_shape):
+        if tgt_dim > src_dim:
+            return None
+    slices = tuple(slice(0, dim) for dim in target_shape)
+    return src[slices].clone()
+
+def _prepare_multiplex_compatible_state_dict(model: nn.Module, loaded_state: dict):
+    """
+    Convert checkpoint state dict into a form that can be loaded when multiplex_count is reduced.
+    Keeps exact-shape tensors; slices larger tensors when shape-reduction is safe.
+    """
+    model_state = model.state_dict()
+    prepared_state = {}
+    skipped_keys = []
+    sliced_keys = []
+
+    for key, value in loaded_state.items():
+        if key not in model_state:
+            continue
+        target_tensor = model_state[key]
+        if value.shape == target_tensor.shape:
+            prepared_state[key] = value
+            continue
+
+        sliced = _slice_tensor_to_shape_if_possible(value, target_tensor.shape)
+        if sliced is not None:
+            prepared_state[key] = sliced.to(dtype=target_tensor.dtype)
+            sliced_keys.append((key, tuple(value.shape), tuple(target_tensor.shape)))
+        else:
+            skipped_keys.append((key, tuple(value.shape), tuple(target_tensor.shape)))
+
+    if sliced_keys:
+        print("Sliced checkpoint tensors for multiplex compatibility:")
+        for key, src_shape, tgt_shape in sliced_keys:
+            print(f"  {key}: {src_shape} -> {tgt_shape}")
+    if skipped_keys:
+        print("Skipped incompatible checkpoint tensors:")
+        for key, src_shape, tgt_shape in skipped_keys:
+            print(f"  {key}: {src_shape} vs {tgt_shape}")
+    return prepared_state
+
 def _create_position_encoding(precompute_resolution=None):
     """Create position encoding for visual backbone."""
     return PositionEmbeddingSine(
@@ -960,6 +1005,7 @@ def build_sam3_multiplex_video_model(
     warm_up = False,
     # is_sbs=True,
 ):
+    low_vram_single_obj = max_num_objects == 1
 
     maskmem_backbone = _create_multiplex_maskmem_backbone(
         multiplex_count=multiplex_count)
@@ -1018,13 +1064,15 @@ def build_sam3_multiplex_video_model(
         condition_as_mask_input_fg=1.0,
         condition_as_mask_input_bg=0.0,
         use_maskmem_tpos_v2=True,
+        # Keep enabled: this multiplex tracker path uses the decoupled encoder
+        # signature that expects image/memory-image inputs.
         save_image_features=True,
         randomness_fix=True,
         use_mask_input_as_output_without_sam=True,
         directly_add_no_mem_embed=True,
         iou_prediction_use_sigmoid=False,
         forward_backbone_per_frame_for_eval=True,
-        offload_output_to_cpu_for_eval=False,
+        offload_output_to_cpu_for_eval=low_vram_single_obj,
         trim_past_non_cond_mem_for_eval=False,
         max_cond_frames_in_attn=4,
         is_dynamic_model=True,
@@ -1058,6 +1106,7 @@ def build_sam3_multiplex_video_predictor(
     # is_sbs=True,
     num_obj_for_compile=1,
 ):
+    low_vram_single_obj = max_num_objects == 1
 
     from sam3.model.sam3_multiplex_base import Sam3MultiplexPredictorWrapper
     from sam3.model.sam3_multiplex_detector import Sam3MultiplexDetector
@@ -1122,18 +1171,29 @@ def build_sam3_multiplex_video_predictor(
         is_multiplex=True,
     )
 
-    demo_model = Sam3MultiplexTrackingWithInteractivity(
+    # In strict 1-object mode, use tighter detection gates to avoid carrying a large
+    # candidate set through propagation before max_num_objects clamping.
+    if max_num_objects == 1:
+        score_threshold_detection = 0.55  # 0.8
+        new_det_thresh = 0.0  # 0.8
+        det_nms_thresh = 0.0  # 0.5
+    else:
+        score_threshold_detection = 0.55
+        new_det_thresh = 0.0
+        det_nms_thresh = 0.0
+
+    model = Sam3MultiplexTrackingWithInteractivity(
         tracker=sam2_predictor,
         detector=detector,
-        score_threshold_detection=0.55,
-        det_nms_thresh=0,
+        score_threshold_detection=score_threshold_detection,
+        det_nms_thresh=det_nms_thresh,
         det_nms_use_iom=True,
         assoc_iou_thresh=0,
-        new_det_thresh=0,
+        new_det_thresh=new_det_thresh,
         hotstart_delay=0,
         hotstart_unmatch_thresh=0,
         hotstart_dup_thresh=0,
-        suppress_unmatched_only_within_hotstart=True,
+        suppress_unmatched_only_within_hotstart=False,
         suppress_overlapping_based_on_recent_occlusion_threshold=0.0,
         suppress_det_close_to_boundary=True,
         fill_hole_area=0,
@@ -1143,9 +1203,10 @@ def build_sam3_multiplex_video_predictor(
         masklet_confirmation_enable=False,
         reconstruction_bbox_iou_thresh=-1,
         reconstruction_bbox_det_score=0,
-
         postprocess_batch_size=1,
-        use_batched_grounding=True,
+        # use_batched_grounding=not low_vram_single_obj,
+        # batched_grounding_batch_size=4 if low_vram_single_obj else 0,
+        use_batched_grounding=False,
         batched_grounding_batch_size=0,
         max_num_kboxes=0,
         sprinkle_removal_area=0,
@@ -1156,43 +1217,43 @@ def build_sam3_multiplex_video_predictor(
         compile_model=compile,
         max_num_objects=max_num_objects,
         num_obj_for_compile=num_obj_for_compile,
-
     )
 
     if checkpoint_path is None:
-        checkpoint_path = download_ckpt_from_hf(version="sam3.1")
+        checkpoint_path = download_ckpt_from_hf(version="sam3")
 
     if checkpoint_path is not None:
-        ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+        with g_pathmgr.open(checkpoint_path, "rb") as f:
+            loaded_ckpt = torch.load(f, weights_only=True, map_location="cpu")
 
-        if "model" in ckpt and isinstance(ckpt["model"], dict):
-            ckpt = ckpt["model"]
+        if isinstance(loaded_ckpt, dict) and "model" in loaded_ckpt and isinstance(
+            loaded_ckpt["model"], dict
+        ):
+            loaded_ckpt = loaded_ckpt["model"]
 
         needs_remap = any(
-            k.startswith("sam3_model.") or k.startswith("sam2_predictor.") for k in ckpt
+            k.startswith("sam3_model.") or k.startswith("sam2_predictor.")
+            for k in loaded_ckpt
         )
         if needs_remap:
+            print("Remapping checkpoint keys for Sam3MultiplexTrackingWithInteractivity...")
             remapped_ckpt = {}
-            for k, v in ckpt.items():
+            for k, v in loaded_ckpt.items():
                 new_k = k
                 if k.startswith("sam3_model."):
                     new_k = "detector." + k[len("sam3_model.") :]
                 elif k.startswith("sam2_predictor."):
                     new_k = "tracker." + k[len("sam2_predictor.") :]
                 remapped_ckpt[new_k] = v
-            ckpt = remapped_ckpt
-        missing_keys, unexpected_keys = demo_model.load_state_dict(ckpt, strict=False)
-        if missing_keys:
-            print(f"")
-        if unexpected_keys:
-            print(
-                f""
-            )
+            loaded_ckpt = remapped_ckpt
 
-    demo_model.cuda().eval()
+        prepared_ckpt = _prepare_multiplex_compatible_state_dict(model, loaded_ckpt)
+        model.load_state_dict(prepared_ckpt, strict=False)
+
+    model.cuda().eval()
 
     predictor = Sam3MultiplexVideoPredictor(
-        model=demo_model,
+        model=model,
         session_expiration_sec=session_expiration_sec,
         default_output_prob_thresh=default_output_prob_thresh,
         async_loading_frames=async_loading_frames,

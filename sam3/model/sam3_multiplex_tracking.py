@@ -337,10 +337,7 @@ class Sam3MultiplexTracking(Sam3MultiplexBase):
 
         hotstart_buffer = []
         hotstart_removed_obj_ids = set()
-        # when deciding whether to output a masklet on `yield_frame_idx`, we check whether the object is confirmed
-        # in a future frame (`unconfirmed_frame_delay` frames after the current frame). For example, if we require
-        # an object to be detected in 3 consecutive frames to be confirmed, then we look 2 frames in the future --
-        # e.g., we output an object on frame 4 only if it becomes confirmed on frame 6.
+
         unconfirmed_status_delay = self.masklet_confirmation_consecutive_det_thresh - 1
         unconfirmed_obj_ids_per_frame = {}  # frame_idx -> hidden_obj_ids
 
