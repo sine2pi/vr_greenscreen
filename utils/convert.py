@@ -108,7 +108,6 @@ HWACCEL_UI_LABELS = {
 DEFAULT_HWACCEL_LABEL = "Auto"
 
 def _ffmpeg_has_encoder(encoder_name):
-    
     try:
         result = subprocess.run([FFMPEG_BIN, '-hide_banner', '-encoders'], capture_output=True, text=True, check=False)
     except Exception:
@@ -329,6 +328,7 @@ def split_video(input_path, mode, output_dir, conversion="none", log_callback=No
             src_duration = video_duration(input_path)
         except Exception:
             src_duration = None
+            
         image_dur_args = ["-t", str(src_duration)] if src_duration else []
         cmd.extend(["-loop", "1", *image_dur_args, "-i", circle_mask])
         cmd.extend(["-sws_flags", "bicubic+full_chroma_int+accurate_rnd+full_chroma_inp"])
@@ -368,6 +368,7 @@ def split_video(input_path, mode, output_dir, conversion="none", log_callback=No
         run_process(cmd, log_callback, process_callback)
 
     elif mode == 'top_and_bottom':
+
         output_top = os.path.join(output_dir, f"{filename}_T{fisheye_suffix}{ext}")
         output_bottom = os.path.join(output_dir, f"{filename}_B{fisheye_suffix}{ext}")
 
@@ -454,18 +455,16 @@ def combine_video(input_path_1, input_path_2, mode, output_path, conversion="non
     codec1 = vcodec(input_path_1)
     w_in, h_in = vresolution(input_path_1)
 
-    # out_w = w_in * 2 if mode == "left_right" else w_in
-    # out_h = h_in * 2 if mode == "top_bottom" else h_in
+    w_in = w_in * 2 if mode == "left_right" else w_in
+    h_in = h_in * 2 if mode == "top_bottom" else h_in
 
-    width = 'iw' if not have(width) else width
-    height = 'ih' if not have(height) else height
+    width = "iw" if not have(width) else width
+    height = "ih" if not have(height) else height
 
-    dim_str = f":w={w_in}:h={h_in}" if w_in > 0 and h_in > 0 else ""
+    dim_str = f":w={wi}:h={hi}" if wi > 0 and hi > 0 else ""
 
     filter_name = get_v360_filter_name()
-
     input_opts_1 = get_decoder_opts(codec1, hwaccel)
-
     codec2 = vcodec(input_path_2)
     input_opts_2 = get_decoder_opts(codec2, hwaccel)
 
@@ -541,9 +540,7 @@ def tb_to_sbs(input_path, output_path, conversion="none", log_callback=None, pro
 
     if operation_mode == "sbs_to_sbs":
         wi = w_in // 2 if w_in > 0 else 0
-
     elif operation_mode in ("tb_to_tb", "tb_to_sbs"):
-
         wi = w_in // 2 if w_in > 0 else 0
         hi = h_in // 2 if h_in > 0 else 0
     elif operation_mode == "sbs_to_tb":
@@ -558,7 +555,6 @@ def tb_to_sbs(input_path, output_path, conversion="none", log_callback=None, pro
     dim_str = f":w={wi}:h={hi}" if wi > 0 and hi > 0 else ""
 
     filter_name = get_v360_filter_name()
-
     decoder_opts = get_decoder_opts(codec, hwaccel)
 
     ffmpeg_bin = FFMPEG_BIN
@@ -631,11 +627,9 @@ def tb_to_sbs(input_path, output_path, conversion="none", log_callback=None, pro
 
     cmd.extend(get_codec_opts(out_codec, bitrate, include_audio=False))
     cmd.extend(["-movflags", "+faststart"])
-
     cmd.extend(["-color_range", "pc", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"])
 
     cmd.extend([output_path])
-
     run_process(cmd, log_callback, process_callback)
     return True
 
