@@ -1175,13 +1175,11 @@ def main() -> int:
     parser.add_argument('--overlay-output', type=str, default='input_path', help='Write a composited video with the mask over the original source')
     parser.add_argument('--overlay-color', type=str, default='0x00ff00', help='Background color for overlay (use 0x00ff00 for pure green)')
     parser.add_argument('--overlay-mask', type=str, default=None, help='Write a composited video with a provided mask over the original source')
-
     parser.add_argument('--alpha-packer', type=str, default=None, help='Run alpha packer on its own. Provide folder with video and mask (_mask.<ext>)')
     parser.add_argument('--decompose-alpha', '--decompose_alpha', dest='decompose_alpha', action='store_true', help='Takes alpha packed videos and separates them into individual video and mask files, reverse of --alpha-packer, good for making datasets')
     parser.add_argument('--decompose-clean-mask', type=str, default='assets/black_mask.png', help='PNG overlay used to clean alpha payload regions in decomposed video output. Use "none" to disable and keep stream copy.')
 
     parser.add_argument('--alpha', type=bool, default=False, help='Run alpha packer instead of overlay within pipeline. --alpha <true|false> default is False')
-
     parser.add_argument('--show-plots', type=bool, default=False, help='Sam3 mask plots will be displayed if True. Default is False')
     parser.add_argument('--fisheye180', nargs='?', const=FISHEYE180_PIPELINE_MODE, default=None, help='Convert an SBS equirectangular input video or folder to SBS fisheye180')
     parser.add_argument('--debug', type=int, default=None, help='Debug mode: process only the first N segments')

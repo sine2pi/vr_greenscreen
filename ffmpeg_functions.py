@@ -614,7 +614,6 @@ def mask_overlay(source_video: str, mask_video: str, output_path: str, backgroun
 def stereo_video(left_video: str, right_video: str, output_path: str) -> str:
 
     w, h, fps, dur, vfr, pix_fmt = info(aorb(left_video, right_video))
-
     enc = encoder_args(fps=fps, pix_fmt=pix_fmt)
 
     filter_complex = "[0:v][1:v]hstack=inputs=2[out]"
@@ -629,7 +628,6 @@ def stereo_video(left_video: str, right_video: str, output_path: str) -> str:
         *enc,
         output_path,
     ]
-
     result = subprocess.run(cmd, capture_output=True, text=True)
 
     if result.returncode != 0:
@@ -796,6 +794,141 @@ def discover_input_pairs(input_path: str) -> list[tuple[Path, Path]]:
         raise RuntimeError(f"No original/mask video pairs found in folder: {input_path}")
 
     return pairs
+
+class theoriginal_AlphaPacker:
+    def __init__(n, scale=0.40, padding=0, circle=False, color="red"):
+
+        n.scale = scale
+        n.padding = padding
+        n.circle = circle
+        n._cache = None
+        n.color = color
+
+    def _circle(n, w, h):
+        if n._cache is not None and n._cache.shape == (h, w):
+            return n._cache
+
+        y = np.arange(h, dtype=np.float32)
+        x = np.arange(w, dtype=np.float32)
+        grid_y, grid_x = np.meshgrid(y, x, indexing="ij")
+
+        cy, cx = h / 2.0 - 0.5, w / 2.0 - 0.5
+        r = np.sqrt((grid_x - cx) ** 2 + (grid_y - cy) ** 2)
+
+        max_r = min(w, h) / 2.0
+        outer_r = max_r * 0.55
+        inner_r = max_r * 0.45
+
+        t = np.clip((outer_r - r) / (outer_r - inner_r), 0.0, 1.0)
+        cache = t * t * (3.0 - 2.0 * t)
+        n._cache = cache
+        return n._cache
+
+    def pack_frame(n, frames, mask_l=None, mask_r=None):
+
+        H, SBS_W, C = frames.shape
+        half_W = SBS_W // 2
+
+        if mask_l.dtype != np.uint8:
+            mask_l = (mask_l * 255).astype(np.uint8)
+            mask_r = (mask_r * 255).astype(np.uint8)
+
+        tw = int(half_W * n.scale)
+        th = int(H * n.scale)
+
+        if mask_l.shape[:2] != (th, tw):
+            l_small = cv2.resize(mask_l, (tw, th), interpolation=cv2.INTER_AREA)
+        else:
+            l_small = mask_l
+
+        if mask_r.shape[:2] != (th, tw):
+            r_small = cv2.resize(mask_r, (tw, th), interpolation=cv2.INTER_AREA)
+        else:
+            r_small = mask_r
+
+        mask_l = l_small.astype(np.uint8)
+        mask_r = r_small.astype(np.uint8)
+        p_frame = frames
+        h_half = th // 2
+        top_half_mask = mask_l[:h_half, :]
+        bottom_half_mask = mask_l[h_half : h_half * 2, :]
+
+        w_half = tw // 2
+        q_tl_mask = mask_r[:h_half, :w_half]
+        q_tr_mask = mask_r[:h_half, w_half : w_half * 2]
+        q_bl_mask = mask_r[h_half : h_half * 2, :w_half]
+        q_br_mask = mask_r[h_half : h_half * 2, w_half : w_half * 2]
+        q_tl_circle = None
+        q_tr_circle = None
+        q_bl_circle = None
+        q_br_circle = None
+
+        if n.circle:
+            circle = n._circle(tw, th)
+            inv_circle_3d = (1.0 - circle)[..., np.newaxis].astype(np.float32)
+            q_tl_circle = inv_circle_3d[:h_half, :w_half]
+            q_tr_circle = inv_circle_3d[:h_half, w_half : w_half * 2]
+            q_bl_circle = inv_circle_3d[h_half : h_half * 2, :w_half]
+            q_br_circle = inv_circle_3d[h_half : h_half * 2, w_half : w_half * 2]
+
+        def blend_white_mask(roi, mask_1ch, color=n.color):
+            inv = (255 - mask_1ch)[..., np.newaxis]
+            blend = (roi.astype(np.uint16) * inv) // 255
+            if color == "white":
+                blend += mask_1ch[..., np.newaxis]
+                return blend.astype(np.uint8)
+            if color == "red":
+                zeros = np.zeros_like(mask_1ch)
+                mask_3d = np.stack([zeros, zeros, mask_1ch], axis=-1)
+                blend += mask_3d
+                return np.clip(blend, 0, 255).astype(np.uint8)
+
+        y1_top = n.padding
+        y2_top = y1_top + h_half
+        x1_mid = (SBS_W // 2) - (tw // 2)
+        x2_mid = x1_mid + tw
+
+        p_frame[y1_top:y2_top, x1_mid:x2_mid] = blend_white_mask(
+            p_frame[y1_top:y2_top, x1_mid:x2_mid], bottom_half_mask
+        )
+        y1_bot = H - n.padding - h_half
+        y2_bot = y1_bot + h_half
+        p_frame[y1_bot:y2_bot, x1_mid:x2_mid] = blend_white_mask(
+            p_frame[y1_bot:y2_bot, x1_mid:x2_mid], top_half_mask
+        )
+
+        y1_tr = n.padding
+        y2_tr = y1_tr + h_half
+        x1_tr = SBS_W - n.padding - w_half
+        x2_tr = SBS_W - n.padding
+        p_frame[y1_tr:y2_tr, x1_tr:x2_tr] = blend_white_mask(
+            p_frame[y1_tr:y2_tr, x1_tr:x2_tr], q_bl_mask
+        )
+
+        y1_tl_l = n.padding
+        y2_tl_l = y1_tl_l + h_half
+        x1_tl_l = n.padding
+        x2_tl_l = n.padding + w_half
+        p_frame[y1_tl_l:y2_tl_l, x1_tl_l:x2_tl_l] = blend_white_mask(
+            p_frame[y1_tl_l:y2_tl_l, x1_tl_l:x2_tl_l], q_br_mask
+        )
+
+        y1_br_r = H - n.padding - h_half
+        y2_br_r = y1_br_r + h_half
+        x1_br_r = SBS_W - n.padding - w_half
+        x2_br_r = SBS_W - n.padding
+        p_frame[y1_br_r:y2_br_r, x1_br_r:x2_br_r] = blend_white_mask(
+            p_frame[y1_br_r:y2_br_r, x1_br_r:x2_br_r], q_tl_mask
+        )
+
+        y1_bl_l = H - n.padding - h_half
+        y2_bl_l = y1_bl_l + h_half
+        x1_bl_l = n.padding
+        x2_bl_l = n.padding + w_half
+        p_frame[y1_bl_l:y2_bl_l, x1_bl_l:x2_bl_l] = blend_white_mask(
+            p_frame[y1_bl_l:y2_bl_l, x1_bl_l:x2_bl_l], q_tr_mask
+        )
+        return p_frame
 
 def alpha_command(
     video_path: str,

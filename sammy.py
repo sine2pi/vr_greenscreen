@@ -175,7 +175,7 @@ class sam3_video_inference:
                     session_id=session_id,
                     propagation_direction="forward",
                     output_prob_thresh=0.1,
-                    max_frame_num_to_track=int(self.seg_length * 60) + 10,
+                    max_frame_num_to_track=int(self.seg_length * 60),
                 )
             ):
 
@@ -249,8 +249,8 @@ class sam3_video_inference:
             request=dict(
                 type="start_session",
                 resource_path=video_path,
-                offload_video_to_cpu = True,
-                offload_state_to_cpu = True
+                # offload_video_to_cpu = True,
+                # offload_state_to_cpu = True
             )
         )
 
@@ -413,11 +413,13 @@ class sam3_video_inference:
 
             request=dict(
                 type="close_session",
-                session_id=session_id,
+                session_id=session_id
+                
             )
         )
 
         predictor.shutdown()
+        
         return outputs
 
 def _sam3_video_inference(frames_dir, prompt, sam31, output_size, video_args) -> None:
