@@ -70,6 +70,44 @@ def sam3_box2(width: int, height: int, normalized_box_cxcywh: tuple[float, float
 
     return box
 
+def download_ckpt_from_hf(version="sam3"):
+    from huggingface_hub import hf_hub_download
+
+    if version == "sam3.1":
+        repo_id = "sin2piusc/sam31sin"
+        ckpt_name = "sam3.1_multiplex.pt"
+        cfg_name = "config.json"
+
+    elif version == "sam3.1_fp16":
+        repo_id = "strangervisionhf/sam3.1-st-bf16"
+        ckpt_name = "sam3.1_multiplex.pt"
+        cfg_name = "config.json"
+
+    elif version == "sam3sin":
+        repo_id = "sin2piusc/sam3_fta"
+        ckpt_name = "sam3.pth"
+        cfg_name = "config.json"
+
+    elif version == "sam3_fp16":
+        repo_id = "mlx-community/sam3-bf16"
+        ckpt_name = "model.safetensors"
+        cfg_name = "config.json"
+    else:
+        repo_id = "sin2piusc/sam3_fta"
+        ckpt_name = "sam3.pt"
+        cfg_name = "config2.json"
+
+    _ = hf_hub_download(
+        repo_id=repo_id, filename=cfg_name, force_download=False, local_files_only=False
+    )
+    checkpoint_path = hf_hub_download(
+        repo_id=repo_id,
+        filename=ckpt_name,
+        force_download=False,
+        local_files_only=False,
+    )
+    return checkpoint_path
+
 class sam3_video_inference:
 
     def __init__(self, video_path, prompt, sam31, output_size, video_args):
@@ -83,21 +121,21 @@ class sam3_video_inference:
         self.add_box = video_args.add_box
         self.sub_box = video_args.sub_box
 
-        bpe_path = "./assets/bpe_simple_vocab_16e6.txt.gz"
+        bpe_path = "C:/path/models/bpe_simple_vocab_16e6.txt.gz"
    
         if sam31:
 
             from sam3.model_builder import build_sam3_multiplex_video_predictor
 
             self.predictor = build_sam3_multiplex_video_predictor(
-   
+                checkpoint_path = download_ckpt_from_hf(version="sam3.1"),
                 bpe_path=bpe_path,
                 multiplex_count = 16,
                 use_fa3 = False,
                 use_rope_real = False,
                 compile = False,
-                warm_up = False,
-                default_output_prob_thresh  = 0.5,
+                warm_up = True,
+                default_output_prob_thresh  = 0.3,
                 async_loading_frames  = True,
                 num_obj_for_compile=1,
                 max_num_objects=1,
@@ -107,42 +145,39 @@ class sam3_video_inference:
         else:
 
             self.predictor = build_sam3_video_predictor(
-        
-                checkpoint_path=None, 
-                bpe_path=None, 
-                gpus_to_use=None, 
+                checkpoint_path=download_ckpt_from_hf(version="sam3"),
+                bpe_path=bpe_path,
+                gpus_to_use=None,
                 has_presence_token=False,
-                geo_encoder_use_img_cross_attn = False,
-                strict_state_dict_loading = False,
-                async_loading_frames = True,
-                video_loader_type = "torchcodec",
-                apply_temporal_disambiguation = True,
-                compile = False,
+                geo_encoder_use_img_cross_attn=False,
+                strict_state_dict_loading=False,
+                async_loading_frames=True,
+                video_loader_type="torchcodec",
+                apply_temporal_disambiguation=True,
+                compile=False,
                 max_num_objects=1,
                 num_obj_for_compile=1,
-                use_fa3 = False,
-         
-                )
+                use_fa3=False,
+            )
 
-    def propagate_in_video(self, predictor=None, session_id=None, max_frame_num_to_track=None):
+    def propagate_in_video(self, predictor=None, session_id=None, max_frame_num_to_track=None):#int(self.seg_length * 60)):
 
         print()
         print(f"Sam3 inference. ... ♩ ♪ ♫ ♬")
 
-        max_frame_num_to_track=int(self.seg_length * 60)
         predictor=self.predictor
         outputs = {}
 
         if self.sam31:
             for response in predictor.handle_stream_request(
-
-                    request=dict(
-                        type="propagate_in_video",
-                        session_id=session_id,
-                        propagation_direction="forward",
-                        output_prob_thresh = 0.4,
-
-                    )):
+                request=dict(
+                    type="propagate_in_video",
+                    session_id=session_id,
+                    propagation_direction="forward",
+                    output_prob_thresh=0.1,
+                    max_frame_num_to_track=int(self.seg_length * 60) + 10,
+                )
+            ):
 
                 outputs[response["frame_idx"]] = response["outputs"]
         else:
@@ -151,9 +186,9 @@ class sam3_video_inference:
                     request=dict(
                         type="propagate_in_video",
                         session_id=session_id,
-                        propagation_direction="both",
+                        propagation_direction="forward",
                         output_prob_thresh = 0.1,
-                        max_frame_num_to_track = None,
+                        max_frame_num_to_track=max_frame_num_to_track,
 
                     )):
 
@@ -211,10 +246,13 @@ class sam3_video_inference:
         IMG_WIDTH, IMG_HEIGHT = image.size
 
         response = predictor.handle_request(
-
             request=dict(
                 type="start_session",
-                resource_path=video_path))
+                resource_path=video_path,
+                offload_video_to_cpu = True,
+                offload_state_to_cpu = True
+            )
+        )
 
         session_id = response["session_id"]
 
