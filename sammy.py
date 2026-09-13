@@ -1,11 +1,11 @@
 import shutil, gc, os, torch, cv2, numpy as np, glob, matplotlib.pyplot as plt, torch.nn.functional as F, argparse, imageio, torchcodec, torchvision
 from pathlib import Path
 from utils.masksandthings import *
-
+from torch import set_default_dtype
 from PIL import Image, ImageFilter
 from huggingface_hub import snapshot_download
 from sam3.model.sam3_image_processor import Sam3Processor
-from sam3.model_builder import build_sam3_image_model, build_sam3_video_predictor
+from sam3.model_builder import build_sam3_image_model, build_sam3_video_predictor, build_sam3_predictor
 from sam3.model.box_ops import box_xywh_to_cxcywh
 from dataclasses import dataclass
 from enum import Enum
@@ -49,16 +49,23 @@ class SegmentInfo:
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 def _setup_tf32() -> None:
     if torch.cuda.is_available():
+        # dtype = torch.bfloat16
+        # set_default_dtype(dtype)
+        gpus_to_use = [torch.cuda.current_device()]
+        # torch.autocast("cuda", dtype=torch.bfloat16).__enter__()
         device_props = torch.cuda.get_device_properties(0)
         if device_props.major >= 8:
             torch.backends.cuda.matmul.allow_tf32 = True
             torch.backends.cudnn.allow_tf32 = True
-            torch.nn.attention.list_flash_attention_impls()
+            print(torch.nn.attention._get_flash_version())
+            torch.nn.attention.sdpa_kernel("mem_efficient", set_priority = False)
+            print("PyTorch version:", torch.__version__)
+            print("Torchvision version:", torchvision.__version__)
+            print("CUDA is available:", torch.cuda.is_available())
 
 _setup_tf32()
 
 SAM3_REPO_ID = "sin2piusc/sam3_fta"
-
 SAM3_BOX_CXCYWH_NORM = (0.5, 0.4, 0.5, 0.5)
 SAM3_BOX2_CXCYWH_NORM = (0.5, 0.9, 0.9, 0.18)
 SAPIENS_REPO_ID = "facebook/sapiens2-matting-1b"
@@ -66,25 +73,21 @@ SAPIENS_CHECKPOINT = "sapiens2_1b_matting.safetensors"
 SAPIENS_CONFIG = "assets/sapiens2_1b_matting_gss_p3m_metasim-1024x768.py"
 
 def sam3_box(width: int, height: int, normalized_box_cxcywh: tuple[float, float, float, float] = SAM3_BOX_CXCYWH_NORM) -> list[float]:
-
     cx, cy, box_w, box_h = normalized_box_cxcywh
     abs_w = box_w * width
     abs_h = box_h * height
     abs_x = (cx - box_w / 2.0) * width
     abs_y = (cy - box_h / 2.0) * height
     box = [abs_x, abs_y, abs_w, abs_h]
-
     return box
 
 def sam3_box2(width: int, height: int, normalized_box_cxcywh: tuple[float, float, float, float] = SAM3_BOX2_CXCYWH_NORM) -> list[float]:
-
     cx, cy, box_w, box_h = normalized_box_cxcywh
     abs_w = box_w * width
     abs_h = box_h * height
     abs_x = (cx - box_w / 2.0) * width
     abs_y = (cy - box_h / 2.0) * height
     box = [abs_x, abs_y, abs_w, abs_h]
-
     return box
 
 class sam3_video_inference:
@@ -99,46 +102,32 @@ class sam3_video_inference:
         self.add_box = video_args.add_box
         self.sub_box = video_args.sub_box
 
-        bpe_path = r"assets\bpe_simple_vocab_16e6.txt.gz"
-        ckpt = "C:/path/models/sam31/sam3.1_multiplex.pt"
-
-        if sam31:
-
-            from sam3.model_builder import build_sam3_multiplex_video_predictor
-            self.predictor = build_sam3_multiplex_video_predictor(
-
-                checkpoint_path=download_ckpt_from_hf(version="sam3.1"),
-                bpe_path=bpe_path,
-                multiplex_count=16,
-                use_fa3=False,
-                use_rope_real=False,
-                compile=False,
-                warm_up=False,
-                default_output_prob_thresh=0.3,
-                async_loading_frames=False,
-                num_obj_for_compile=1,
-                max_num_objects=1,
-            )
-
+        bpe_path = r"assets/bpe_simple_vocab_16e6.txt.gz"
+        if video_args.seed_model == "sam31video":
+            ckpt = "sam3/sam3.1_multiplex.pt"
+            version = "sam3.1"
         else:
+            ckpt = "sam3/sam3.pt"
+            version = "sam3"
 
-            self.predictor = build_sam3_video_predictor(
-                checkpoint_path=download_ckpt_from_hf(version="sam3"),
-                bpe_path=bpe_path,
-                gpus_to_use=None,
-                has_presence_token=False,
-                geo_encoder_use_img_cross_attn=False,
-                strict_state_dict_loading=False,
-                async_loading_frames=True,
-                video_loader_type="torchcodec",
-                apply_temporal_disambiguation=True,
-                compile=False,
-                max_num_objects=1,
-                num_obj_for_compile=1,
-                use_fa3=False,
-            )
+        self.predictor = build_sam3_predictor(
+            checkpoint_path = ckpt,
+            bpe_path = bpe_path,
+            version = version,
+            compile = False,
+            warm_up = False,
+            max_num_objects = 1,
+            multiplex_count = 16,
+            use_fa3 = False,
+            use_rope_real = False,
+            async_loading_frames = False,
+            num_obj_for_compile=1,
+            apply_temporal_disambiguation=True,
+            device = "cuda",
+       
+        )
 
-            print(f"Building SAM3.1 video predictor with max_num_objects={self.max_num_objects}")
+        self.version = version
 
     def propagate_in_video(self, predictor=None, session_id=None, max_frame_num_to_track=None):#int(self.seg_length * 60)):
 
@@ -148,14 +137,15 @@ class sam3_video_inference:
         predictor=self.predictor
         outputs = {}
 
-        if self.sam31:
+        if self.version == "sam3.1":
             for response in predictor.handle_stream_request(
                 request=dict(
                     type="propagate_in_video",
                     session_id=session_id,
                     propagation_direction="forward",
                     output_prob_thresh=0.1,
-                    max_frame_num_to_track=max_frame_num_to_track,
+                    # max_frame_num_to_track=int(self.seg_length * 60),
+                    start_frame_idx=0,
                 )
             ):
 
@@ -168,7 +158,7 @@ class sam3_video_inference:
                         session_id=session_id,
                         propagation_direction="forward",
                         output_prob_thresh = 0.1,
-                        max_frame_num_to_track=max_frame_num_to_track,
+                        start_frame_idx=0,
 
                     )):
 
@@ -199,12 +189,10 @@ class sam3_video_inference:
 
             while True:
                 ret, frame = cap.read()
-
                 if not ret:
                     break
 
                 frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-
             cap.release()
 
         else:
@@ -220,22 +208,31 @@ class sam3_video_inference:
                 frames.sort()
 
         image = Image.fromarray(load_frame(frames[0]))
-
-        IMG_WIDTH, IMG_HEIGHT = image.size
-
-        print(f"IMG_WIDTH={IMG_WIDTH}, IMG_HEIGHT={IMG_HEIGHT}")
+        predictor, video_path, prompt  = self.predictor, self.video_path, self.prompt
+        W, H = image.size
 
         response = predictor.handle_request(
+
             request=dict(
                 type="start_session",
                 resource_path=video_path,
-                offload_video_to_cpu = True,
+                offload_video_to_cpu=True,
 
             )
         )
 
         session_id = response["session_id"]
-        frame_idx = response.get("frame_idx", 0)
+        is_success = predictor.handle_request(
+
+            request=dict(
+                type="reset_session",
+                session_id=session_id,
+            )
+        )
+
+        print(f'is_success: {is_success["is_success"]}')
+        prompt_text = prompt
+        frame_idx = 0
 
         response = predictor.handle_request(
 
@@ -243,31 +240,40 @@ class sam3_video_inference:
                 type="add_prompt",
                 session_id=session_id,
                 frame_idx=frame_idx,
-                text=prompt,
+                text=prompt_text,
+
             )
         )
 
+        out = response["outputs"]
+        frame_idx = response["frame_idx"]
         outputs = self.propagate_in_video(predictor, session_id)
-
-        session = predictor._get_session(session_id)
-        inference_state = session.get("state")
-        num_frames = inference_state["num_frames"]
 
         if show_plots:
 
-            vis = response["outputs"]
             plt.close("all")
             visualize_formatted_frame_output(
                 frame_idx,
                 frames,
-                outputs_list=[prepare_masks_for_visualization({frame_idx: vis})],
-                titles=["SAM 3 Dense Tracking outputs"],
+                outputs_list=[prepare_masks_for_visualization({frame_idx: out})],
+                titles=["SAM 3.1 Dense Tracking outputs"],
                 figsize=(6, 4),
             )
 
+            outputs_per_frame = prepare_masks_for_visualization(outputs)
+            plt.close("all")
+            for frame_idx in range(0, len(outputs_per_frame), 60):
+                visualize_formatted_frame_output(
+                    frame_idx,
+                    frames,
+                    outputs_list=[outputs_per_frame],
+                    titles=["SAM 3.1 Dense Tracking outputs"],
+                    figsize=(6, 4))
+
+            del outputs_per_frame
+
         if warp:
 
-            H, W = IMG_HEIGHT, IMG_WIDTH
             session = predictor._get_session(session_id)
             inference_state = session["state"]
             num_frames = inference_state["num_frames"]
@@ -370,7 +376,7 @@ class sam3_video_inference:
             frame_idx = 0
             obj_id = 0
 
-            points_tensor = torch.tensor(self.abs_to_rel_coords(np.array([[350, 350]]), IMG_WIDTH, IMG_HEIGHT, coord_type="point"), dtype=torch.float32)
+            points_tensor = torch.tensor(self.abs_to_rel_coords(np.array([[350, 350]]), W, H, coord_type="point"), dtype=torch.float32)
             points_labels_tensor = torch.tensor(np.array([1]), dtype=torch.int32)
 
             response = predictor.handle_request(
@@ -403,7 +409,7 @@ class sam3_video_inference:
             )
 
             labels = np.array([1, 0, 0, 1])
-            points_tensor = torch.tensor(self.abs_to_rel_coords(points_abs, IMG_WIDTH, IMG_HEIGHT, coord_type="point"), dtype=torch.float32)
+            points_tensor = torch.tensor(self.abs_to_rel_coords(points_abs, W, H, coord_type="point"), dtype=torch.float32)
             points_labels_tensor = torch.tensor(labels, dtype=torch.int32)
 
             response = predictor.handle_request(
@@ -472,23 +478,12 @@ class sam3_video_inference:
         _ = predictor.handle_request(
 
             request=dict(
-                type="reset_session",
+                type="close_session",
                 session_id=session_id,
             )
         )
 
-        _ = predictor.handle_request(
-
-            request=dict(
-                type="close_session",
-                session_id=session_id
-
-            )
-        )
-
         predictor.shutdown()
-        del predictor, response, session_id, inference_state
-
         return outputs
 
 def _sam3_video_inference(frames_dir, prompt, sam31, output_size, video_args) -> None:
@@ -554,20 +549,20 @@ def _sam3_video_inference(frames_dir, prompt, sam31, output_size, video_args) ->
 
             if isinstance(scores, torch.Tensor):
                 scores = scores.cpu().numpy()
-
+            
             else:
                 scores = np.asarray(scores)
 
             if isinstance(masks, torch.Tensor):
                 masks = masks.cpu().numpy()
-
+           
             else:
                 masks = np.asarray(masks)
 
             if len(masks) == 0 or scores.size == 0:
                 best_soft = np.zeros((image.height, image.width), dtype=np.float32)
                 print(f"No SAM3 masks/scores for {frame_path.name}; marking as missing for temporal fill")
-
+            
             else:
                 best_idx = int(np.argmax(scores))
                 best_soft = masks[best_idx]
