@@ -53,4 +53,4 @@ python pipeline.py
     --fisheye180', nargs='?', const=FISHEYE180_PIPELINE_MODE, default=None, help='Convert an SBS equirectangular input video or folder to SBS fisheye180
     --debug', type=int, default=None, help='Debug mode: process only the first N segments
 
-
+Actively experimenting with this script there will be many breaking changes. 
