@@ -876,8 +876,8 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path, batch_m
     print(f'Specs: {orig_w}x{orig_h}, {fps:.2f}fps, {format_timestamp(duration)}, Mask height: {args.mask_height}px')
     print()
 
-    if is_vfr:
-        video_path = cfr_video(video_path, video_args=args)
+    # if is_vfr:
+        # video_path = cfr_video(video_path, video_args=args)
 
     safe_name = ''.join(ch if ch.isalnum() or ch in '._-' else '_' for ch in video_name)
     temp_dir = temp_root / safe_name
@@ -1276,9 +1276,10 @@ def main() -> int:
         video_path = str(video_path)
         video_args = argparse.Namespace(**vars(args), video=video_path)
 
-        # w, h, fps, duration, is_vfr, pix_fmt = info(video_path)
-        # if is_vfr:
-        #     video_path = cfr_video(video_path, video_args)
+        is_vfr = check_vfr(video_path)
+
+        if is_vfr:
+            video_path = cfr_video(video_path, video_args)
 
         output_mask = process_video(video_path, args, temp_root, batch_mode=batch_mode)
         processed.append((video_path, output_mask))
