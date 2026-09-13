@@ -61,6 +61,8 @@ class SegmentInfo:
     right_frame_path: str = ''
     left_mask_path: str = ''
     right_mask_path: str = ''
+    sbs_frame_path: str = ''
+    sbs_mask_path: str = ''
     video_path: str = ''
     left_tta_pairs: list = field(default_factory=list)
     right_tta_pairs: list = field(default_factory=list)
@@ -181,6 +183,7 @@ def _config_overrides(matanyone_model, job: dict, *, verbose: bool = False) -> N
         mode = 'on' if cfg.use_long_term else 'off'
         version = str(job.get('matanyone_version', 'v2')).lower()
         model_name = 'MatAnyone v1' if version == 'v1' else 'MatAnyone2'
+
         sys.stderr.write(
             f" {model_name} cfg override => mem_every={cfg.mem_every}, "
             f"max_mem_frames={cfg.max_mem_frames}, long_term={mode}, "
@@ -250,7 +253,7 @@ def gen_erosion(alpha: torch.Tensor, min_kernel_size: int, max_kernel_size: int)
 def _load_tta_frame(path: str, size: int, device) -> torch.Tensor:
 
     if str(path).lower().endswith(VIDEO_EXTENSIONS):
-        frames, _, _, _ = read_frame_from_videos(str(path), size)
+        frames, _, _, _ = video_frames(str(path), size)
         return (frames[0] / 255.).float().to(device)
 
     image = Image.open(path).convert('RGB')
@@ -310,9 +313,7 @@ def _matanyone_tta_adapt(matanyone_model, device, inference_core_cls, job: dict,
         p.requires_grad_(True)
 
     optimizer = torch.optim.Adam(trainable_params, lr=lr)
-
     def _settle_and_predict(image: torch.Tensor, mask: torch.Tensor):
-
         processor = inference_core_cls(matanyone_model, cfg=matanyone_model.cfg)
 
         with torch.no_grad():
@@ -423,7 +424,7 @@ def _matanyone_process_segment(matanyone_model, device, inference_core_cls, job:
     _config_overrides(matanyone_model, job, verbose=(job.get('op_num', 1) == 1))
     processor = inference_core_cls(matanyone_model, cfg=matanyone_model.cfg)
 
-    frames, fps, length, video_name = read_frame_from_videos(input_path, max_size)
+    frames, fps, length, video_name = video_frames(input_path, max_size)
     frames = frames.float()
 
     repeated_frames = frames[0].unsqueeze(0).repeat(n_warmup, 1, 1, 1)
@@ -733,7 +734,11 @@ def sam3_propagation(
     use_unsplit_sbs = bool(getattr(args, 'sam3_unsplit_sbs', False))
     total_ops = len(mask_segments) if use_unsplit_sbs else len(mask_segments) * 2
 
-    tracker_choice = str(getattr(args, 'sam3_tracker', 'sam3video')).lower()
+    tracker_choice = str(
+        getattr(args, 'sam3_tracker', getattr(args, 'seed_model', 'sam3video'))
+    ).lower()
+    if tracker_choice not in {'sam3video', 'sam31video'}:
+        tracker_choice = 'sam3video'
     sam31 = (tracker_choice == 'sam31video')
 
     jobs = []
@@ -743,9 +748,15 @@ def sam3_propagation(
         seg_left_video = str(segments_dir / f'seg{seg.index:02d}_left.mp4')
         seg_right_video = str(segments_dir / f'seg{seg.index:02d}_right.mp4')
 
-        if use_unsplit_sbs:
+        if args.sam3_unsplit_sbs:
             seg_sbs_video = str(segments_dir / f'seg{seg.index:02d}_sbs.mp4')
-            stereo_video(seg_left_video, seg_right_video, seg_sbs_video)
+            if not os.path.exists(seg_sbs_video):
+                if os.path.exists(seg_left_video) and os.path.exists(seg_right_video):
+                    stereo_video(seg_left_video, seg_right_video, seg_sbs_video)
+                else:
+                    raise RuntimeError(
+                        f'SAM3 unsplit SBS segment missing for segment {seg.index}: {seg_sbs_video}'
+                    )
 
             jobs.append({
                 'input_path': seg_sbs_video,
@@ -804,7 +815,7 @@ def sam3_propagation(
         raise RuntimeError(f'Not all SAM3 jobs completed successfully. Expected {len(jobs)}, got {len(completed_paths)}')
 
     for seg in mask_segments:
-        if use_unsplit_sbs:
+        if args.sam3_unsplit_sbs:
             sbs_basename = os.path.splitext(os.path.basename(f'seg{seg.index:02d}_sbs.mp4'))[0]
             sbs_pha = os.path.join(sam3out, f'{sbs_basename}_pha.mp4')
 
@@ -860,6 +871,14 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path, batch_m
     video_path = str(Path(video_path).expanduser().resolve())
     video_name = Path(video_path).stem
 
+    orig_w, orig_h, fps, duration, is_vfr, pix_fmt  = info(video_path)
+
+    print(f'Specs: {orig_w}x{orig_h}, {fps:.2f}fps, {format_timestamp(duration)}, Mask height: {args.mask_height}px')
+    print()
+
+    if is_vfr:
+        video_path = cfr_video(video_path, video_args=args)
+
     safe_name = ''.join(ch if ch.isalnum() or ch in '._-' else '_' for ch in video_name)
     temp_dir = temp_root / safe_name
 
@@ -873,13 +892,8 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path, batch_m
     for d in [frames_dir, masks_dir, segments_dir]:
         d.mkdir(parents=True, exist_ok=True)
 
-    orig_w, orig_h, fps, duration, is_vfr, pix_fmt  = info(video_path)
-
     video_args = argparse.Namespace(**vars(args), video=video_path)
     alpha_output = video_args.alpha
-
-    print(f'Specs: {orig_w}x{orig_h}, {fps:.2f}fps, {format_timestamp(duration)}, Mask height: {video_args.mask_height}px')
-    print()
 
     mask_square = video_args.mask_height
     overlay_mask = video_args.overlay_mask
@@ -1084,37 +1098,50 @@ def extract_segments(
     print(f'Total: {len(segments)} segments')
 
     for seg in segments:
-
         dur = seg.end_time - seg.start_time
-
         print(f'[{seg.index}] {seg.seg_type.value.upper():5} '
             f'{format_timestamp(seg.start_time)} → {format_timestamp(seg.end_time)} ({dur:.1f}s)')
     print()
 
     for i, seg in enumerate(mask_segments) if debug is None else enumerate(mask_segments[:debug]):
 
-        left_frame = str(frames_dir / f'seg{seg.index:02d}_left.png')
-        right_frame = str(frames_dir / f'seg{seg.index:02d}_right.png')
-        seg_left_video = str(segments_dir / f'seg{seg.index:02d}_left.mp4')
-        seg_right_video = str(segments_dir / f'seg{seg.index:02d}_right.mp4')
-
-        left_frame_path, right_frame_path, _, _ = extract_segment_frames(
-
-            stereo_video=args.video,
-            start=seg.start_time,
-            end=seg.end_time,
-            height=orig_h,
-            target_height=args.mask_height,
-            left_frame_out=left_frame,
-            right_frame_out=right_frame,
-            left_video_out=seg_left_video,
-            right_video_out=seg_right_video,
-            progress_prefix=f'[{i + 1}/{len(mask_segments)}]'
-
+        if args.sam3_unsplit_sbs:
+            sbs_frame = str(frames_dir / f'seg{seg.index:02d}_sbs.png')
+            seg_sbs_video = str(segments_dir / f'seg{seg.index:02d}_sbs.mp4')
+            sbs_frame_path, _ = extract_segment_sbs(
+                stereo_video=args.video,
+                start=seg.start_time,
+                end=seg.end_time,
+                target_height=args.mask_height,
+                sbs_frame_out=sbs_frame,
+                sbs_video_out=seg_sbs_video,
+                progress_prefix=f'[{i + 1}/{len(mask_segments)}]'
             )
+            seg.sbs_frame_path = sbs_frame_path
+        else:
 
-        seg.left_frame_path = left_frame_path
-        seg.right_frame_path = right_frame_path
+            left_frame = str(frames_dir / f'seg{seg.index:02d}_left.png')
+            right_frame = str(frames_dir / f'seg{seg.index:02d}_right.png')
+            seg_left_video = str(segments_dir / f'seg{seg.index:02d}_left.mp4')
+            seg_right_video = str(segments_dir / f'seg{seg.index:02d}_right.mp4')
+
+            left_frame_path, right_frame_path, _, _ = extract_segment_frames(
+
+                stereo_video=args.video,
+                start=seg.start_time,
+                end=seg.end_time,
+                height=orig_h,
+                target_height=args.mask_height,
+                left_frame_out=left_frame,
+                right_frame_out=right_frame,
+                left_video_out=seg_left_video,
+                right_video_out=seg_right_video,
+                progress_prefix=f'[{i + 1}/{len(mask_segments)}]'
+
+                )
+
+            seg.left_frame_path = left_frame_path
+            seg.right_frame_path = right_frame_path
 
     return mask_segments
 
@@ -1139,22 +1166,30 @@ def finalize(segments: List[SegmentInfo], video_name: str, video_path: str, vide
 def main() -> int:
 
     start_time = time.time()
-    parser = argparse.ArgumentParser(description='VR Video Masking Pipeline')
-    parser.add_argument('input_path')
-    parser.add_argument('--mask-height', type=int, default=1600)
-    parser.add_argument('--segment-length', type=float, default=2)
-    parser.add_argument('--erode', type=int, default=0)
-    parser.add_argument('--dilate', type=int, default=0)
-    parser.add_argument('--prompt', type=str, default='woman')
-    parser.add_argument('--warmup', type=int, default=6)
-    parser.add_argument('--add-box', type=bool, default=False)
-    parser.add_argument('--sub-box', type=bool, default=False)
-    parser.add_argument('--seed-model', type=str, default='sam3video', choices=['sam3', 'sam3video', 'sam31video', 'sapiens', 'hybrid'])
+    parser = argparse.ArgumentParser(description="VR Video Masking Pipeline")
+    parser.add_argument("input_path")
+    parser.add_argument("--mask-height", type=int, default=1280)
+    parser.add_argument("--segment-length", type=float, default=6)
+    parser.add_argument("--erode", type=int, default=0)
+    parser.add_argument("--dilate", type=int, default=0)
+    parser.add_argument("--prompt", type=str, default="woman")
+    parser.add_argument("--warmup", type=int, default=6)
+    parser.add_argument("--add-box", type=bool, default=False)
+    parser.add_argument("--sub-box", type=bool, default=False)
+
+    parser.add_argument(
+        "--seed-model",
+        type=str,
+        default="sam31video",
+        choices=["sam3", "sam3video", "sam31video", "sapiens", "hybrid"],
+    )
     parser.add_argument('--sapiens-threshold', type=float, default=0.5, help='Threshold for converting Sapiens alpha matte to a binary mask')
     parser.add_argument('--gate-dilate', type=int, default=5)
 
     parser.add_argument('--propagation-backend', type=str, default='matanyone', choices=['matanyone', 'sam3', 'sam3_sapiens', 'sapiens'])
-    parser.add_argument('--sam3-unsplit-sbs', action='store_true', help='SAM3 backends only: run propagation on unsplit SBS segments (1 SAM3 job per segment) instead of per-eye jobs')
+    parser.add_argument('--sam3-unsplit-sbs', type=bool, default=False, help='SAM3 backends only: run propagation on unsplit SBS segments (1 SAM3 job per segment) instead of per-eye jobs')
+    parser.add_argument('--sam3-max-num-objects', type=int, default=1, help='Max objects for SAM3 video tracker sessions')
+    parser.add_argument('--sam3-num-obj-for-compile', type=int, default=1, help='Object count used for SAM3 compile-time graph shape')
     parser.add_argument('--refine-fg-threshold', type=float, default=0.95, help='SAM confidence threshold for sure foreground in sam3_sapiens refinement')
     parser.add_argument('--refine-bg-threshold', type=float, default=0.05, help='SAM confidence threshold for sure background in sam3_sapiens refinement')
     parser.add_argument('--refine-unknown-dilate', type=int, default=5, help='Dilate unknown/boundary region before Sapiens edge refinement (sam3_sapiens)')
@@ -1191,6 +1226,10 @@ def main() -> int:
         raise ValueError('--sapiens-threshold must be between 0.0 and 1.0')
     if args.gate_dilate < 1:
         raise ValueError('--gate-dilate must be >= 1')
+    if args.sam3_max_num_objects < 1:
+        raise ValueError('--sam3-max-num-objects must be >= 1')
+    if args.sam3_num_obj_for_compile < 1:
+        raise ValueError('--sam3-num-obj-for-compile must be >= 1')
     if args.ma2_mem_every is not None and args.ma2_mem_every < 1:
         raise ValueError('--ma2-mem-every must be >= 1')
     if args.ma2_max_mem_frames is not None and args.ma2_max_mem_frames < 2:
@@ -1236,6 +1275,11 @@ def main() -> int:
 
         video_path = str(video_path)
         video_args = argparse.Namespace(**vars(args), video=video_path)
+
+        # w, h, fps, duration, is_vfr, pix_fmt = info(video_path)
+        # if is_vfr:
+        #     video_path = cfr_video(video_path, video_args)
+
         output_mask = process_video(video_path, args, temp_root, batch_mode=batch_mode)
         processed.append((video_path, output_mask))
 
