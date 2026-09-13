@@ -155,7 +155,7 @@ class sam3_video_inference:
                     session_id=session_id,
                     propagation_direction="forward",
                     output_prob_thresh=0.1,
-                    max_frame_num_to_track=int(self.seg_length * 60),
+                    max_frame_num_to_track=max_frame_num_to_track,
                 )
             ):
 
