@@ -31,6 +31,41 @@ def aborc(a, b, c):
 def abcord(a, b, c, d):
     return aorb(a, aborc(b, c, d))
 
+def check_vfr(video_path: str, max_packets_to_read: int = 500) -> bool:
+
+    cmd = [
+        'ffprobe', '-v', 'quiet',
+        '-print_format', 'json',
+        '-select_streams', 'v:0',
+        '-show_entries', 'packet=duration',
+        '-read_intervals', f'%+#{max_packets_to_read}',  
+        video_path
+    ]
+    
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        data = json.loads(result.stdout)
+        
+        packets = data.get('packets', [])
+        if len(packets) < 10:
+            return False  
+            
+        durations = [p.get('duration') for p in packets if p.get('duration') is not None]
+        valid_durations = [int(d) for d in durations if str(d).isdigit()]
+        
+        if not valid_durations:
+            return False
+            
+        first_duration = valid_durations[0]
+        for d in valid_durations[1:]:
+            if d != first_duration:
+                return True  
+                
+        return False  
+        
+    except Exception:
+        return False  
+
 def normalize_fps(fps: float) -> float:
 
     rounded = round(fps, 2)
@@ -279,7 +314,7 @@ def cfr_video(source_video, video_args = None, progress_prefix: str = "[normaliz
 
     w, h, fps, duration, is_vfr, pix_fmt = info(source_video)
 
-    print(f"-- Variable Frame Rate = {is_vfr} - Converting to CFR")
+    print(f"-- {source_video} has a Variable Frame Rate - Converting to CFR")
     
     source_path = Path(source_video).expanduser().resolve()
     output_video = str(source_path.with_name(f"{source_path.stem}_CFR.mp4"))
