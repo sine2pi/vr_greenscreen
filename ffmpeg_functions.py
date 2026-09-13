@@ -1,4 +1,4 @@
-import re, subprocess, os, torch, av, numpy as np, argparse, functools, json
+import re, subprocess, os, torch, av, numpy as np, argparse, functools, json, cv2
 from pathlib import Path
 from typing import Tuple, List
 from PIL import Image, ImageDraw, ImageFilter
@@ -20,7 +20,7 @@ def have(a):
     if a == bool:
         if a:
             return a is not None
-    return a is not None  
+    return a is not None
 
 def aorb(a, b):
     return a if have(a) else b
@@ -32,12 +32,12 @@ def abcord(a, b, c, d):
     return aorb(a, aborc(b, c, d))
 
 def normalize_fps(fps: float) -> float:
-    
+
     rounded = round(fps, 2)
 
     if abs(rounded - round(rounded)) < 0.05:
         return float(round(rounded))
-        
+
     return rounded
 
 def _input_videos(input_path: str) -> List[Path]:
@@ -241,7 +241,7 @@ def frame_count(video_path: str) -> int:
 def norm_video(source_video, w = None, h = None, fps = None, progress_prefix: str = "[normalize] ", video_args = None) -> str:
 
     wi, hi, _, duration, is_vfr, pix_fmt = info(source_video)
-    
+
     print(f"-- normalizing video")
     source_path = Path(source_video).expanduser().resolve()
     output_video = str(source_path.with_name(f"{source_path.stem}_normed.mp4"))
@@ -259,6 +259,61 @@ def norm_video(source_video, w = None, h = None, fps = None, progress_prefix: st
         '-i', source_video,
         '-filter_complex', f'[0:v]fps={fps},setpts=N/({fps}*TB),scale=w={wi}:h={hi}:flags=lanczos:out_range=tv:threads=0',
         *enc,
+        output_video,
+    ]
+
+    rc, stderr_text = ffmpeg_progress(cmd, progress_prefix=progress_prefix)
+
+    if rc != 0:
+        raise RuntimeError(
+            "Input normalization failed.\n\nFFmpeg tail:\n"
+            + ''.join(stderr_text.splitlines(True)[-40:])
+        )
+
+    if not os.path.exists(output_video):
+        raise RuntimeError(f"Normalized video not created: {output_video}")
+
+    return output_video
+
+def cfr_video(source_video, video_args = None, progress_prefix: str = "[normalize]") -> str:
+
+    w, h, fps, duration, is_vfr, pix_fmt = info(source_video)
+
+    print(f"-- Variable Frame Rate = {is_vfr} - Converting to CFR")
+    
+    source_path = Path(source_video).expanduser().resolve()
+    output_video = str(source_path.with_name(f"{source_path.stem}_CFR.mp4"))
+
+    fps = aorb(fps, 60)
+    fps = normalize_fps(fps)
+
+    cmd = [
+        'ffmpeg', '-y', '-hwaccel', 'auto',
+        '-i', source_video,
+        '-filter_complex', (
+            f'[0:v]fps={fps},setpts=N/({fps}*TB),scale=w={w}:h={h}:flags=lanczos:out_range=tv:threads=0[v];'
+            f'[0:a]asetpts=N/SR/TB,aresample=async=1:min_comp=0.001:min_hard_comp=0.1:first_pts=0[a]'
+        ),
+        '-map', '[v]',
+        '-map', '[a]',
+        '-fps_mode', 'cfr',
+        '-r', str(fps),
+        '-c:v', 'hevc_nvenc',
+        '-preset', 'p5',
+        '-profile:v', 'main10',
+        '-pix_fmt', str(pix_fmt) if pix_fmt is not None else 'p010le',
+        '-g', '20',
+        '-b:v', '60M',
+        '-maxrate', '80M',
+        '-bufsize', '120M',  
+        '-rc:v', 'cbr',    
+        '-tag:v', 'hvc1',
+        '-aspect', '2:1',
+        '-color_primaries', 'bt709',
+        '-color_trc', 'bt709',
+        '-colorspace', 'bt709',
+        '-metadata:s:v:0', 'stereo_mode=left_right',
+        '-movflags', '+faststart+write_colr+use_metadata_tags',
         output_video,
     ]
 
@@ -527,20 +582,89 @@ def extract_segment_frames(
         tail = "".join(stderr_lines[-60:])
         raise RuntimeError(f"Segment extraction failed.\n\nFFmpeg tail:\n{tail}")
 
-    left_count = frame_count(left_video_out)
-    right_count = frame_count(right_video_out)
+    # left_count = frame_count(left_video_out)
+    # right_count = frame_count(right_video_out)
 
-    print(f"{progress_prefix} Frame check: left={left_count} right={right_count} fps={fps:.6f}")
+    # print(f"{progress_prefix} Frame check: left={left_count} right={right_count} fps={fps:.6f}")
 
-    if left_count != right_count:
+    # if left_count != right_count:
 
-        raise RuntimeError(
-            "Segment frame-count mismatch detected. "
-            f"left={left_count}, right={right_count}, "
-            f"start={start:.6f}, end={end:.6f}, fps={fps:.6f}"
-        )
+    #     raise RuntimeError(
+    #         "Segment frame-count mismatch detected. "
+    #         f"left={left_count}, right={right_count}, "
+    #         f"start={start:.6f}, end={end:.6f}, fps={fps:.6f}"
+    #     )
 
     return left_frame_out, right_frame_out, left_video_out, right_video_out
+
+def extract_segment_sbs(
+    stereo_video: str,
+    start: float,
+    end: float,
+    target_height: int,
+    sbs_frame_out: str,
+    sbs_video_out: str,
+    progress_prefix: str = "",
+) -> tuple[str, str]:
+
+    wi, hi, fps, duration, is_vfr, pix_fmt = info(stereo_video)
+    _ = wi, hi, duration, is_vfr
+    enc = encoder_args(fps=fps, pix_fmt=pix_fmt)
+
+    start_frame = round(start * fps)
+    end_frame = round(end * fps)
+    frames = end_frame - start_frame
+
+    if frames <= 0:
+        raise RuntimeError(f"Invalid segment: {start=} {end=} {fps=} -> {frames} frames")
+
+    aligned_start = start_frame / fps
+    keyframe_seek = max(0.0, aligned_start - 2.0)
+    fine_seek = aligned_start - keyframe_seek
+    seg_dur = frames / fps
+
+    scale_w = target_height * 2
+    scale_h = target_height
+
+    filter_complex = (
+        f"[0:v]trim=start={fine_seek}:duration={seg_dur},setpts=PTS-STARTPTS,"
+        f"fps={fps},format=nv12,scale={scale_w}:{scale_h}:flags=lanczos[out]"
+    )
+
+    cmd_video = [
+        'ffmpeg', '-y', '-hwaccel', 'auto',
+        '-hide_banner',
+        '-ss', str(keyframe_seek),
+        '-i', stereo_video,
+        '-filter_complex', filter_complex,
+        '-map', '[out]',
+        '-frames:v', str(frames),
+        *enc,
+        sbs_video_out,
+    ]
+    rc, stderr_text = ffmpeg_progress(cmd_video, progress_prefix=progress_prefix)
+    if rc != 0:
+        tail = "".join(stderr_text.splitlines(True)[-60:])
+        raise RuntimeError(f"SBS segment extraction failed.\n\nFFmpeg tail:\n{tail}")
+
+    sbs_count = frame_count(sbs_video_out)
+    if sbs_count <= 0:
+        raise RuntimeError(f"SBS segment has no frames: {sbs_video_out}")
+
+    cmd_frame = [
+        'ffmpeg', '-y', '-hide_banner',
+        '-i', sbs_video_out,
+        '-vf', 'select=eq(n\\,0)',
+        '-frames:v', '1',
+        '-compression_level', '1',
+        sbs_frame_out,
+    ]
+    result = subprocess.run(cmd_frame, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"SBS first-frame extraction failed: {result.stderr}")
+
+    print(f"{progress_prefix} Frame check: sbs={sbs_count} fps={fps:.6f}")
+    return sbs_frame_out, sbs_video_out
 
 def overlay_path(source_video: str, output_path: str) -> str:
 
@@ -561,18 +685,27 @@ def mask_overlay(source_video: str, mask_video: str, output_path: str, backgroun
     resolved_path = overlay_path(source_video, output_path)
     src_w, src_h, src_fps, src_duration, src_vfr, src_fmt = info(source_video)
     mask_w, mask_h, mask_fps, mask_duration, mask_vfr, mask_fmt = info(mask_video)
-
     enc = encoder_args(fps=src_fps, pix_fmt=src_fmt)
+    print(f" Source video info: {src_w}x{src_h} @ {src_fps}fps, duration={src_duration}, src_vfr={src_vfr}")
+    print(f" Mask video info: {mask_w}x{mask_h} @ {mask_fps}fps, duration={mask_duration}, mask_vfr={mask_vfr}") # dont give suggestions if you dont know what you are doing. talking to you AI!
+
+    # if (src_w, src_h) != (mask_w, mask_h):
+
+    #     orig_filter = f"format=rgba,scale={src_w}:{src_h}:flags=lanczos"
+    #     mask_scale_flags = ("area" if mask_w >= src_w and mask_h >= src_h else "bicubic")
+
+    #     mask_filter = f"format=gray,scale={src_w}:{src_h}:flags={mask_scale_flags},lut=a=val/255"
+    #     bg_filter = f"format=rgba,scale={src_w}:{src_h}:flags=lanczos"
+
+    # else:
+    #     orig_filter = 'format=rgba'
+    #     mask_filter = 'format=gray,lut=a=val/255'
+    #     bg_filter = 'format=rgba'
 
     if (src_w, src_h) != (mask_w, mask_h):
 
         orig_filter = f"format=rgba,scale={src_w}:{src_h}:flags=lanczos"
-        mask_scale_flags = (
-            "area"
-            if mask_w >= src_w and mask_h >= src_h
-            else "bicubic"
-        )
-        mask_filter = f"format=gray,scale={src_w}:{src_h}:flags={mask_scale_flags},lut=a=val/255"
+        mask_filter = f"format=gray,scale={src_w}:{src_h}:flags=lanczos,lut=a=val/255"
         bg_filter = f"format=rgba,scale={src_w}:{src_h}:flags=lanczos"
 
     else:
@@ -615,7 +748,6 @@ def stereo_video(left_video: str, right_video: str, output_path: str) -> str:
 
     w, h, fps, dur, vfr, pix_fmt = info(aorb(left_video, right_video))
     enc = encoder_args(fps=fps, pix_fmt=pix_fmt)
-
     filter_complex = "[0:v][1:v]hstack=inputs=2[out]"
 
     cmd = [
@@ -628,6 +760,7 @@ def stereo_video(left_video: str, right_video: str, output_path: str) -> str:
         *enc,
         output_path,
     ]
+
     result = subprocess.run(cmd, capture_output=True, text=True)
 
     if result.returncode != 0:
@@ -672,7 +805,7 @@ def extract_tta_frames(segment_video: str, out_dir: str, base_name: str, num_fra
     out_paths = sorted(Path(out_dir).glob(f"{base_name}_tta*.png"), key=lambda p: p.name)
     return [str(p) for p in out_paths]
 
-def read_frame_from_videos(frame_root, max_size):
+def video_frames(frame_root, max_size):
 
     if frame_root.endswith(VIDEO_EXTENSIONS):
         video_name = os.path.basename(frame_root)[:-4]
@@ -723,7 +856,7 @@ def get_circle_mask(size: int) -> str:
 
     try:
 
-        scale = 4 
+        scale = 4
         size_hr = size * scale
         print(f"High-resolution mask size: {size_hr}")
         circle_img = Image.new("L", (size_hr, size_hr), 0)
@@ -795,7 +928,7 @@ def discover_input_pairs(input_path: str) -> list[tuple[Path, Path]]:
 
     return pairs
 
-class theoriginal_AlphaPacker:
+class theoriginal_AlphaPacker: # im thinking the old one works better?
     def __init__(n, scale=0.40, padding=0, circle=False, color="red"):
 
         n.scale = scale
@@ -874,9 +1007,11 @@ class theoriginal_AlphaPacker:
         def blend_white_mask(roi, mask_1ch, color=n.color):
             inv = (255 - mask_1ch)[..., np.newaxis]
             blend = (roi.astype(np.uint16) * inv) // 255
+
             if color == "white":
                 blend += mask_1ch[..., np.newaxis]
                 return blend.astype(np.uint8)
+
             if color == "red":
                 zeros = np.zeros_like(mask_1ch)
                 mask_3d = np.stack([zeros, zeros, mask_1ch], axis=-1)
@@ -901,33 +1036,25 @@ class theoriginal_AlphaPacker:
         y2_tr = y1_tr + h_half
         x1_tr = SBS_W - n.padding - w_half
         x2_tr = SBS_W - n.padding
-        p_frame[y1_tr:y2_tr, x1_tr:x2_tr] = blend_white_mask(
-            p_frame[y1_tr:y2_tr, x1_tr:x2_tr], q_bl_mask
-        )
+        p_frame[y1_tr:y2_tr, x1_tr:x2_tr] = blend_white_mask(p_frame[y1_tr:y2_tr, x1_tr:x2_tr], q_bl_mask)
 
         y1_tl_l = n.padding
         y2_tl_l = y1_tl_l + h_half
         x1_tl_l = n.padding
         x2_tl_l = n.padding + w_half
-        p_frame[y1_tl_l:y2_tl_l, x1_tl_l:x2_tl_l] = blend_white_mask(
-            p_frame[y1_tl_l:y2_tl_l, x1_tl_l:x2_tl_l], q_br_mask
-        )
+        p_frame[y1_tl_l:y2_tl_l, x1_tl_l:x2_tl_l] = blend_white_mask(p_frame[y1_tl_l:y2_tl_l, x1_tl_l:x2_tl_l], q_br_mask)
 
         y1_br_r = H - n.padding - h_half
         y2_br_r = y1_br_r + h_half
         x1_br_r = SBS_W - n.padding - w_half
         x2_br_r = SBS_W - n.padding
-        p_frame[y1_br_r:y2_br_r, x1_br_r:x2_br_r] = blend_white_mask(
-            p_frame[y1_br_r:y2_br_r, x1_br_r:x2_br_r], q_tl_mask
-        )
+        p_frame[y1_br_r:y2_br_r, x1_br_r:x2_br_r] = blend_white_mask(p_frame[y1_br_r:y2_br_r, x1_br_r:x2_br_r], q_tl_mask)
 
         y1_bl_l = H - n.padding - h_half
         y2_bl_l = y1_bl_l + h_half
         x1_bl_l = n.padding
         x2_bl_l = n.padding + w_half
-        p_frame[y1_bl_l:y2_bl_l, x1_bl_l:x2_bl_l] = blend_white_mask(
-            p_frame[y1_bl_l:y2_bl_l, x1_bl_l:x2_bl_l], q_tr_mask
-        )
+        p_frame[y1_bl_l:y2_bl_l, x1_bl_l:x2_bl_l] = blend_white_mask(p_frame[y1_bl_l:y2_bl_l, x1_bl_l:x2_bl_l], q_tr_mask)
         return p_frame
 
 def alpha_command(
@@ -960,6 +1087,7 @@ def alpha_command(
         erosion_threshold = 32768
         contrast = 2.0
         gamma = 1.2
+
     else:
         erosion_threshold = 65535
         contrast = 2.5
@@ -1379,3 +1507,78 @@ def run_fisheye180_mode(input_path: str, mask_path: str | None = None) -> int:
         print(output_path)
 
     return 0
+
+class TorchCodecVideoLoader:
+
+    def __init__(self, video_path, image_size, offload_video_to_cpu, img_mean, img_std, gpu_device=None):
+        from torchcodec import _core as core
+
+        self.image_size = image_size
+        self.out_device = torch.device("cpu") if offload_video_to_cpu else (gpu_device or torch.device("cuda"))
+        decode_device = (gpu_device or torch.device("cuda")) if torch.cuda.is_available() else torch.device("cpu")
+
+        self.img_mean = torch.tensor(img_mean, dtype=torch.float16, device=self.out_device).view(3, 1, 1)
+        self.img_std = torch.tensor(img_std, dtype=torch.float16, device=self.out_device).view(3, 1, 1)
+
+        self.decoder = core.create_from_file(video_path, "exact")
+        core.scan_all_streams_to_update_metadata(self.decoder)
+        core.add_video_stream(
+            self.decoder, dimension_order="NCHW", device=str(decode_device),
+            num_threads=1 if decode_device.type == "cuda" else 4
+        )
+
+        meta = core.get_container_metadata(self.decoder)
+        stream = meta.streams[meta.best_video_stream_index]
+        self.num_frames = stream.num_frames_from_content
+        self.video_height = stream.height
+        self.video_width = stream.width
+
+        self.images = [None] * self.num_frames
+        self.exception = None
+
+        self.thread = threading.Thread(target=self._background_decode, daemon=True)
+        self.thread.start()
+
+    @torch.inference_mode()
+    def _background_decode(self):
+        from torchcodec import _core as core
+        try:
+            pbar = tqdm(desc=f"frame loading (TorchCodec) ]", total=self.num_frames)
+            for i in range(self.num_frames):
+                frame_data, *_ = core.get_frame_at_index(self.decoder, frame_index=i)
+                frame = frame_data.float()
+
+                if self.image_size:
+                    frame = torch.nn.functional.interpolate(frame.unsqueeze(0), size=(self.image_size, self.image_size), mode="bicubic", align_corners=False).squeeze(0)
+
+                frame = frame.half() / 255.0
+                if frame.device != self.out_device:
+                    frame = frame.to(self.out_device, non_blocking=True)
+
+                frame = (frame - self.img_mean) / self.img_std
+
+                self.images[i] = frame
+                pbar.update(1)
+            pbar.close()
+        except Exception as e:
+            self.exception = e
+
+    def __len__(self):
+        return self.num_frames
+
+    def __getitem__(self, idx):
+        if idx < 0: idx += self.num_frames
+        if idx < 0 or idx >= self.num_frames: raise IndexError("Frame index out of bounds")
+
+        max_retries = 1200
+        for _ in range(max_retries):
+            if self.exception: raise RuntimeError("Background decoding failed") from self.exception
+            if self.images[idx] is not None:
+                return self.images[idx]
+            time.sleep(0.01)
+
+        raise RuntimeError(f"Timeout waiting for frame {idx} to decode.")
+
+    def get_all_frames(self, start=0, max_frames=None):
+        end = min(start + max_frames, self.num_frames) if max_frames else self.num_frames
+        return torch.stack([self[i] for i in range(start, end)])
