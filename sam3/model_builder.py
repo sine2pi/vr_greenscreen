@@ -69,10 +69,7 @@ def _slice_tensor_to_shape_if_possible(src: torch.Tensor, target_shape: torch.Si
     return src[slices].clone()
 
 def _prepare_multiplex_compatible_state_dict(model: nn.Module, loaded_state: dict):
-    """
-    Convert checkpoint state dict into a form that can be loaded when multiplex_count is reduced.
-    Keeps exact-shape tensors; slices larger tensors when shape-reduction is safe.
-    """
+
     model_state = model.state_dict()
     prepared_state = {}
     skipped_keys = []
@@ -115,6 +112,7 @@ def _create_position_encoding(precompute_resolution=None):
     )
 
 def _create_vit_backbone(compile_mode=None, use_fa3=False, use_rope_real=True):
+    print(f"Creating ViT backbone with compile_mode={compile_mode}, use_fa3={use_fa3}, use_rope_real={use_rope_real}")
     return ViT(
         img_size=1008,
         pretrain_img_size=336,
@@ -142,6 +140,7 @@ def _create_vit_backbone(compile_mode=None, use_fa3=False, use_rope_real=True):
         compile_mode=compile_mode,
         use_fa3=use_fa3,
         use_rope_real=False,
+
     )
 
 def _create_vit_neck(position_encoding, vit_backbone, enable_inst_interactivity=False):
@@ -161,7 +160,7 @@ def _create_vl_backbone(vit_neck, text_encoder):
 def _create_transformer_encoder(use_fa3=False) -> TransformerEncoderFusion:
     """Create transformer encoder with its layer."""
     encoder_layer = TransformerEncoderLayer(
-        activation="relu",
+        activation="gelu",
         d_model=256,
         dim_feedforward=2048,
         dropout=0.1,
@@ -201,7 +200,7 @@ def _create_transformer_encoder(use_fa3=False) -> TransformerEncoderFusion:
 def _create_transformer_decoder(use_fa3=False) -> TransformerDecoder:
     """Create transformer decoder with its layer."""
     decoder_layer = TransformerDecoderLayer(
-        activation="relu",
+        activation="gelu",
         d_model=256,
         dim_feedforward=2048,
         dropout=0.1,
@@ -287,7 +286,7 @@ def _create_geometry_encoder():
         use_dwconv=True,
     )
     geo_layer = TransformerEncoderLayer(
-        activation="relu",
+        activation="gelu",
         d_model=256,
         dim_feedforward=2048,
         dropout=0.1,
@@ -429,7 +428,7 @@ def _create_tracker_transformer():
 
     encoder_layer = TransformerDecoderLayerv2(
         cross_attention_first=False,
-        activation="relu",
+        activation="gelu",
         dim_feedforward=2048,
         dropout=0.1,
         pos_enc_at_attn=False,
@@ -557,6 +556,7 @@ def build_sam3_image_model(
     enable_inst_interactivity=False,
     compile=False,
     use_fa3=False,
+    model=None,
 
 ):
 
@@ -609,35 +609,6 @@ def build_sam3_image_model(
         model.train()
     return model
 
-def download_ckpt_from_hf(version="sam3"):
-    if version == "sam3.1":
-        repo_id = "sin2piusc/sam31sin"
-        ckpt_name = "sam3.1_multiplex.pt"
-        cfg_name = "config.json"
-
-    elif version == "sam3.1_fp16":
-        repo_id = "strangervisionhf/sam3.1-st-bf16"
-        ckpt_name = "sam3.1_multiplex.pt"
-        cfg_name = "config.json"
-
-    elif version == "sam3sin":
-        repo_id = "sin2piusc/sam3_fta"
-        ckpt_name = "sam3.pth"
-        cfg_name = "config.json"
-
-    elif version == "sam3_fp16":
-        repo_id = "mlx-community/sam3-bf16"
-        ckpt_name = "model.safetensors"
-        cfg_name = "config.json"
-    else:
-        repo_id = "sin2piusc/sam3_fta"
-        ckpt_name = "sam3.pt"
-        cfg_name = "config2.json"
-
-    _ = hf_hub_download(repo_id=repo_id, filename=cfg_name, force_download=False, local_files_only=False)
-    checkpoint_path = hf_hub_download(repo_id=repo_id, filename=ckpt_name, force_download=False, local_files_only=False)
-    return checkpoint_path
-
 def build_sam3_video_model(
     use_fa3: bool = False,
     checkpoint_path: Optional[str] = None,
@@ -652,6 +623,10 @@ def build_sam3_video_model(
     max_num_objects=1,
     num_obj_for_compile=1,
     image_size: int = IMAGE_SIZE,
+    eval_mode=False,
+    model=None,
+    enable_segmentation=None,
+    use_rope_real = False,
 
 ) -> Sam3VideoInferenceWithInstanceInteractivity:
 
@@ -700,84 +675,23 @@ def build_sam3_video_model(
         use_dot_prod_scoring=True,
         dot_prod_scoring=main_dot_prod_scoring,
         supervise_joint_box_scores=has_presence_token,
-            #         max_num_objects=max_num_objects,
-    #         num_obj_for_compile=num_obj_for_compile,
+        max_num_objects=max_num_objects,
+        num_obj_for_compile=num_obj_for_compile,
     )
 
-    # if apply_temporal_disambiguation:
-    #     print(f'apply_temporal_disambiguation={apply_temporal_disambiguation}')
-    #     model = Sam3VideoInferenceWithInstanceInteractivity(
-    #         detector=detector,
-    #         tracker=tracker,
-    #         score_threshold_detection=0.6,
-    #         assoc_iou_thresh=0.1,
-    #         det_nms_thresh=0.1,
-    #         new_det_thresh=0.9,
-    #         hotstart_delay=0,
-    #         hotstart_unmatch_thresh=6,
-    #         hotstart_dup_thresh=6,
-    #         suppress_unmatched_only_within_hotstart=False,
-    #         min_trk_keep_alive=-1,
-    #         max_trk_keep_alive=120,
-    #         init_trk_keep_alive=5,
-    #         suppress_overlapping_based_on_recent_occlusion_threshold=0.8,
-    #         suppress_det_close_to_boundary=False,
-    #         fill_hole_area=16,
-    #         recondition_every_nth_frame=32,
-    #         masklet_confirmation_enable=True,
-    #         decrease_trk_keep_alive_for_empty_masklets=False,
-    #         image_size=1008,
-    #         image_mean=(0.5, 0.5, 0.5),
-    #         image_std=(0.5, 0.5, 0.5),
-    #         compile_model=compile,
-    #         max_num_objects=max_num_objects,
-    #         num_obj_for_compile=num_obj_for_compile,
-    #     )
-
-    # else:
-    #     print(f'apply_temporal_disambiguation={apply_temporal_disambiguation}')
-    #     model = Sam3VideoInferenceWithInstanceInteractivity(
-    #         detector=detector,
-    #         tracker=tracker,
-    #         score_threshold_detection=0.1,
-    #         assoc_iou_thresh=0.1,
-    #         det_nms_thresh=0.1,
-    #         new_det_thresh=0.1,
-    #         hotstart_delay=0,
-    #         hotstart_unmatch_thresh=4,
-    #         hotstart_dup_thresh=4,
-    #         suppress_unmatched_only_within_hotstart=False,
-    #         min_trk_keep_alive=-1,
-    #         max_trk_keep_alive=1,
-    #         init_trk_keep_alive=1,
-    #         suppress_overlapping_based_on_recent_occlusion_threshold=0.1,
-    #         suppress_det_close_to_boundary=False,
-    #         fill_hole_area=8,
-    #         recondition_every_nth_frame=0,
-    #         masklet_confirmation_enable=False,
-    #         decrease_trk_keep_alive_for_empty_masklets=False,
-    #         image_size=1008,
-    #         image_mean=(0.5, 0.5, 0.5),
-    #         image_std=(0.5, 0.5, 0.5),
-    #         compile_model=compile,
-    #         max_num_objects=max_num_objects,
-    #         num_obj_for_compile=num_obj_for_compile,
-    #     )
-
-    # Build the main SAM3 video model
     if apply_temporal_disambiguation:
         print(f'apply_temporal_disambiguation={apply_temporal_disambiguation}')
         model = Sam3VideoInferenceWithInstanceInteractivity(
             detector=detector,
             tracker=tracker,
-            score_threshold_detection=0.75,
+            score_threshold_detection=0.55,
             assoc_iou_thresh=0.1,
             det_nms_thresh=0.1,
             new_det_thresh=0.99,
-            hotstart_delay=15,
+            hotstart_delay=0,
             hotstart_unmatch_thresh=8,
             hotstart_dup_thresh=8,
-            suppress_unmatched_only_within_hotstart=True,
+            suppress_unmatched_only_within_hotstart=False,
             min_trk_keep_alive=-1,
             max_trk_keep_alive=300,
             init_trk_keep_alive=30,
@@ -791,36 +705,11 @@ def build_sam3_video_model(
             image_mean=(0.5, 0.5, 0.5),
             image_std=(0.5, 0.5, 0.5),
             compile_model=compile,
-            # detector=detector,
-            # tracker=tracker,
-            # score_threshold_detection=0.5,
-            # assoc_iou_thresh=0.1,
-            # det_nms_thresh=0.1,
-            # new_det_thresh=0.7,
-            # hotstart_delay=15,
-            # hotstart_unmatch_thresh=8,
-            # hotstart_dup_thresh=8,
-            # suppress_unmatched_only_within_hotstart=True,
-            # min_trk_keep_alive=-1,
-            # max_trk_keep_alive=30,
-            # init_trk_keep_alive=30,
-            # suppress_overlapping_based_on_recent_occlusion_threshold=0.7,
-            # suppress_det_close_to_boundary=False,
-            # fill_hole_area=16,
-            # recondition_every_nth_frame=16,
-            # masklet_confirmation_enable=False,
-            # decrease_trk_keep_alive_for_empty_masklets=False,
-            # image_size=1008,
-            # image_mean=(0.5, 0.5, 0.5),
-            # image_std=(0.5, 0.5, 0.5),
-            # compile_model=compile,
-
             max_num_objects=max_num_objects,
             num_obj_for_compile=num_obj_for_compile,
         )
     else:
         print(f'apply_temporal_disambiguation={apply_temporal_disambiguation}')
-        # a version without any heuristics for ablation studies
         model = Sam3VideoInferenceWithInstanceInteractivity(
             detector=detector,
             tracker=tracker,
@@ -849,7 +738,6 @@ def build_sam3_video_model(
             num_obj_for_compile=num_obj_for_compile,
         )
 
-    checkpoint_path = download_ckpt_from_hf(version="sam3")
     if checkpoint_path is not None:
 
         with g_pathmgr.open(checkpoint_path, "rb") as f:
@@ -860,10 +748,10 @@ def build_sam3_video_model(
     return model
 
 def build_sam3_video_predictor(
-                *model_args, 
-                checkpoint_path=None, 
-                bpe_path=None, 
-                gpus_to_use=None, 
+                *model_args,
+                checkpoint_path=None,
+                bpe_path=None,
+                gpus_to_use=None,
                 has_presence_token=False,
                 geo_encoder_use_img_cross_attn = False,
                 strict_state_dict_loading = False,
@@ -874,9 +762,10 @@ def build_sam3_video_predictor(
                 max_num_objects=1,
                 num_obj_for_compile=1,
                 use_fa3 = False,
+                use_rope_real = False, 
                 **model_kwargs
                 ):
-                
+
     from sam3.model.sam3_video_predictor import Sam3VideoPredictorMultiGPU
 
     return Sam3VideoPredictorMultiGPU(checkpoint_path=checkpoint_path, bpe_path=bpe_path, has_presence_token=has_presence_token, geo_encoder_use_img_cross_attn=geo_encoder_use_img_cross_attn, strict_state_dict_loading=strict_state_dict_loading, async_loading_frames=async_loading_frames, video_loader_type=video_loader_type, apply_temporal_disambiguation=apply_temporal_disambiguation, compile=compile, max_num_objects=max_num_objects, num_obj_for_compile=num_obj_for_compile, use_fa3=use_fa3, **model_kwargs)
@@ -990,23 +879,23 @@ def _create_multiplex_tri_backbone(
 
 def build_sam3_multiplex_video_model(
     bpe_path=None,
-    max_num_objects = 1,
-    checkpoint_path: Optional[str] = None,
-    load_from_HF=True,
-    multiplex_count: int = 16,
-    use_fa3: bool = False,
-    use_rope_real: bool = False,
-    strict_state_dict_loading: bool = False,
-    device="cuda" if torch.cuda.is_available() else "cpu",
+    max_num_objects=1,
+    checkpoint_path=None,
+    load_from_HF=False,
+    multiplex_count=16,
+    use_fa3=False,
+    use_rope_real=False,
     compile=False,
-    default_output_prob_thresh  = 0.4,
-    async_loading_frames  = True,
+    default_output_prob_thresh=0.1,
+    async_loading_frames=False,
     num_obj_for_compile=1,
-    warm_up = False,
-    # is_sbs=True,
+    warm_up=False,
+    strict_state_dict_loading=False,
+    device="cuda",
+    eval_mode=False,
+    model=None,
+    enable_segmentation=None,
 ):
-    low_vram_single_obj = max_num_objects == 1
-
     maskmem_backbone = _create_multiplex_maskmem_backbone(
         multiplex_count=multiplex_count)
 
@@ -1064,15 +953,13 @@ def build_sam3_multiplex_video_model(
         condition_as_mask_input_fg=1.0,
         condition_as_mask_input_bg=0.0,
         use_maskmem_tpos_v2=True,
-        # Keep enabled: this multiplex tracker path uses the decoupled encoder
-        # signature that expects image/memory-image inputs.
         save_image_features=True,
         randomness_fix=True,
         use_mask_input_as_output_without_sam=True,
         directly_add_no_mem_embed=True,
         iou_prediction_use_sigmoid=False,
         forward_backbone_per_frame_for_eval=True,
-        offload_output_to_cpu_for_eval=low_vram_single_obj,
+        offload_output_to_cpu_for_eval=False,
         trim_past_non_cond_mem_for_eval=False,
         max_cond_frames_in_attn=4,
         is_dynamic_model=True,
@@ -1085,29 +972,31 @@ def build_sam3_multiplex_video_model(
         use_memory_selection=False,
         max_num_objects=max_num_objects,
         num_obj_for_compile=num_obj_for_compile,
-        # is_sbs=True,
     )
 
-    model.to(device=device)
+    model.to(device)
     return model
 
 def build_sam3_multiplex_video_predictor(
-    checkpoint_path: Optional[str] = None,
-    bpe_path: Optional[str] = None,
-    max_num_objects: int = 1,
-    multiplex_count: int = 16,
-    use_fa3: bool = True,
-    use_rope_real: bool = False,
-    compile: bool = False,
-    warm_up: bool = False,
-    session_expiration_sec: int = 1200,
-    default_output_prob_thresh: float = 0.5,
-    async_loading_frames: bool = True,
-    # is_sbs=True,
+    bpe_path=None,
+    checkpoint_path=None,
+    load_from_HF=False,
+    multiplex_count=16,
+    use_fa3=False,
+    use_rope_real=False,
+    compile=False,
+    default_output_prob_thresh=0.1,
+    async_loading_frames=False,
+    warm_up=False,
+    strict_state_dict_loading=False,
+    max_num_objects=1,
     num_obj_for_compile=1,
+    session_expiration_sec=1200,
+    device="cuda",
+    eval_mode=False,
+    model=None,
+    enable_segmentation=None,
 ):
-    low_vram_single_obj = max_num_objects == 1
-
     from sam3.model.sam3_multiplex_base import Sam3MultiplexPredictorWrapper
     from sam3.model.sam3_multiplex_detector import Sam3MultiplexDetector
     from sam3.model.sam3_multiplex_tracking import (
@@ -1124,12 +1013,16 @@ def build_sam3_multiplex_video_predictor(
         )
 
     tracker_model = build_sam3_multiplex_video_model(
+        bpe_path=bpe_path,
         checkpoint_path=checkpoint_path,
-        load_from_HF=False,
+        load_from_HF=load_from_HF,
         multiplex_count=multiplex_count,
         use_fa3=use_fa3,
         use_rope_real=use_rope_real,
         compile=compile,
+        default_output_prob_thresh=default_output_prob_thresh,
+        async_loading_frames=async_loading_frames,
+        warm_up=warm_up,
         strict_state_dict_loading=False,
         max_num_objects=max_num_objects,
         num_obj_for_compile=num_obj_for_compile,
@@ -1169,27 +1062,19 @@ def build_sam3_multiplex_video_predictor(
         dot_prod_scoring=dot_prod_scoring,
         supervise_joint_box_scores=True,
         is_multiplex=True,
-    )
+        max_num_objects=max_num_objects,
+        num_obj_for_compile=num_obj_for_compile,
 
-    # In strict 1-object mode, use tighter detection gates to avoid carrying a large
-    # candidate set through propagation before max_num_objects clamping.
-    if max_num_objects == 1:
-        score_threshold_detection = 0.55  # 0.8
-        new_det_thresh = 0.0  # 0.8
-        det_nms_thresh = 0.0  # 0.5
-    else:
-        score_threshold_detection = 0.55
-        new_det_thresh = 0.0
-        det_nms_thresh = 0.0
+    )
 
     model = Sam3MultiplexTrackingWithInteractivity(
         tracker=sam2_predictor,
         detector=detector,
-        score_threshold_detection=score_threshold_detection,
-        det_nms_thresh=det_nms_thresh,
+        score_threshold_detection=55,
+        det_nms_thresh=0,
         det_nms_use_iom=True,
         assoc_iou_thresh=0,
-        new_det_thresh=new_det_thresh,
+        new_det_thresh=0,
         hotstart_delay=0,
         hotstart_unmatch_thresh=0,
         hotstart_dup_thresh=0,
@@ -1204,8 +1089,6 @@ def build_sam3_multiplex_video_predictor(
         reconstruction_bbox_iou_thresh=-1,
         reconstruction_bbox_det_score=0,
         postprocess_batch_size=1,
-        # use_batched_grounding=not low_vram_single_obj,
-        # batched_grounding_batch_size=4 if low_vram_single_obj else 0,
         use_batched_grounding=False,
         batched_grounding_batch_size=0,
         max_num_kboxes=0,
@@ -1258,6 +1141,8 @@ def build_sam3_multiplex_video_predictor(
         default_output_prob_thresh=default_output_prob_thresh,
         async_loading_frames=async_loading_frames,
         warm_up=warm_up,
+        max_num_objects=max_num_objects,
+        num_obj_for_compile=num_obj_for_compile,
     )
     return predictor
 
@@ -1273,6 +1158,9 @@ def build_sam3_predictor(
     use_rope_real: bool = False,
     async_loading_frames: bool = True,
     num_obj_for_compile=1,
+    device: str = "cuda",
+    apply_temporal_disambiguation: bool = True,
+    video_loader_type="torchcodec",
     **kwargs,
 ):
 
@@ -1288,36 +1176,10 @@ def build_sam3_predictor(
             warm_up=warm_up,
             async_loading_frames=async_loading_frames,
             num_obj_for_compile=num_obj_for_compile,
+            device="cuda",
             **kwargs,
         )
-    elif version == "sam3.1_fp16":
-        return build_sam3_multiplex_video_predictor(
-            checkpoint_path=checkpoint_path,
-            bpe_path=bpe_path,
-            max_num_objects=max_num_objects,
-            multiplex_count=multiplex_count,
-            use_fa3=use_fa3,
-            use_rope_real=use_rope_real,
-            compile=compile,
-            warm_up=warm_up,
-            async_loading_frames=async_loading_frames,
-            num_obj_for_compile=num_obj_for_compile,
-            **kwargs,
-        )
-
-    elif version == "sam3_fp16":
-        return build_sam3_video_predictor(
-            checkpoint_path=checkpoint_path,
-            bpe_path=bpe_path,
-            compile=compile,
-            async_loading_frames=async_loading_frames,
-            use_fa3 = use_fa3,
-            use_rope_real=use_rope_real,
-            max_num_objects= max_num_objects,
-            num_obj_for_compile=num_obj_for_compile,
-            **kwargs,
-        )
-
+        
     elif version == "sam3":
         return build_sam3_video_predictor(
             checkpoint_path=checkpoint_path,
@@ -1328,10 +1190,9 @@ def build_sam3_predictor(
             use_rope_real=use_rope_real,
             max_num_objects= max_num_objects,
             num_obj_for_compile=num_obj_for_compile,
+            apply_temporal_disambiguation=apply_temporal_disambiguation,
             **kwargs,
         )
-    else:
-        raise ValueError(f"Unknown version: {version!r}. Use 'sam3' or 'sam3.1'.")
 
 def _remove_freqs_cis_keys(state_dict):
     return {
