@@ -850,17 +850,14 @@ def _input_videos(input_path: str) -> List[Path]:
         raise FileNotFoundError(f'Input path not found: {input_path}')
 
     if path.is_file():
-
         if path.suffix.lower() not in VIDEO_EXTENSIONS:
             raise RuntimeError(f'Unsupported video file: {path}')
-
         return [path]
 
     if not path.is_dir():
         raise RuntimeError(f'Input path is not a file or folder: {input_path}')
 
     videos = sorted(p.resolve() for p in path.rglob('*') if p.is_file() and p.suffix.lower() in VIDEO_EXTENSIONS)
-
     if not videos:
         raise RuntimeError(f'No supported video files found in folder: {input_path}')
 
@@ -870,14 +867,10 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path, batch_m
 
     video_path = str(Path(video_path).expanduser().resolve())
     video_name = Path(video_path).stem
-
-    orig_w, orig_h, fps, duration, is_vfr, pix_fmt  = info(video_path)
+    orig_w, orig_h, fps, duration, pix_fmt  = info(video_path)
 
     print(f'Specs: {orig_w}x{orig_h}, {fps:.2f}fps, {format_timestamp(duration)}, Mask height: {args.mask_height}px')
     print()
-
-    # if is_vfr:
-        # video_path = cfr_video(video_path, video_args=args)
 
     safe_name = ''.join(ch if ch.isalnum() or ch in '._-' else '_' for ch in video_name)
     temp_dir = temp_root / safe_name
@@ -1168,12 +1161,12 @@ def main() -> int:
     start_time = time.time()
     parser = argparse.ArgumentParser(description="VR Video Masking Pipeline")
     parser.add_argument("input_path")
-    parser.add_argument("--mask-height", type=int, default=1280)
-    parser.add_argument("--segment-length", type=float, default=6)
+    parser.add_argument("--mask-height", type=int, default=1008)
+    parser.add_argument("--segment-length", type=float, default=30)
     parser.add_argument("--erode", type=int, default=0)
     parser.add_argument("--dilate", type=int, default=0)
-    parser.add_argument("--prompt", type=str, default="woman")
-    parser.add_argument("--warmup", type=int, default=6)
+    parser.add_argument("--prompt", type=str, default=None)
+    parser.add_argument("--warmup", type=int, default=12)
     parser.add_argument("--add-box", type=bool, default=False)
     parser.add_argument("--sub-box", type=bool, default=False)
 
@@ -1185,7 +1178,6 @@ def main() -> int:
     )
     parser.add_argument('--sapiens-threshold', type=float, default=0.5, help='Threshold for converting Sapiens alpha matte to a binary mask')
     parser.add_argument('--gate-dilate', type=int, default=5)
-
     parser.add_argument('--propagation-backend', type=str, default='matanyone', choices=['matanyone', 'sam3', 'sam3_sapiens', 'sapiens'])
     parser.add_argument('--sam3-unsplit-sbs', type=bool, default=False, help='SAM3 backends only: run propagation on unsplit SBS segments (1 SAM3 job per segment) instead of per-eye jobs')
     parser.add_argument('--sam3-max-num-objects', type=int, default=1, help='Max objects for SAM3 video tracker sessions')
@@ -1193,27 +1185,23 @@ def main() -> int:
     parser.add_argument('--refine-fg-threshold', type=float, default=0.95, help='SAM confidence threshold for sure foreground in sam3_sapiens refinement')
     parser.add_argument('--refine-bg-threshold', type=float, default=0.05, help='SAM confidence threshold for sure background in sam3_sapiens refinement')
     parser.add_argument('--refine-unknown-dilate', type=int, default=5, help='Dilate unknown/boundary region before Sapiens edge refinement (sam3_sapiens)')
-
     parser.add_argument('--matanyone-version', type=str, default='v2', choices=['v1', 'v2'], help='Select MatAnyone runtime version')
-    parser.add_argument('--ma2-mem-every', type=int, default=3, help='Override MatAnyone mem_every (works for v1 and v2; e.g. 2 or 3 for faster refresh)')
+    parser.add_argument('--ma2-mem-every', type=int, default=8, help='Override MatAnyone mem_every (works for v1 and v2; e.g. 2 or 3 for faster refresh)')
     parser.add_argument('--ma2-max-mem-frames', type=int, default=2, help='Override MatAnyone memory window in frames (works for v1 and v2)')
     parser.add_argument('--ma2-use-long-term', type=str, default='off', choices=['auto', 'on', 'off'], help='Override MatAnyone long-term memory mode (works for v1 and v2)')
     parser.add_argument('--temporal-median-window', type=int, default=0, help='Temporal median window for alpha cleanup. 0 disables; use odd values >= 3 (e.g. 5)')
     parser.add_argument('--tta-enable', action='store_true', help='Enable self-supervised test-time adaptation (TTA) for MatAnyone before propagating each segment')
-    parser.add_argument('--tta-steps', type=int, default=8, help='Number of TTA gradient steps per segment/eye (only used with --tta-enable); cycles through available real (frame, SAM3 mask) pairs if steps > pairs')
+    parser.add_argument('--tta-steps', type=int, default=8, help='Number of TTA gradient steps per segment/eye')
     parser.add_argument('--tta-lr', type=float, default=1e-4, help='Learning rate for TTA adaptation (only used with --tta-enable)')
     parser.add_argument('--tta-warmup-steps', type=int, default=3, help='Sensory-memory settle passes per TTA step before scoring the prediction (only used with --tta-enable)')
     parser.add_argument('--tta-supervised-weight', type=float, default=1.0, help='Weight for the supervised L1 loss against each SAM3 mask (only used with --tta-enable)')
     parser.add_argument('--tta-max-size', type=int, default=0, help='Working resolution cap for TTA frames/masks (0 = use --mask-height). Lower this (e.g. 512) to cut VRAM usage on large inputs; only affects the adaptation phase, not final propagation resolution')
-    parser.add_argument('--no-normalize-input', dest='normalize_input', action='store_false', help='Skip upfront input normalization/transcoding')
-    parser.set_defaults(normalize_input=True)
     parser.add_argument('--overlay-output', type=str, default='input_path', help='Write a composited video with the mask over the original source')
     parser.add_argument('--overlay-color', type=str, default='0x00ff00', help='Background color for overlay (use 0x00ff00 for pure green)')
     parser.add_argument('--overlay-mask', type=str, default=None, help='Write a composited video with a provided mask over the original source')
     parser.add_argument('--alpha-packer', type=str, default=None, help='Run alpha packer on its own. Provide folder with video and mask (_mask.<ext>)')
     parser.add_argument('--decompose-alpha', '--decompose_alpha', dest='decompose_alpha', action='store_true', help='Takes alpha packed videos and separates them into individual video and mask files, reverse of --alpha-packer, good for making datasets')
-    parser.add_argument('--decompose-clean-mask', type=str, default='assets/black_mask.png', help='PNG overlay used to clean alpha payload regions in decomposed video output. Use "none" to disable and keep stream copy.')
-
+    parser.add_argument('--decompose-clean-mask', type=str, default='assets/black_mask.png', help='PNG overlay used to clean alpha payload regions in decomposed video output..')
     parser.add_argument('--alpha', type=bool, default=False, help='Run alpha packer instead of overlay within pipeline. --alpha <true|false> default is False')
     parser.add_argument('--show-plots', type=bool, default=False, help='Sam3 mask plots will be displayed if True. Default is False')
     parser.add_argument('--fisheye180', nargs='?', const=FISHEYE180_PIPELINE_MODE, default=None, help='Convert an SBS equirectangular input video or folder to SBS fisheye180')
