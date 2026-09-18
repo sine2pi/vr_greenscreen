@@ -1,1 +1,0 @@
-python pipeline.py ./videos
