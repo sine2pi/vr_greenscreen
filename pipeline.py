@@ -1,4 +1,4 @@
-import sys, functools, time, tqdm, random, shutil, gc, os, torch, cv2, numpy as np, glob, matplotlib.pyplot as plt, torch.nn.functional as F, argparse, imageio, re, subprocess, av, json, threading
+import sys, functools, time, tqdm, random, shutil, gc, os, torch, numpy as np, glob, argparse, re, subprocess, av, json, threading
 from PIL import Image, ImageDraw, ImageFilter
 from pathlib import Path
 from typing import List
@@ -6,7 +6,6 @@ from omegaconf import open_dict
 from sam3.model_builder import build_sam3_predictor
 from dataclasses import dataclass
 from enum import Enum
-from sam3.visualization_utils import load_frame, prepare_masks_for_visualization, visualize_formatted_frame_output
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -48,7 +47,38 @@ def aborc(a, b, c):
 def abcord(a, b, c, d):
     return aorb(a, aborc(b, c, d))
 
-##### Video Processing Utilities
+def write_video_ffmpeg(output_file, arrays, fps, crf="15"):
+
+    first_frame = np.asanyarray(arrays[0])
+    height, width = first_frame.shape[:2]
+    is_rgb = len(first_frame.shape) == 3 and first_frame.shape[2] == 3
+    
+    pix_fmt_in = "rgb24" if is_rgb else "gray"
+
+    command = [
+        "ffmpeg",
+        "-y",
+        "-f", "rawvideo",
+        "-vcodec", "rawvideo",
+        "-pix_fmt", pix_fmt_in,
+        "-s", f"{width}x{height}",
+        "-r", str(fps),
+        "-i", "-",
+        "-c:v", "libx264",
+        "-pix_fmt", "yuv420p",
+        "-crf", str(crf),
+        output_file
+    ]
+
+    process = subprocess.Popen(command, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    try:
+        for frame in arrays:
+            process.stdin.write(np.asanyarray(frame).tobytes())
+    finally:
+        process.stdin.close()
+        
+        process.wait()
 
 def check_vfr(video_path: str, max_packets_to_read: int = 500) -> bool:
 
@@ -323,7 +353,7 @@ def cfr_video(source_video, video_args = None, progress_prefix: str = "[normaliz
         '-map', '[a]',
         '-fps_mode', 'cfr',
         '-r', str(fps),
-        '-c:v', 'hevc_nvenc',
+        '-c:v', ENCODER,
         '-preset', 'p5',
         '-profile:v', 'main10',
         '-pix_fmt', str(pix_fmt) if pix_fmt is not None else 'p010le',
@@ -598,9 +628,6 @@ def extract_segment_frames(
     for line in process.stderr:
         stderr_lines.append(line)
 
-        if "frame=" in line:
-            print(f"\r{progress_prefix}{_ffmpeg_progress(line)}", end="", flush=True)
-
     process.wait()
 
     if process.returncode != 0:
@@ -804,32 +831,17 @@ def get_circle_mask(size: int) -> str:
 
         scale = 4
         size_hr = size * scale
-        print(f"High-resolution mask size: {size_hr}")
         circle_img = Image.new("L", (size_hr, size_hr), 0)
-
         draw = ImageDraw.Draw(circle_img)
         draw.ellipse([0, 0, size_hr - 1, size_hr - 1], fill=255)
-
-        print(f" circle_img size before resize: {circle_img.size}")
-
         circle_img = circle_img.resize((size, size), Image.Resampling.LANCZOS)
-        print(f"Resized mask size: {size}")
-        print(f" circle_img size before blur: {circle_img.size}")
         circle_img = circle_img.filter(ImageFilter.GaussianBlur(radius=1))
         circle_img.save(str(mask_path))
 
     except ImportError:
-        cmd = [
-            "ffmpeg",
-            "-y",
-            "-f",
-            "lavfi",
-            "-i",
-            f"color=c=white:s={size}x{size}:d=1,format=gray",
-            "-vf",
-            "geq=lum='if(lte((X-W/2)*(X-W/2)+(Y-H/2)*(Y-H/2),(min(W,H)/2)*(min(W,H)/2)),255,0)'"
-            "-frames:v",
-            "1",
+        cmd = ["ffmpeg", "-y", "-f", "lavfi", "-i", f"color=c=white:s={size}x{size}:d=1,format=gray",
+            "-vf", "geq=lum='if(lte((X-W/2)*(X-W/2)+(Y-H/2)*(Y-H/2),(min(W,H)/2)*(min(W,H)/2)),255,0)'"
+            "-frames:v", "1",
             str(mask_path),
         ]
 
@@ -1317,15 +1329,17 @@ def run_fisheye180_mode(input_path: str, mask_path: str | None = None) -> int:
 
 class TorchCodecVideoLoader:
 
-    def __init__(self, video_path, image_size, offload_video_to_cpu, img_mean, img_std, gpu_device=None):
+    def __init__(self, video_path, image_size=None, standardize=False, offload_video_to_cpu=True, gpu_device=None):
         from torchcodec import _core as core
 
         self.image_size = image_size
+        self.standardize = standardize
         self.out_device = torch.device("cpu") if offload_video_to_cpu else (gpu_device or torch.device("cuda"))
         decode_device = (gpu_device or torch.device("cuda")) if torch.cuda.is_available() else torch.device("cpu")
 
-        self.img_mean = torch.tensor(img_mean, dtype=torch.float16, device=self.out_device).view(3, 1, 1)
-        self.img_std = torch.tensor(img_std, dtype=torch.float16, device=self.out_device).view(3, 1, 1)
+        if self.standardize:
+            self.img_mean = torch.tensor(img_mean, dtype=torch.float16, device=self.out_device).view(3, 1, 1)
+            self.img_std = torch.tensor(img_std, dtype=torch.float16, device=self.out_device).view(3, 1, 1)
 
         self.decoder = core.create_from_file(video_path, "exact")
         core.scan_all_streams_to_update_metadata(self.decoder)
@@ -1355,14 +1369,15 @@ class TorchCodecVideoLoader:
                 frame_data, *_ = core.get_frame_at_index(self.decoder, frame_index=i)
                 frame = frame_data.float()
 
-                if self.image_size:
+                if self.image_size is not None:
                     frame = torch.nn.functional.interpolate(frame.unsqueeze(0), size=(self.image_size, self.image_size), mode="bicubic", align_corners=False).squeeze(0)
 
                 frame = frame.half() / 255.0
                 if frame.device != self.out_device:
                     frame = frame.to(self.out_device, non_blocking=True)
 
-                frame = (frame - self.img_mean) / self.img_std
+                if self.standardize:
+                    frame = (frame - self.img_mean) / self.img_std
 
                 self.images[i] = frame
                 pbar.update(1)
@@ -1389,8 +1404,6 @@ class TorchCodecVideoLoader:
     def get_all_frames(self, start=0, max_frames=None):
         end = min(start + max_frames, self.num_frames) if max_frames else self.num_frames
         return torch.stack([self[i] for i in range(start, end)])
-
-####### SAM3
 
 def download_ckpt_from_hf(version="sam3", force_download=False, local_files_only=False, token=None):
     from huggingface_hub import hf_hub_download
@@ -1468,7 +1481,6 @@ class sam3_video_inference:
         print(f"Sam3 inference. ... ♩ ♪ ♫ ♬")
         print(f"Prompt: {self.video_args.prompt}")
         print(f"Add box: {self.video_args.add_box}")
-        print(f"Sub box: {self.video_args.sub_box}")
    
         print()
 
@@ -1500,29 +1512,11 @@ class sam3_video_inference:
 
     def track(self, video_path = None, remove = False, sub_box = False, add_point = 0, warp=False):
         predictor, video_path, prompt, show_plots, add_box, sub_box = self.predictor, self.video_path, self.video_args.prompt, self.video_args.show_plots, self.video_args.add_box, self.video_args.sub_box
+        
         if video_path is None:
             video_path = self.video_path
 
-        if isinstance(video_path, str) and video_path.endswith(".mp4"):
-            cap = cv2.VideoCapture(video_path)
-            frames = []
-            while True:
-                ret, frame = cap.read()
-                if not ret:
-                    break
-                frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-            cap.release()
-        else:
-            frames = glob.glob(os.path.join(video_path, "*.jpg"))
-            try:
-                frames.sort(key=lambda p: int(os.path.splitext(os.path.basename(p))[0]))
-            except ValueError:
-                print(f'frame names are not in "<frame_idx>.jpg" format: {frames[:5]=}, '
-                    f"falling back to lexicographic sort.")
-                frames.sort()
-
-        image = Image.fromarray(load_frame(frames[0]))
-        W, H = image.size
+        W, H = self.video_args.mask_height, self.video_args.mask_height
 
         response = predictor.handle_request(
             request=dict(
@@ -1565,20 +1559,6 @@ class sam3_video_inference:
 
         frame_idx = response["frame_idx"]
         outputs = self.propagate_in_video(predictor, session_id)
-
-        if show_plots:
-
-            out = response["outputs"]
-            outputs_per_frame = prepare_masks_for_visualization({frame_idx: out})
-            vis_frame_stride = 2
-            plt.close("all")
-            for frame_idx in range(0, len(outputs_per_frame), vis_frame_stride):
-                visualize_formatted_frame_output(
-                    frame_idx,
-                    frames,
-                    outputs_list=[outputs_per_frame],
-                    titles=["SAM 3.1 Dense Tracking outputs"],
-                    figsize=(6, 6))
 
         _ = predictor.handle_request(
 
@@ -1766,8 +1746,6 @@ def sam3_masks(
 
     return mask_segments
 
-#### Matanyone and pipeline integration
-
 def _update_status(op_num: int, total_ops: int, label: str, duration: float) -> None:
     global _matanyone_is_first_status
 
@@ -1876,7 +1854,7 @@ def gen_dilate(alpha: torch.Tensor, min_kernel_size: int, max_kernel_size: int) 
     kernel_size = random.randint(min_kernel_size, max_kernel_size)
     kernel = _elliptical_kernel(kernel_size, device=alpha.device, dtype=alpha.dtype)
     binary = _binary_mask(alpha)
-    dilated = F.conv2d(
+    dilated = torch.nn.functional.conv2d(
         binary.unsqueeze(0).unsqueeze(0),
         kernel.unsqueeze(0).unsqueeze(0),
         padding=kernel_size // 2)
@@ -1888,11 +1866,11 @@ def gen_erosion(alpha: torch.Tensor, min_kernel_size: int, max_kernel_size: int)
         return _binary_mask(alpha)
     kernel = _elliptical_kernel(kernel_size, device=alpha.device, dtype=alpha.dtype)
     binary = _binary_mask(alpha)
-    padded_foreground = F.pad(
+    padded_foreground = torch.nn.functional.pad(
         binary.unsqueeze(0).unsqueeze(0),
         (kernel_size // 2,) * 4,
         value=0)
-    eroded = F.conv2d(padded_foreground, kernel.unsqueeze(0).unsqueeze(0))
+    eroded = torch.nn.functional.conv2d(padded_foreground, kernel.unsqueeze(0).unsqueeze(0))
     return (eroded[0, 0, :alpha.shape[-2], :alpha.shape[-1]] == kernel.sum()).to(alpha.dtype) * 255
 
 def _matanyone_process_segment(matanyone_model, device, inference_core_cls, job, args) -> str:
@@ -1928,7 +1906,7 @@ def _matanyone_process_segment(matanyone_model, device, inference_core_cls, job,
         mask = gen_erosion(mask, r_erode, r_erode)
 
     if mask.shape != (max_size, max_size):
-        frames = torch.nn.functional.interpolate(
+        mask = torch.nn.functional.interpolate(
             mask.unsqueeze(0).unsqueeze(0),
             size=(max_size, max_size),
             mode="nearest-exact")[0, 0]
@@ -1950,14 +1928,46 @@ def _matanyone_process_segment(matanyone_model, device, inference_core_cls, job,
 
             else:
                 output_prob = processor.step(image)
-            mask = processor.output_prob_to_mask(output_prob, matting = True)
+            mask = processor.output_prob_to_mask(output_prob, matting=True)
             if ti > (n_warmup-1):
                 pha = torch.round(mask * 255).to(torch.uint8)
                 pha = torch.clamp(pha, 0, 255).cpu()
                 phas.append(pha)
 
     output_file = os.path.join(output_path, f'{video_name}_pha.mp4')
-    imageio.mimwrite(output_file, phas, fps=fps, quality=10)
+    
+    first_frame = phas[0]
+ 
+    if first_frame.ndim == 3:
+        first_frame = first_frame.squeeze(0)
+    height, width = first_frame.shape
+
+    command = [
+        "ffmpeg",
+        "-y",
+        "-f", "rawvideo",
+        "-vcodec", "rawvideo",
+        "-pix_fmt", "gray",          
+        "-s", f"{width}x{height}",
+        "-r", str(fps),
+        "-i", "-",                  
+        "-c:v", ENCODER,
+        "-pix_fmt", "yuv420p",     
+        '-preset', 'p5',
+        '-profile:v', 'main10',            
+        output_file
+    ]
+
+    process = subprocess.Popen(command, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
+
+    try:
+        for pha in phas:
+
+            process.stdin.write(pha.numpy().tobytes())
+    finally:
+        process.stdin.close()
+        process.wait()
+
     return output_file
 
 def matanyone_inference(jobs: list[dict], on_segment_done, args) -> list[str]:
@@ -2234,12 +2244,10 @@ def extract_segments(
     debug = None,
 ) -> List[SegmentInfo]:
 
-    print(f'Total: {len(segments)} segments')
     for seg in segments:
         dur = seg.end_time - seg.start_time
-        print(f'[{seg.index}] {seg.seg_type.value.upper():5} '
-            f'{format_timestamp(seg.start_time)} → {format_timestamp(seg.end_time)} ({dur:.1f}s)')
-    print()
+        print(f'Total: {len(segments)} segments ({dur:.1f}s)')
+
     for i, seg in enumerate(mask_segments) if debug is None else enumerate(mask_segments[:debug]):
         
         if args.sbs:
