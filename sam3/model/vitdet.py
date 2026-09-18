@@ -20,7 +20,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.checkpoint as checkpoint
-
+from torch.nn.attention import sdpa_kernel, SDPBackend
 try:
     from timm.layers import DropPath, trunc_normal_
 except ModuleNotFoundError:
@@ -599,16 +599,9 @@ class Attention(nn.Module):
             k = k.reshape(B, self.num_heads, H * W, -1)
 
         if self.attn_type == AttentionType.Vanilla:
-            if self.use_fa3:
-                from sam3.perflib.fa3 import flash_attn_func
 
-                x = flash_attn_func(
-                    q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2)
-                ).transpose(1, 2)
-            else:
+            with sdpa_kernel([SDPBackend.CUDNN_ATTENTION, SDPBackend.EFFICIENT_ATTENTION], set_priority=True):
                 x = F.scaled_dot_product_attention(q, k, v)
-        else:
-            raise NotImplementedError
 
         if ndim == 4:
             x = (
