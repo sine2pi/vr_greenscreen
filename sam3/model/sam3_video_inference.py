@@ -57,6 +57,8 @@ class Sam3VideoInference(Sam3VideoBase):
         self.image_std = image_std
         self.compile_model = compile_model
         self.use_fa3 = use_fa3
+        self.max_num_objects = max_num_objects
+        self.num_obj_for_compile = num_obj_for_compile
 
     @torch.inference_mode()
     def init_state(

@@ -3228,6 +3228,8 @@ class Sam3VideoTrackingMultiplexDemo(VideoTrackingMultiplexDemo):
         cached_features=None,
         offload_video_to_cpu=False,
         offload_state_to_cpu=False,
+        max_num_objects=1,
+        num_obj_for_compile=1,
     ):
         """Initialize a inference state."""
         # Make sure that sigmoid is used on mask logits (should be True for all our recent models).

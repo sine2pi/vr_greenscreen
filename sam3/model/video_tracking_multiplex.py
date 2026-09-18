@@ -2768,6 +2768,8 @@ class VideoTrackingDynamicMultiplex(VideoTrackingMultiplex):
         max_trans_frames_in_attn: int = 4,
         is_dynamic_model: bool = True,  # Overrides the default
         is_dynamic_vos_evaluation: bool = False,  # For datasets like YouTubeVOS which have new objects
+        num_obj_for_compile: int = 1,
+        max_num_objects: int = 1,
         **kwargs,
     ):
         super().__init__(is_dynamic_model=is_dynamic_model, **kwargs)

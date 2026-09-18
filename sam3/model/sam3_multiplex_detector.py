@@ -16,7 +16,6 @@ from sam3.model.model_misc import SAM3Output
 from sam3.model.sam3_image import Sam3Image
 from sam3.model.sam3_multiplex_detector_utils import nms_masks
 
-
 class Sam3MultiplexImageBase(Sam3Image):
     """A wrapper class to run Sam3Image on videos for per-frame detection (no tracking)."""
 
@@ -313,7 +312,6 @@ class Sam3MultiplexImageBase(Sam3Image):
 
         return batched_prompt
 
-
 class Sam3MultiplexDetector(Sam3MultiplexImageBase):
     def __init__(
         self,
@@ -321,6 +319,8 @@ class Sam3MultiplexDetector(Sam3MultiplexImageBase):
         async_all_gather=True,
         gather_backbone_out=None,
         is_multiplex=False,
+        max_num_objects=1,
+        num_obj_for_compile=1,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)

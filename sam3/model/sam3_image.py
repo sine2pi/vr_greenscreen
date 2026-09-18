@@ -20,7 +20,6 @@ from .data_misc import FindStage
 from .geometry_encoders import Prompt
 from .model_misc import inverse_sigmoid
 
-
 def _update_out(out, out_name, out_value, auxiliary=True, update_aux=True):
     out[out_name] = out_value[-1] if auxiliary else out_value
     if auxiliary and update_aux:
@@ -29,7 +28,6 @@ def _update_out(out, out_name, out_value, auxiliary=True, update_aux=True):
         assert len(out["aux_outputs"]) == len(out_value) - 1
         for aux_output, aux_value in zip(out["aux_outputs"], out_value[:-1]):
             aux_output[out_name] = aux_value
-
 
 class Sam3Image(torch.nn.Module):
     TEXT_ID_FOR_TEXT = 0
@@ -707,7 +705,6 @@ class Sam3Image(torch.nn.Module):
         self.inst_interactive_predictor._is_image_set = False
         self.inst_interactive_predictor._is_batch = False
         return res
-
 
 class Sam3ImageOnVideoMultiGPU(Sam3Image):
     def __init__(

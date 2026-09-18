@@ -1012,20 +1012,27 @@ def functional_attention(
     # out = out.reshape(b, n, cv)
     # return out
 
-    if use_fa3:
-      
-        from flash_attn import flash_attn_func
-        assert dropout == 0.0
+    # if use_fa3:
 
-        out = flash_attn_func(q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2))
+    #     with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
+    #         out = torchF.scaled_dot_product_attention(q, k, v, dropout_p=dropout)
+    #     out = out.transpose(1, 2) 
+
+    #     # from flash_attn import flash_attn_func
+    #     # assert dropout == 0.0
+    #     # out = flash_attn_func(q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2))
         
-    else:
+    # else:
   
-        with sdpa_kernel(SDPBackend.EFFICIENT_ATTENTION):
-            out = torchF.scaled_dot_product_attention(q, k, v, dropout_p=dropout)
-        out = out.transpose(1, 2) 
+    # with sdpa_kernel(
+        # [SDPBackend.FLASH_ATTENTION, SDPBackend.CUDNN_ATTENTION, SDPBackend.EFFICIENT_ATTENTION], set_priority=True
+    # ):
+        # print(torch.nn.attention.sdpa_kernel(backends=[SDPBackend.FLASH_ATTENTION, SDPBackend.CUDNN_ATTENTION, SDPBackend.EFFICIENT_ATTENTION]))
 
-    # 4. Shared output flattening code required by the rest of the SAM 3 model
+    with sdpa_kernel([SDPBackend.FLASH_ATTENTION, SDPBackend.CUDNN_ATTENTION]):
+        out = torchF.scaled_dot_product_attention(q, k, v, dropout_p=dropout)
+    out = out.transpose(1, 2)
+
     out = out.reshape(b, n, cv)
     return out
 

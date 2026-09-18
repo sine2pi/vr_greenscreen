@@ -305,6 +305,7 @@ class Sam3VideoBase(nn.Module):
         else:
             max_num_objects = max_num_objects
             num_obj_for_compile = max_num_objects
+
         logger.info(f"setting {max_num_objects=} and {num_obj_for_compile=}")
         self.max_num_objects = max_num_objects
         self.num_obj_for_compile = num_obj_for_compile

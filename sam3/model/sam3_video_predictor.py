@@ -36,6 +36,7 @@ class Sam3VideoPredictor(Sam3BasePredictor):
         max_num_objects=1,
         num_obj_for_compile=1,
         use_fa3 = False,
+        use_rope_real = False,
     ):
         super().__init__()
         self.async_loading_frames = async_loading_frames
@@ -54,6 +55,7 @@ class Sam3VideoPredictor(Sam3BasePredictor):
                 max_num_objects=max_num_objects,
                 num_obj_for_compile=num_obj_for_compile,
                 use_fa3 = use_fa3,
+                use_rope_real = use_rope_real,
             )
             .cuda()
             .eval()

@@ -79,7 +79,7 @@ class SAM3VLBackbone(nn.Module):
     def forward_image(self, samples: torch.Tensor):
         return activation_ckpt_wrapper(self._forward_image_no_act_ckpt)(
             samples=samples,
-            act_ckpt_enable=self.act_ckpt_whole_vision_backbone and self.training,
+            act_ckpt_enable=self.act_ckpt_whole_vision_backbone,# and self.training,
         )
 
     def _forward_image_no_act_ckpt(self, samples):

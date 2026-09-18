@@ -10,7 +10,6 @@ from sam3.model import box_ops
 from sam3.model.data_misc import FindStage, interpolate
 from torchvision.transforms import v2
 
-
 class Sam3Processor:
     """ """
 
@@ -42,9 +41,9 @@ class Sam3Processor:
     def set_image(self, image, state=None):
         """Sets the image on which we want to do predictions."""
         # Defensive: this processor is inference-only, and train mode can enable
-        # activation checkpointing paths that break mixed-precision inference.
-        if self.model.training:
-            self.model.eval()
+        # activation checkpointing paths that break mixed-precision inference. fuck you
+        # if self.model.training:
+        #     self.model.eval()
 
         if state is None:
             state = {}
@@ -80,8 +79,8 @@ class Sam3Processor:
     @torch.inference_mode()
     def set_image_batch(self, images: List[np.ndarray], state=None):
         """Sets the image batch on which we want to do predictions."""
-        if self.model.training:
-            self.model.eval()
+        # if self.model.training:
+        #     self.model.eval()
 
         if state is None:
             state = {}

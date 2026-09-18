@@ -22,24 +22,22 @@ logger = get_logger(__name__)
 _CLEAR_CACHE_THRESHOLD = 100
 
 class Sam3BasePredictor:
-    """
-    Base class for SAM3 video predictors. Provides:
-    - Session management (start, reset, close)
-    - Request dispatch (handle_request / handle_stream_request)
-    - Common add_prompt / propagate_in_video / remove_object / reset_session / close_session
 
-    Subclasses must set `self.model` and `self._all_inference_states` before use.
-    """
-
-    def __init__(self):
+    def __init__(self, 
+    max_num_objects=1, 
+    num_obj_for_compile=1
+    ):
         # Subclasses must populate these
         self.model = None
         self._all_inference_states: Dict[str, dict] = {}
+        self.max_num_objects = max_num_objects
+        self.num_obj_for_compile = num_obj_for_compile
 
     def set_cache_threshold(self, max_frame=None):
         """Set the threshold for clearing the CUDA cache on session close."""
         global _CLEAR_CACHE_THRESHOLD
-        _CLEAR_CACHE_THRESHOLD = min(max_frame, 50) if max_frame is not None else 100
+        _CLEAR_CACHE_THRESHOLD = max_frame if max_frame is not None else 100
+        print(f"Cache threshold set to {_CLEAR_CACHE_THRESHOLD}")
 
     @torch.inference_mode()
     def handle_request(self, request):

@@ -969,10 +969,10 @@ class ViT(nn.Module):
         outputs = []
         masks = None
         for i, blk in enumerate(self.blocks):
-            if self.use_act_checkpoint and self.training:
-                x = checkpoint.checkpoint(blk, x, use_reentrant=False)
-            else:
-                x = blk(x)
+            # if self.use_act_checkpoint and self.training:
+            #     x = checkpoint.checkpoint(blk, x, use_reentrant=False)
+            # else:
+            x = blk(x)
             if (i == self.full_attn_ids[-1]) or (
                 self.return_interm_layers and i in self.full_attn_ids
             ):

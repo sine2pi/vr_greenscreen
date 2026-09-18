@@ -58,6 +58,46 @@ _setup_tf32()
 
 IMAGE_SIZE = 1008
 
+def download_ckpt_from_hf(version="sam3", force_download=False, local_files_only=False, token=None):
+    from huggingface_hub import hf_hub_download
+
+    if version == "sam3.1":
+        repo_id = "sin2piusc/sam31sin"
+        ckpt_name = "sam3.1_multiplex.pt"
+        cfg_name = "config.json"
+
+    elif version == "sam3lite":
+        repo_id = "vil-uob/sam3-litetext-l"
+        # repo_id = vil-uob/sam3-litetext-s0
+        ckpt_name = "model.safetensors"
+        cfg_name = "config.json"
+
+    elif version == "sam3image":
+        repo_id = "sin2piusc/sam3_fta"
+        ckpt_name = "sam3.pth"
+        cfg_name = "config.json"
+
+    elif version == "sam3m":
+        repo_id = "feyninc/multimatte"
+        ckpt_name = "model.safetensors"
+        cfg_name = "config.json"
+
+    elif version == "local":
+        checkpoint_path = r"sam3/sam3.pt"
+
+    else:
+        repo_id = "facebook/sam3"
+        ckpt_name = "sam3.pt"
+        cfg_name = "config.json"
+
+    return hf_hub_download(
+            repo_id=repo_id,
+            filename=ckpt_name,
+            force_download=force_download,
+            local_files_only=local_files_only,
+            token=token,
+        )
+
 def _slice_tensor_to_shape_if_possible(src: torch.Tensor, target_shape: torch.Size):
     """Slice src to target_shape when every target dim is <= src dim."""
     if src.ndim != len(target_shape):
@@ -124,8 +164,8 @@ def _create_vit_backbone(compile_mode=None, use_fa3=False, use_rope_real=True):
         norm_layer="LayerNorm",
         drop_path_rate=0.1,
         qkv_bias=True,
-        use_abs_pos=False,
-        tile_abs_pos=False,
+        use_abs_pos=True,
+        tile_abs_pos=True,
         global_att_blocks=(7, 15, 23, 31),
         rel_pos_blocks=(),
         use_rope=True,
@@ -557,6 +597,7 @@ def build_sam3_image_model(
     compile=False,
     use_fa3=False,
     model=None,
+    version="sam3",
 
 ):
 
@@ -601,7 +642,18 @@ def build_sam3_image_model(
         eval_mode,
     )
 
-    model = _load_checkpoint(model, checkpoint_path)
+    if checkpoint_path is None:
+        checkpoint_path = download_ckpt_from_hf(version=version)
+    with g_pathmgr.open(checkpoint_path, "rb") as f:
+        loaded_ckpt = torch.load(f, weights_only=True, map_location="cpu")
+
+        if isinstance(loaded_ckpt, dict) and "model" in loaded_ckpt and isinstance(
+            loaded_ckpt["model"], dict
+        ):
+            loaded_ckpt = loaded_ckpt["model"]
+        prepared_ckpt = _prepare_multiplex_compatible_state_dict(model, loaded_ckpt)
+        model.load_state_dict(prepared_ckpt, strict=False)
+
     model.to(device=device)
     if eval_mode:
         model.eval()
@@ -1180,7 +1232,7 @@ def build_sam3_predictor(
             **kwargs,
         )
         
-    elif version == "sam3":
+    else:
         return build_sam3_video_predictor(
             checkpoint_path=checkpoint_path,
             bpe_path=bpe_path,
@@ -1217,48 +1269,82 @@ def _torch_load_with(f, ckpt_path):
             f.seek(0)
         return torch.load(f, map_location="cpu", weights_only=False)
 
-def _setup_device_and_mode(model, eval_mode):
+# def _setup_device_and_mode(model, eval_mode):
 
-    if device.startswith("cuda"):
-        model = model.to(device)
-    if eval_mode:
-        model.eval()
-    return model
+#     if device.startswith("cuda"):
+#         model = model.to(device)
+#     if eval_mode:
+#         model.eval()
+#     return model
 
-def _load_checkpoint(model, checkpoint_path, interactive=False, image_size=1008, strict_state_dict_loading=False):
-    image_size = 1008
-    if checkpoint_path is None:
-        checkpoint_path = download_ckpt_from_hf()
+# def _load_checkpoint(model, checkpoint_path, version = version, interactive=False, image_size=1008, strict_state_dict_loading=False):
+#     if checkpoint_path is None:
+#         checkpoint_path = download_ckpt_from_hf(version=version)
 
-    if checkpoint_path is not None:
-        with g_pathmgr.open(checkpoint_path, "rb") as f:
-            ckpt = torch.load(f, map_location="cpu", weights_only=True)
-        if "model" in ckpt and isinstance(ckpt["model"], dict):
-            ckpt = ckpt["model"]
-        if image_size != IMAGE_SIZE:
-            ckpt = _remove_freqs_cis_keys(ckpt)
+#     if checkpoint_path is not None:
+#         with g_pathmgr.open(checkpoint_path, "rb") as f:
+#             loaded_ckpt = torch.load(f, weights_only=True, map_location="cpu")
 
-        missing_keys, unexpected_keys = model.load_state_dict(
-            ckpt,
-            strict=(
-                strict_state_dict_loading
-                and image_size == IMAGE_SIZE
-            ),
-        )
-        if image_size != IMAGE_SIZE:
-            missing_keys = [
-                key for key in missing_keys if not key.endswith("freqs_cis")
-            ]
-            if strict_state_dict_loading and (missing_keys or unexpected_keys):
-                raise RuntimeError(
+#         if isinstance(loaded_ckpt, dict) and "model" in loaded_ckpt and isinstance(
+#             loaded_ckpt["model"], dict
+#         ):
+#             loaded_ckpt = loaded_ckpt["model"]
 
-                )
-        if missing_keys:
-            print(f"")
-        if unexpected_keys:
-            print(f"")
+#         needs_remap = any(
+#             k.startswith("sam3_model.") or k.startswith("sam2_predictor.")
+#             for k in loaded_ckpt
+#         )
+#         if needs_remap:
+#             print("Remapping checkpoint keys for Sam3MultiplexTrackingWithInteractivity...")
+#             remapped_ckpt = {}
+#             for k, v in loaded_ckpt.items():
+#                 new_k = k
+#                 if k.startswith("sam3_model."):
+#                     new_k = "detector." + k[len("sam3_model.") :]
+#                 elif k.startswith("sam2_predictor."):
+#                     new_k = "tracker." + k[len("sam2_predictor.") :]
+#                 remapped_ckpt[new_k] = v
+#             loaded_ckpt = remapped_ckpt
 
-    return model
+#         prepared_ckpt = _prepare_multiplex_compatible_state_dict(model, loaded_ckpt)
+#         model.load_state_dict(prepared_ckpt, strict=False)
+
+#     model.cuda().eval()
+
+# def _load_checkpoint(model, checkpoint_path, interactive=False, image_size=1008, strict_state_dict_loading=False):
+#     image_size = 1008
+#     if checkpoint_path is None:
+#         checkpoint_path = download_ckpt_from_hf()
+
+#     if checkpoint_path is not None:
+#         with g_pathmgr.open(checkpoint_path, "rb") as f:
+#             ckpt = torch.load(f, map_location="cpu", weights_only=True)
+#         if "model" in ckpt and isinstance(ckpt["model"], dict):
+#             ckpt = ckpt["model"]
+#         if image_size != IMAGE_SIZE:
+#             ckpt = _remove_freqs_cis_keys(ckpt)
+
+#         missing_keys, unexpected_keys = model.load_state_dict(
+#             ckpt,
+#             strict=(
+#                 strict_state_dict_loading
+#                 and image_size == IMAGE_SIZE
+#             ),
+#         )
+#         if image_size != IMAGE_SIZE:
+#             missing_keys = [
+#                 key for key in missing_keys if not key.endswith("freqs_cis")
+#             ]
+#             if strict_state_dict_loading and (missing_keys or unexpected_keys):
+#                 raise RuntimeError(
+
+#                 )
+#         if missing_keys:
+#             print(f"")
+#         if unexpected_keys:
+#             print(f"")
+
+#     return model
 
 def _torch_load_with_fallback(f, ckpt_path):
     try:
