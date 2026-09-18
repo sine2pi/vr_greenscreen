@@ -161,7 +161,6 @@ def encoder_args(fps=None, pix_fmt=None) -> list[str]:
 
     return [
 
-        # '-sws_flags', 'lanczos+full_chroma_int+accurate_rnd+full_chroma_inp',
         '-fps_mode', 'cfr',
         '-r', str(fps) if fps is not None else '60',
         '-c:v', ENCODER,
@@ -172,10 +171,8 @@ def encoder_args(fps=None, pix_fmt=None) -> list[str]:
         '-b:v', '80M',
         '-maxrate', '100M',
         '-bufsize', '160M',
-        # '-rc:v', 'cbr',
         '-tag:v', 'hvc1',
         '-map', '0:a?',
-        # '-aspect', '2:1',
         '-c:a', 'copy',
         '-color_primaries', 'bt709',
         '-color_trc', 'bt709',
