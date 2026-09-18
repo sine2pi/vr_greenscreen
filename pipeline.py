@@ -2235,7 +2235,7 @@ def extract_segments(
     for seg in segments:
         dur = seg.end_time - seg.start_time
     
-    print(f'Total: {len(segments)} ({dur:.1f}s) segments')
+    print(f'Total: {len(segments)} segments')
 
     for i, seg in enumerate(mask_segments) if debug is None else enumerate(mask_segments[:debug]):
         
