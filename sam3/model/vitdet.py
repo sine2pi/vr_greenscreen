@@ -600,7 +600,7 @@ class Attention(nn.Module):
 
         if self.attn_type == AttentionType.Vanilla:
 
-            with sdpa_kernel([SDPBackend.CUDNN_ATTENTION, SDPBackend.EFFICIENT_ATTENTION], set_priority=True):
+            with sdpa_kernel([SDPBackend.CUDNN_ATTENTION, SDPBackend.MATH]):
                 x = F.scaled_dot_product_attention(q, k, v)
 
         if ndim == 4:

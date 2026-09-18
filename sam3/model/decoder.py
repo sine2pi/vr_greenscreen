@@ -999,7 +999,7 @@ def functional_attention(
                 repeat_freqs_k=rope_k_repeat,
             )
 
-    with sdpa_kernel([SDPBackend.CUDNN_ATTENTION, SDPBackend.EFFICIENT_ATTENTION], set_priority=True):
+    with sdpa_kernel([SDPBackend.CUDNN_ATTENTION, SDPBackend.MATH]):
         out = torchF.scaled_dot_product_attention(q, k, v, dropout_p=dropout)
     out = out.transpose(1, 2)
 
