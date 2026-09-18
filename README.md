@@ -2,5 +2,5 @@
 
 Tested on Windows.
 how to use:
-python pipeline.py ./videos
+run.bat
 
