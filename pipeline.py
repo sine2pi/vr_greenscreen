@@ -2295,7 +2295,7 @@ def main() -> int:
     parser.add_argument("--segment-length", type=float, default=6)
     parser.add_argument("--erode", type=int, default=0)
     parser.add_argument("--dilate", type=int, default=0)
-    parser.add_argument("--prompt", type=str, default="woman")
+    parser.add_argument("--prompt", type=str, default="agirl")
     parser.add_argument("--warmup", type=int, default=0)
     parser.add_argument("--add-box", type=bool, default=False)
     parser.add_argument("--sub-box", type=bool, default=False)

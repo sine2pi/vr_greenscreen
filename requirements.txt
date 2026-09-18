@@ -18,7 +18,6 @@ pytest
 python_rapidjson
 regex
 scipy
-skimage
 submitit
 tensordict
 tidecv
@@ -29,4 +28,3 @@ torchmetrics
 torchvision
 tqdm
 typing_extensions
-xformers
