@@ -32,7 +32,6 @@ _matanyone_tqdm_lines = 1
 IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.JPG', '.JPEG', '.PNG')
 VIDEO_EXTENSIONS = ('.mp4', '.mov', '.avi', '.MP4', '.MOV', '.AVI')
 ENCODER = 'hevc_nvenc'
-MATANYONE_V1 = "https://github.com/pq-yang/MatAnyone/releases/download/v1.0.0/matanyone.pth"
 MATANYONE_V2 = "https://github.com/pq-yang/MatAnyone2/releases/download/v1.0.0/matanyone2.pth"
 
 def have(a):
@@ -161,6 +160,8 @@ def format_timestamp(seconds: float) -> str:
 def encoder_args(fps=None, pix_fmt=None) -> list[str]:
 
     return [
+
+        # '-sws_flags', 'lanczos+full_chroma_int+accurate_rnd+full_chroma_inp',
         '-fps_mode', 'cfr',
         '-r', str(fps) if fps is not None else '60',
         '-c:v', ENCODER,
@@ -171,8 +172,10 @@ def encoder_args(fps=None, pix_fmt=None) -> list[str]:
         '-b:v', '80M',
         '-maxrate', '100M',
         '-bufsize', '160M',
+        # '-rc:v', 'cbr',
         '-tag:v', 'hvc1',
         '-map', '0:a?',
+        # '-aspect', '2:1',
         '-c:a', 'copy',
         '-color_primaries', 'bt709',
         '-color_trc', 'bt709',
@@ -1783,47 +1786,25 @@ def _update_status(op_num: int, total_ops: int, label: str, duration: float) -> 
 @functools.lru_cache(maxsize=2)
 def _load_matanyone_runtime(version: str = 'v2'):
     version = str(version).lower()
-    
-    if version == 'v1':
-        matanyone_root = Path(__file__).resolve().parent / 'MatAnyone'
-        matanyone_root_str = str(matanyone_root)
-        if matanyone_root_str not in sys.path:
-            sys.path.insert(0, matanyone_root_str)
-        from MatAnyone.matanyone.inference.inference_core import InferenceCore
-        from MatAnyone.matanyone.utils.get_default_model import get_matanyone_model
-        from MatAnyone.matanyone.utils.device import get_default_device
-        device = get_default_device()
-        pretrain_model_url = MATANYONE_V1
-        model_dir = matanyone_root / 'pretrained_models'
-        model_dir.mkdir(parents=True, exist_ok=True)
-        ckpt_path = model_dir / 'matanyone.pth'
-        if not ckpt_path.exists():
-            sys.stderr.write(" Downloading MatAnyone v1 weights...\n")
-            sys.stderr.flush()
-            torch.hub.download_url_to_file(pretrain_model_url, str(ckpt_path), progress=False)
-        model = get_matanyone_model(str(ckpt_path), device)
-        return model, device, InferenceCore, 'v1'
 
-    if version == 'v2':
-        matanyone_root = Path(__file__).resolve().parent / 'MatAnyone2'
-        matanyone_root_str = str(matanyone_root)
-        if matanyone_root_str not in sys.path:
-            sys.path.insert(0, matanyone_root_str)
-        from MatAnyone2.matanyone2.inference.inference_core import InferenceCore
-        from MatAnyone2.matanyone2.utils.get_default_model import get_matanyone2_model
-        from MatAnyone2.matanyone2.utils.device import get_default_device
-        device = get_default_device()
-        pretrain_model_url = MATANYONE_V2
-        model_dir = matanyone_root / 'pretrained_models'
-        model_dir.mkdir(parents=True, exist_ok=True)
-        ckpt_path = model_dir / 'matanyone2.pth'
-        if not ckpt_path.exists():
-            sys.stderr.write(" Downloading MatAnyone2 weights...\n")
-            sys.stderr.flush()
-            torch.hub.download_url_to_file(pretrain_model_url, str(ckpt_path), progress=False)
-        model = get_matanyone2_model(str(ckpt_path), device)
-        return model, device, InferenceCore, 'v2'
-    raise ValueError(f"Unsupported MatAnyone version: {version}")
+    matanyone_root = Path(__file__).resolve().parent / 'MatAnyone2'
+    matanyone_root_str = str(matanyone_root)
+    if matanyone_root_str not in sys.path:
+        sys.path.insert(0, matanyone_root_str)
+    from MatAnyone2.matanyone2.inference.inference_core import InferenceCore
+    from MatAnyone2.matanyone2.utils.get_default_model import get_matanyone2_model
+    from MatAnyone2.matanyone2.utils.device import get_default_device
+    device = get_default_device()
+    pretrain_model_url = MATANYONE_V2
+    model_dir = matanyone_root / 'pretrained_models'
+    model_dir.mkdir(parents=True, exist_ok=True)
+    ckpt_path = model_dir / 'matanyone2.pth'
+    if not ckpt_path.exists():
+        sys.stderr.write(" Downloading MatAnyone2 weights...\n")
+        sys.stderr.flush()
+        torch.hub.download_url_to_file(pretrain_model_url, str(ckpt_path), progress=False)
+    model = get_matanyone2_model(str(ckpt_path), device)
+    return model, device, InferenceCore, 'v2'
 
 def _config_overrides(matanyone_model, job: dict, *, verbose: bool = False) -> None:
 
@@ -1849,8 +1830,8 @@ def _config_overrides(matanyone_model, job: dict, *, verbose: bool = False) -> N
 
     if verbose:
         mode = 'on' if cfg.use_long_term else 'off'
-        version = str(job.get('matanyone_version', 'v2')).lower()
-        model_name = 'MatAnyone v1' if version == 'v1' else 'MatAnyone2'
+        version ='v2'
+        model_name = 'MatAnyone2'
 
         sys.stderr.write(
             f" {model_name} cfg override => mem_every={cfg.mem_every}, "
@@ -1998,15 +1979,7 @@ def matanyone_inference(jobs: list[dict], on_segment_done, args) -> list[str]:
     if not remaining_jobs:
         return completed_paths
 
-    version = str(remaining_jobs[0].get('matanyone_version', 'v2')).lower()
-    for job in remaining_jobs:
-        job_version = str(job.get('matanyone_version', version)).lower()
-        if job_version != version:
-            raise RuntimeError(f"Mixed MatAnyone versions in one batch are not supported: {version} vs {job_version}")
-
-    matanyone_model, device, inference_core_cls, loaded_version = _load_matanyone_runtime(version)
-    if loaded_version != version:
-        raise RuntimeError(f"Loaded model version mismatch: expected {version}, got {loaded_version}")
+    matanyone_model, device, inference_core_cls, loaded_version = _load_matanyone_runtime('v2')
 
     for attempt in range(max_retries):
         batch_completed = []
@@ -2055,7 +2028,6 @@ def matanyone_inference(jobs: list[dict], on_segment_done, args) -> list[str]:
 def matanyone(segments: List[SegmentInfo], segments_dir: Path, mask_square: int, args: argparse.Namespace):
     print()
     print(f"MatAnyone inference. ... ♩ ♪ ♫ ♬")
-    print(f"MatAnyone model: {args.matanyone_version}")
 
     matanyout = str(segments_dir / 'matanyone_output')
     os.makedirs(matanyout, exist_ok=True)
@@ -2070,7 +2042,7 @@ def matanyone(segments: List[SegmentInfo], segments_dir: Path, mask_square: int,
                 'input_path': sbs_video,
                 'mask_path': seg.sbs_mask_path,
                 'output_path': matanyout,
-                'matanyone_version': args.matanyone_version,
+     
                 'ma2_mem_every': args.ma2_mem_every,
                 'ma2_max_mem_frames': args.ma2_max_mem_frames,
                 'ma2_use_long_term': args.ma2_use_long_term,
@@ -2085,7 +2057,7 @@ def matanyone(segments: List[SegmentInfo], segments_dir: Path, mask_square: int,
                 'input_path': seg_left_video,
                 'mask_path': seg.left_mask_path,
                 'output_path': matanyout,
-                'matanyone_version': args.matanyone_version,
+       
                 'ma2_mem_every': args.ma2_mem_every,
                 'ma2_max_mem_frames': args.ma2_max_mem_frames,
                 'ma2_use_long_term': args.ma2_use_long_term,
@@ -2097,7 +2069,7 @@ def matanyone(segments: List[SegmentInfo], segments_dir: Path, mask_square: int,
                 'input_path': seg_right_video,
                 'mask_path': seg.right_mask_path,
                 'output_path': matanyout,
-                'matanyone_version': args.matanyone_version,
+     
                 'ma2_mem_every': args.ma2_mem_every,
                 'ma2_max_mem_frames': args.ma2_max_mem_frames,
                 'ma2_use_long_term': args.ma2_use_long_term,
@@ -2330,7 +2302,6 @@ def main() -> int:
     parser.add_argument("--add-box", type=bool, default=False)
     parser.add_argument("--sub-box", type=bool, default=False)
     parser.add_argument("--sbs", type=bool, default=False)
-    parser.add_argument('--matanyone-version', type=str, default='v2', choices=['v1', 'v2'], help='Select MatAnyone runtime version')
     parser.add_argument('--ma2-mem-every', type=int, default=6, help='Override MatAnyone mem_every (works for v1 and v2; e.g. 2 or 3 for faster refresh)')
     parser.add_argument('--ma2-max-mem-frames', type=int, default=2, help='Override MatAnyone memory window in frames (works for v1 and v2)')
     parser.add_argument('--ma2-use-long-term', type=str, default='off', choices=['auto', 'on', 'off'], help='Override MatAnyone long-term memory ')
@@ -2345,8 +2316,7 @@ def main() -> int:
     parser.add_argument('--fisheye180', type=bool, default=False, help='Convert video or folder to SBS fisheye180. Works with alphapacker')
     parser.add_argument('--debug', type=int, default=None, help='Debug mode: process only the first N segments')
     args = parser.parse_args()
-    args.matanyone_version = str(args.matanyone_version).lower()
-
+   
     if args.ma2_mem_every is not None and args.ma2_mem_every < 1:
         raise ValueError('--ma2-mem-every must be >= 1')
     if args.ma2_max_mem_frames is not None and args.ma2_max_mem_frames < 2:
