@@ -162,21 +162,21 @@ def encoder_args(fps=None, pix_fmt=None) -> list[str]:
 
     return [
 
-        '-sws_flags', 'lanczos+full_chroma_int+accurate_rnd+full_chroma_inp',
+        # '-sws_flags', 'lanczos+full_chroma_int+accurate_rnd+full_chroma_inp',
         '-fps_mode', 'cfr',
         '-r', str(fps) if fps is not None else '60',
         '-c:v', ENCODER,
         '-preset', 'p5',
         '-profile:v', 'main10',
-        '-pix_fmt', str(pix_fmt) if pix_fmt is not None else 'p010le',
+        '-pix_fmt', str(pix_fmt) if pix_fmt is not None else 'yuv420p',
         '-g', '20',
         '-b:v', '80M',
         '-maxrate', '100M',
         '-bufsize', '160M',
-        '-rc:v', 'cbr',
+        # '-rc:v', 'cbr',
         '-tag:v', 'hvc1',
         '-map', '0:a?',
-        '-aspect', '2:1',
+        # '-aspect', '2:1',
         '-c:a', 'copy',
         '-color_primaries', 'bt709',
         '-color_trc', 'bt709',
@@ -715,16 +715,9 @@ def mask_overlay(source_video: str, mask_video: str, output_path: str, backgroun
     mask_w, mask_h, mask_fps, mask_duration, mask_fmt = info(mask_video)
     enc = encoder_args(fps=src_fps, pix_fmt=src_fmt)
 
-    if (src_w, src_h) != (mask_w, mask_h):
-
-        orig_filter = f"format=rgba,scale={src_w}:{src_h}:flags=bilinear"
-        mask_filter = f"format=gray,scale={src_w}:{src_h}:flags=bilinear,lut=a=val/255"
-        bg_filter = f"format=rgba,scale={src_w}:{src_h}:flags=bilinear"
-
-    else:
-        orig_filter = 'format=rgba'
-        mask_filter = 'format=gray,lut=a=val/255'
-        bg_filter = 'format=rgba'
+    orig_filter = f"format=rgba,fps={src_fps},setpts=N/({src_fps}*TB),scale={src_w}:{src_h}:flags=bilinear"
+    mask_filter = f"format=gray,fps={src_fps},setpts=N/({src_fps}*TB),scale={src_w}:{src_h}:flags=bilinear,lut=a=val/255"
+    bg_filter = f"format=rgba,fps={src_fps},setpts=N/({src_fps}*TB),scale={src_w}:{src_h}:flags=bilinear"
 
     filter_complex = (
 
@@ -2337,7 +2330,7 @@ def main() -> int:
     parser.add_argument("--erode", type=int, default=0)
     parser.add_argument("--dilate", type=int, default=0)
     parser.add_argument("--prompt", type=str, default="woman")
-    parser.add_argument("--warmup", type=int, default=6)
+    parser.add_argument("--warmup", type=int, default=0)
     parser.add_argument("--add-box", type=bool, default=False)
     parser.add_argument("--sub-box", type=bool, default=False)
     parser.add_argument("--sbs", type=bool, default=False)
