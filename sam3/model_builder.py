@@ -148,11 +148,11 @@ def _create_position_encoding(precompute_resolution=None):
         scale=None,
         temperature=10000,
         precompute_resolution=precompute_resolution,
-        use_fa3=False,
+        
     )
 
-def _create_vit_backbone(compile_mode=None, use_fa3=False, use_rope_real=True):
-    print(f"Creating ViT backbone with compile_mode={compile_mode}, use_fa3={use_fa3}, use_rope_real={use_rope_real}")
+def _create_vit_backbone(compile_mode=None, use_rope_real=True):
+    print(f"Creating ViT backbone with compile_mode={compile_mode}, use_rope_real={use_rope_real}")
     return ViT(
         img_size=1008,
         pretrain_img_size=336,
@@ -178,7 +178,7 @@ def _create_vit_backbone(compile_mode=None, use_fa3=False, use_rope_real=True):
         return_interm_layers=False,
         bias_patch_embed=False,
         compile_mode=compile_mode,
-        use_fa3=use_fa3,
+        
         use_rope_real=False,
 
     )
@@ -214,14 +214,14 @@ def _create_transformer_encoder(use_fa3=False) -> TransformerEncoderFusion:
             dropout=0.1,
             embed_dim=256,
             batch_first=True,
-            use_fa3=use_fa3,
+            
         ),
         cross_attention=MultiheadAttention(
             num_heads=8,
             dropout=0.1,
             embed_dim=256,
             batch_first=True,
-            use_fa3=use_fa3,
+            
         ),
     )
 
@@ -248,7 +248,7 @@ def _create_transformer_decoder(use_fa3=False) -> TransformerDecoder:
             num_heads=8,
             dropout=0.1,
             embed_dim=256,
-            use_fa3=use_fa3,
+            
         ),
         n_heads=8,
         use_text_cross_attention=True,
@@ -300,7 +300,7 @@ def _create_segmentation_head(compile_mode=None, use_fa3=False):
         num_heads=8,
         dropout=0,
         embed_dim=256,
-        use_fa3=use_fa3,
+        
     )
 
     segmentation_head = UniversalSegmentationHead(
@@ -449,7 +449,7 @@ def _create_tracker_transformer():
         dropout=0.1,
         rope_theta=10000.0,
         feat_sizes=[72, 72],
-        use_fa3=False,
+        
         use_rope_real=True,
     )
 
@@ -462,7 +462,7 @@ def _create_tracker_transformer():
         rope_theta=10000.0,
         feat_sizes=[72, 72],
         rope_k_repeat=True,
-        use_fa3=False,
+        
         use_rope_real=True,
     )
 
@@ -563,7 +563,7 @@ def _create_vision_backbone(
     compile_mode=None, enable_inst_interactivity=True, use_fa3 = False,
 ) -> Sam3DualViTDetNeck:
     position_encoding = _create_position_encoding(precompute_resolution=1008)
-    vit_backbone: ViT = _create_vit_backbone(compile_mode=compile_mode, use_fa3=use_fa3)
+    vit_backbone: ViT = _create_vit_backbone(compile_mode=compile_mode, use_fa3=False)
     vit_neck: Sam3DualViTDetNeck = _create_vit_neck(
         position_encoding,
         vit_backbone,
@@ -574,8 +574,8 @@ def _create_vision_backbone(
 def _create_sam3_transformer(
     has_presence_token: bool = True, use_fa3: bool = False
 ) -> TransformerWrapper:
-    encoder: TransformerEncoderFusion = _create_transformer_encoder(use_fa3=use_fa3)
-    decoder: TransformerDecoder = _create_transformer_decoder(use_fa3=use_fa3)
+    encoder: TransformerEncoderFusion = _create_transformer_encoder(use_fa3=False)
+    decoder: TransformerDecoder = _create_transformer_decoder(use_fa3=False)
 
     return TransformerWrapper(encoder=encoder, decoder=decoder, d_model=256)
 
@@ -595,7 +595,7 @@ def build_sam3_image_model(
     enable_segmentation=True,
     enable_inst_interactivity=False,
     compile=False,
-    use_fa3=False,
+    
     model=None,
     version="sam3",
 
@@ -620,7 +620,7 @@ def build_sam3_image_model(
     dot_prod_scoring = _create_dot_product_scoring()
 
     segmentation_head = (
-        _create_segmentation_head(compile_mode=compile_mode, use_fa3=use_fa3)
+        _create_segmentation_head(compile_mode=compile_mode, use_fa3=False)
         if enable_segmentation
         else None
     )
@@ -698,7 +698,7 @@ def build_sam3_video_model(
     visual_neck = _create_vision_backbone(use_fa3 = use_fa3)
     text_encoder = _create_text_encoder(bpe_path)
     backbone = SAM3VLBackbone(scalp=1, visual=visual_neck, text=text_encoder)
-    transformer = _create_sam3_transformer(has_presence_token=has_presence_token, use_fa3=use_fa3)
+    transformer = _create_sam3_transformer(has_presence_token=has_presence_token, use_fa3=False)
     segmentation_head: UniversalSegmentationHead = _create_segmentation_head()
     input_geometry_encoder = _create_geometry_encoder()
 
@@ -820,7 +820,7 @@ def build_sam3_video_predictor(
 
     from sam3.model.sam3_video_predictor import Sam3VideoPredictorMultiGPU
 
-    return Sam3VideoPredictorMultiGPU(checkpoint_path=checkpoint_path, bpe_path=bpe_path, has_presence_token=has_presence_token, geo_encoder_use_img_cross_attn=geo_encoder_use_img_cross_attn, strict_state_dict_loading=strict_state_dict_loading, async_loading_frames=async_loading_frames, video_loader_type=video_loader_type, apply_temporal_disambiguation=apply_temporal_disambiguation, compile=compile, max_num_objects=max_num_objects, num_obj_for_compile=num_obj_for_compile, use_fa3=use_fa3, **model_kwargs)
+    return Sam3VideoPredictorMultiGPU(checkpoint_path=checkpoint_path, bpe_path=bpe_path, has_presence_token=has_presence_token, geo_encoder_use_img_cross_attn=geo_encoder_use_img_cross_attn, strict_state_dict_loading=strict_state_dict_loading, async_loading_frames=async_loading_frames, video_loader_type=video_loader_type, apply_temporal_disambiguation=apply_temporal_disambiguation, compile=compile, max_num_objects=max_num_objects, num_obj_for_compile=num_obj_for_compile, **model_kwargs)
 
 def _create_multiplex_maskmem_backbone(multiplex_count=16):
     position_encoding = PositionEmbeddingSine(
@@ -860,14 +860,14 @@ def _create_multiplex_maskmem_backbone(multiplex_count=16):
 
     return maskmem_backbone
 
-def _create_multiplex_transformer(use_fa3=False, use_rope_real=True):
+def _create_multiplex_transformer(use_rope_real=True):
     self_attention_rope = SimpleRoPEAttention(
         d_model=256,
         num_heads=8,
         dropout_p=0.1,
         rope_theta=10000.0,
         feat_sizes=[72, 72],
-        use_fa3=use_fa3,
+        
         use_rope_real=use_rope_real,
     )
 
@@ -878,7 +878,7 @@ def _create_multiplex_transformer(use_fa3=False, use_rope_real=True):
         rope_theta=10000.0,
         feat_sizes=[72, 72],
         rope_k_repeat=True,
-        use_fa3=use_fa3,
+        
         use_rope_real=use_rope_real,
     )
 
@@ -915,11 +915,11 @@ def _create_multiplex_transformer(use_fa3=False, use_rope_real=True):
     return transformer
 
 def _create_multiplex_tri_backbone(
-    compile_mode=None, use_fa3=False, use_rope_real=True
+    compile_mode=None, use_rope_real=True
 ):
     position_encoding = _create_position_encoding(precompute_resolution=1008)
     vit_backbone = _create_vit_backbone(
-        compile_mode=compile_mode, use_fa3=use_fa3, use_rope_real=use_rope_real
+        compile_mode=compile_mode, use_rope_real=use_rope_real
     )
     tri_neck = Sam3TriViTDetNeck(
         trunk=vit_backbone,
@@ -935,7 +935,6 @@ def build_sam3_multiplex_video_model(
     checkpoint_path=None,
     load_from_HF=False,
     multiplex_count=16,
-    use_fa3=False,
     use_rope_real=False,
     compile=False,
     default_output_prob_thresh=0.1,
@@ -952,9 +951,9 @@ def build_sam3_multiplex_video_model(
         multiplex_count=multiplex_count)
 
     transformer = _create_multiplex_transformer(
-        use_fa3=use_fa3, use_rope_real=use_rope_real)
+        use_rope_real=use_rope_real)
 
-    tri_neck = _create_multiplex_tri_backbone(use_fa3=use_fa3,
+    tri_neck = _create_multiplex_tri_backbone(
         compile_mode="max-autotune" if compile else None)
 
     backbone = TriHeadVisionOnly(
@@ -1034,7 +1033,6 @@ def build_sam3_multiplex_video_predictor(
     checkpoint_path=None,
     load_from_HF=False,
     multiplex_count=16,
-    use_fa3=False,
     use_rope_real=False,
     compile=False,
     default_output_prob_thresh=0.1,
@@ -1069,7 +1067,7 @@ def build_sam3_multiplex_video_predictor(
         checkpoint_path=checkpoint_path,
         load_from_HF=load_from_HF,
         multiplex_count=multiplex_count,
-        use_fa3=use_fa3,
+        
         use_rope_real=use_rope_real,
         compile=compile,
         default_output_prob_thresh=default_output_prob_thresh,
@@ -1093,12 +1091,12 @@ def build_sam3_multiplex_video_predictor(
     )
 
     tri_neck = _create_multiplex_tri_backbone(
-        compile_mode=None, use_fa3=use_fa3, use_rope_real=use_rope_real
+        compile_mode=None, use_rope_real=use_rope_real
     )
     text_encoder = _create_text_encoder(bpe_path)
     backbone = SAM3VLBackboneTri(scalp=0, visual=tri_neck, text=text_encoder)
-    transformer = _create_sam3_transformer(use_fa3=use_fa3)
-    segmentation_head = _create_segmentation_head(use_fa3=use_fa3)
+    transformer = _create_sam3_transformer(use_fa3=False)
+    segmentation_head = _create_segmentation_head(use_fa3=False)
     geometry_encoder = _create_geometry_encoder()
     dot_prod_scoring = _create_dot_product_scoring()
 
@@ -1206,7 +1204,6 @@ def build_sam3_predictor(
     warm_up: bool = False,
     max_num_objects: int = 1,
     multiplex_count: int = 16,
-    use_fa3: bool = False,
     use_rope_real: bool = False,
     async_loading_frames: bool = True,
     num_obj_for_compile=1,
@@ -1222,7 +1219,6 @@ def build_sam3_predictor(
             bpe_path=bpe_path,
             max_num_objects=max_num_objects,
             multiplex_count=multiplex_count,
-            use_fa3=use_fa3,
             use_rope_real=use_rope_real,
             compile=compile,
             warm_up=warm_up,
@@ -1238,7 +1234,6 @@ def build_sam3_predictor(
             bpe_path=bpe_path,
             compile=compile,
             async_loading_frames=async_loading_frames,
-            use_fa3 = use_fa3,
             use_rope_real=use_rope_real,
             max_num_objects= max_num_objects,
             num_obj_for_compile=num_obj_for_compile,
