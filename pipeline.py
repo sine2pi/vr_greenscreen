@@ -171,8 +171,10 @@ def encoder_args(fps=None, pix_fmt=None) -> list[str]:
         '-b:v', '80M',
         '-maxrate', '100M',
         '-bufsize', '160M',
+        # '-rc:v', 'cbr',
         '-tag:v', 'hvc1',
         '-map', '0:a?',
+        # '-aspect', '2:1',
         '-c:a', 'copy',
         '-color_primaries', 'bt709',
         '-color_trc', 'bt709',
@@ -1478,7 +1480,6 @@ class sam3_video_inference:
             warm_up = False,
             max_num_objects = 1,
             multiplex_count = 16,
-            use_fa3 = False,
             use_rope_real = False,
             async_loading_frames = False,
             num_obj_for_compile=1,
@@ -2290,8 +2291,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="VR Video Masking Pipeline")
     parser.add_argument("--model", type=str, default="sam3.1")
     parser.add_argument("input_path")
-    parser.add_argument("--mask-height", type=int, default=800)
-    parser.add_argument("--segment-length", type=float, default=10)
+    parser.add_argument("--mask-height", type=int, default=1024)
+    parser.add_argument("--segment-length", type=float, default=6)
     parser.add_argument("--erode", type=int, default=0)
     parser.add_argument("--dilate", type=int, default=0)
     parser.add_argument("--prompt", type=str, default="woman")

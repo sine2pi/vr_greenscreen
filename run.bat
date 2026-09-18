@@ -1,1 +1,1 @@
-python pipeline.py "./videos"
+python pipeline.py "./Videos"
