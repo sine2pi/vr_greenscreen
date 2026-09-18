@@ -1,4 +1,4 @@
-import sys, functools, time, tqdm, random, shutil, gc, os, torch, numpy as np, glob, argparse, re, subprocess, av, json, threading
+import sys, functools, time, tqdm, random, shutil, gc, os, torch, numpy as np, glob, argparse, re, subprocess, json, threading
 from PIL import Image, ImageDraw, ImageFilter
 from pathlib import Path
 from typing import List
@@ -782,17 +782,46 @@ def video_frames(frame_root, max_size):
 
     if frame_root.endswith(VIDEO_EXTENSIONS):
         video_name = os.path.basename(frame_root)[:-4]
-        container = av.open(frame_root)
-        stream = container.streams.video[0]
-        fps = float(stream.average_rate)
-        frames_list = []
 
-        for frame in container.decode(stream):
-            arr = frame.to_ndarray(format='rgb24')
-            frames_list.append(arr)
+        cmd = [
+            'ffprobe', '-v', 'error',
+            '-select_streams', 'v:0',
+            '-show_entries', 'stream=width,height,avg_frame_rate,r_frame_rate',
+            '-of', 'json',
+            frame_root,
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        stream = json.loads(result.stdout)['streams'][0]
+        width = int(stream['width'])
+        height = int(stream['height'])
 
-        container.close()
-        frames = torch.from_numpy(np.stack(frames_list)).permute(0, 3, 1, 2).contiguous()
+        frame_rate = stream.get('avg_frame_rate')
+        if not frame_rate or frame_rate == '0/0':
+            frame_rate = stream.get('r_frame_rate')
+        num, _, den = frame_rate.partition('/')
+        den = den or '1'
+        fps = float(num) / float(den) if float(den) != 0 else float(num)
+
+        command = [
+            "ffmpeg",
+            "-v", "error",
+            "-i", frame_root,
+            "-f", "rawvideo",
+            "-pix_fmt", "rgb24",
+            "-",
+        ]
+
+        process = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if process.returncode != 0:
+            raise RuntimeError(f"Frame extraction failed: {process.stderr.decode(errors='ignore')}")
+
+        frame_size = width * height * 3
+        raw = process.stdout
+        num_frames = len(raw) // frame_size
+        arr = np.frombuffer(raw[:num_frames * frame_size], dtype=np.uint8)
+        arr = arr.reshape(num_frames, height, width, 3)
+
+        frames = torch.from_numpy(arr.copy()).permute(0, 3, 1, 2).contiguous()
         frames = frames.float()
 
         if max_size is not None:
@@ -2246,7 +2275,8 @@ def extract_segments(
 
     for seg in segments:
         dur = seg.end_time - seg.start_time
-        print(f'Total: {len(segments)} segments ({dur:.1f}s)')
+    
+    print(f'Total: {len(segments)} ({dur:.1f}s) segments')
 
     for i, seg in enumerate(mask_segments) if debug is None else enumerate(mask_segments[:debug]):
         
