@@ -193,7 +193,7 @@ def format_timestamp(seconds: float) -> str:
     s = seconds % 60
     return f"{h:02d}:{m:02d}:{s:06.3f}"
 
-def encoder_args(fps=None, pix_fmt=None) -> list[str]:
+def encoder_args(fps=None) -> list[str]:
 
     return [
 
@@ -202,15 +202,14 @@ def encoder_args(fps=None, pix_fmt=None) -> list[str]:
         '-c:v', ENCODER,
         '-preset', 'p5',
         '-profile:v', 'main10',
-        '-pix_fmt', str(pix_fmt) if pix_fmt is not None else 'yuv420p',
+        '-pix_fmt', 'yuv420p',
         '-g', '20',
         '-b:v', '80M',
         '-maxrate', '100M',
         '-bufsize', '160M',
-        # '-rc:v', 'cbr',
+        '-rc:v', 'cbr',
         '-tag:v', 'hvc1',
         '-map', '0:a?',
-        # '-aspect', '2:1',
         '-c:a', 'copy',
         '-color_primaries', 'bt709',
         '-color_trc', 'bt709',
@@ -336,7 +335,7 @@ def norm_video(source_video, w = None, h = None, fps = None, progress_prefix: st
     output_video = str(source_path.with_name(f"{source_path.stem}_normed.mp4"))
 
     fps = aorb(fps, 60)
-    enc = encoder_args(fps=fps, pix_fmt=pix_fmt)
+    enc = encoder_args(fps)
 
     if w is not None:
         wi = w
@@ -346,7 +345,7 @@ def norm_video(source_video, w = None, h = None, fps = None, progress_prefix: st
 
         'ffmpeg', '-y', '-hwaccel', 'auto',
         '-i', source_video,
-        '-filter_complex', f'[0:v]fps={fps},setpts=N/({fps}*TB),scale=w={wi}:h={hi}:flags=bilinear:out_range=tv:threads=0',
+        '-filter_complex', f'[0:v]fps={fps},setpts=N/({fps}*TB),scale=w={wi}:h={hi}:flags=bilinear',
         *enc,
         output_video,
     ]
@@ -390,7 +389,7 @@ def cfr_video(source_video, video_args = None, progress_prefix: str = "[normaliz
         '-c:v', ENCODER,
         '-preset', 'p5',
         '-profile:v', 'main10',
-        '-pix_fmt', str(pix_fmt) if pix_fmt is not None else 'p010le',
+        '-pix_fmt', 'yuv420p',
         '-g', '20',
         '-b:v', '60M',
         '-maxrate', '80M',
@@ -422,7 +421,7 @@ def cfr_video(source_video, video_args = None, progress_prefix: str = "[normaliz
 def resize_video(source_video: str, output_video: str, width: int, height: int, progress_prefix: str = "[resize] ") -> str:
 
     wi, hi, fps, duration, pix_fmt = info(source_video)
-    enc = encoder_args(fps=fps, pix_fmt=pix_fmt)
+    enc = encoder_args(fps)
     os.makedirs(os.path.dirname(os.path.abspath(output_video)) or '.', exist_ok=True)
 
     cmd = [
@@ -453,7 +452,7 @@ def concat_video(video_list: list[str], output_path: str, fps: float | None = No
 
     BATCH_SIZE = 50
     n = len(video_list)
-    enc = encoder_args(fps=fps, pix_fmt=pix_fmt)
+    enc = encoder_args(fps)
 
     if n > BATCH_SIZE:
 
@@ -566,7 +565,7 @@ def eye_frames(video_path: str, timestamps: list[float], output_dir: str, height
             '-ss', str(ts),
             '-i', video_path,
             '-vf', crop_filter,
-            '-frames:v', '1', '-compression_level', '1',
+            '-frames:v', '1',
             out_path
         ]
 
@@ -593,7 +592,7 @@ def extract_segment_frames(
 ) -> tuple[str, str, str, str]:
 
     wi, hi, fps, duration, pix_fmt = info(stereo_video)
-    enc = encoder_args(fps=fps, pix_fmt=pix_fmt)
+    enc = encoder_args(fps)
 
     start_frame = round(start * fps)
     end_frame = round(end * fps)
@@ -610,9 +609,6 @@ def extract_segment_frames(
     orig_eye = hi
     target_eye = target_height
 
-    # frame_left = f"crop={orig_eye}:{orig_eye}:0:0"
-    # frame_right = f"crop={orig_eye}:{orig_eye}:{orig_eye}:0"
-
     frame_left = f"crop={target_eye}:{target_eye}:0:0"
     frame_right = f"crop={target_eye}:{target_eye}:{target_eye}:0"
 
@@ -624,7 +620,7 @@ def extract_segment_frames(
 
     filter_complex = (
 
-        f"[0:v]trim=start={fine_seek}:duration={seg_dur},setpts=PTS-STARTPTS,fps={fps},scale={scale_w}:{scale_h}:flags=bilinear,split=2[full][toscale];"
+        f"[0:v]trim=start={fine_seek}:duration={seg_dur},scale={scale_w}:{scale_h}:flags=bilinear,split=2[full][toscale];"
         f"[full]split=2[fullL][fullR];"
         f"[fullL]select=eq(n\\,0),{frame_left}[frame_left];"
         f"[fullR]select=eq(n\\,0),{frame_right}[frame_right];"
@@ -656,16 +652,9 @@ def extract_segment_frames(
         "-map", "[frame_right]", "-frames:v", "1", right_frame_out,
         *left_output_args,
         *right_output_args,
-        '-fps_mode', 'cfr',
-        '-r', str(fps) if fps is not None else '60',
-        '-c:v', ENCODER,
-        '-profile:v', 'main10',
-        '-pix_fmt', str(pix_fmt),
-        '-b:v', '50M',
-        '-map', '0:a?',
-        '-c:a', 'copy',
-
     ])
+
+    cmd.extend(encoder_args(fps))
     process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
     stderr_lines = []
@@ -693,7 +682,7 @@ def extract_segment_sbs(
 
     wi, hi, fps, duration, pix_fmt = info(stereo_video)
     _ = wi, hi, duration, pix_fmt
-    enc = encoder_args(fps=fps, pix_fmt=pix_fmt)
+    enc = encoder_args(fps)
     start_frame = round(start * fps)
     end_frame = round(end * fps)
     frames = end_frame - start_frame
@@ -758,13 +747,20 @@ def mask_overlay(source_video: str, mask_video: str, output_path: str, backgroun
     resolved_path = overlay_path(source_video, output_path)
     src_w, src_h, src_fps, src_duration, src_fmt = info(source_video)
     mask_w, mask_h, mask_fps, mask_duration, mask_fmt = info(mask_video)
-    enc = encoder_args(fps=src_fps, pix_fmt=src_fmt)
+    
     print(f"src: {src_w}x{src_h} @ {src_fps}fps, duration: {src_duration}, format: {src_fmt}")
     print(f"mask: {mask_w}x{mask_h} @ {mask_fps}fps, duration: {mask_duration}, format: {mask_fmt}")
 
-    orig_filter = f"format=rgba"
-    mask_filter = f"format=gray,scale={src_w}:{src_h}:flags=bilinear,lut=a=val/255"
-    bg_filter = f"format=rgba"
+    if src_h > mask_h:
+
+        orig_filter = f"format=rgba"
+        mask_filter = f"scale={src_w}:{src_h},format=gray,lut=a=val/255"
+        bg_filter = f"format=rgba"
+
+    else:
+        orig_filter = 'format=rgba'
+        mask_filter = 'format=gray,lut=a=val/255'
+        bg_filter = 'format=rgba'
 
     filter_complex = (
 
@@ -772,43 +768,24 @@ def mask_overlay(source_video: str, mask_video: str, output_path: str, backgroun
         f"[1:v]{mask_filter}[mask_alpha];"
         f"[orig][mask_alpha]alphamerge[alphaed];"
         f"[2:v]{bg_filter}[bg];"
-        f"[bg][alphaed]overlay[out]"
+        f"[bg][alphaed]overlay=shortest=1:format=auto[out]"
     )
 
     os.makedirs(os.path.dirname(os.path.abspath(resolved_path)) or '.', exist_ok=True)
 
     cmd = [
 
-        'ffmpeg', '-y', '-hide_banner',
+        'ffmpeg', '-y', '-hwaccel', 'cuda',
         '-i', source_video,
         '-i', mask_video,
-        '-f', 'lavfi', '-i', f'color=c={background_color}:s={src_w}x{src_h}:d={src_duration}',
-        # '-shortest',
+        '-f', 'lavfi', '-i', f'color=c={background_color}:s={src_w}x{src_h}:d={src_duration}:r={src_fps}',
         '-filter_complex', filter_complex,
         '-map', '[out]',
-        '-fps_mode', 'cfr',
-        # '-r', str(src_fps) if src_fps is not None else '60',
-        '-c:v', ENCODER,
-        '-preset', 'p5',
-        '-profile:v', 'main10',
-        '-pix_fmt', str(src_fmt) if src_fmt is not None else 'yuv420p',
-        '-g', '20',
-        '-b:v', '80M',
-        '-maxrate', '100M',
-        '-bufsize', '160M',
-        # '-rc:v', 'cbr',
-        '-tag:v', 'hvc1',
-        '-map', '0:a?',
-        # '-aspect', '2:1',
-        '-c:a', 'copy',
-        '-color_primaries', 'bt709',
-        '-color_trc', 'bt709',
-        '-colorspace', 'bt709',
-        '-metadata:s:v:0', 'stereo_mode=left_right',
-        '-movflags', '+faststart+write_colr+use_metadata_tags',
-        resolved_path,
-
+     
     ]
+    cmd.extend(encoder_args(src_fps))
+    cmd.append(resolved_path)
+
     rc, stderr_text = ffmpeg_progress(cmd)
     if rc != 0:
         raise RuntimeError(f"Mask overlay failed.\n\nFFmpeg tail:\n{''.join(stderr_text.splitlines(True)[-40:])}")
@@ -817,19 +794,20 @@ def mask_overlay(source_video: str, mask_video: str, output_path: str, backgroun
 def stereo_video(left_video: str, right_video: str, output_path: str) -> str:
 
     w, h, fps, dur, pix_fmt = info(aorb(left_video, right_video))
-    enc = encoder_args(fps=fps, pix_fmt=pix_fmt)
+    enc = encoder_args(fps)
     filter_complex = "[0:v][1:v]hstack=inputs=2[out]"
 
     cmd = [
 
-        'ffmpeg', '-y', '-hwaccel', 'auto',
+        'ffmpeg', '-y', '-hwaccel', 'cuda',
         '-i', left_video,
         '-i', right_video,
         '-filter_complex', filter_complex,
         '-map', '[out]',
-        *enc,
-        output_path,
     ]
+
+    cmd.extend(encoder_args(fps))
+    cmd.append(output_path)
 
     result = subprocess.run(cmd, capture_output=True, text=True)
 
@@ -948,7 +926,7 @@ def alpha_command(
     _,_,src_fps,_,pix_fmt = info(video_path)
     video_w, video_h = video_dims
     out_h = _ceil_to(video_h, 32)
-    enc = encoder_args(src_fps, pix_fmt=pix_fmt)
+    enc = encoder_args(src_fps)
 
     if video_w == 2 * video_h:
         out_w = 2 * out_h
@@ -1181,7 +1159,7 @@ def decompose_alpha_video(
             '-i', str(cleanup_mask),
             '-filter_complex', clean_filter,
             '-map', '[out]',
-            *encoder_args(fps=src_fps, pix_fmt=src_pix_fmt),
+            *encoder_args(src_fps),
             str(video_out),
         ]
     else:
@@ -1626,6 +1604,9 @@ class sam3_video_inference:
 def sam3_video(frames_dir, video_args) -> None:
 
     output_size = video_args.mask_height
+    if output_size < 1008:
+        output_size = 1008
+
     folder = Path(frames_dir)
     image_files = sorted(list(folder.glob("*.png")) + list(folder.glob("*.jpg")))
     image_files = [f for f in image_files if "_mask" not in f.stem]
@@ -1655,10 +1636,10 @@ def sam3_video(frames_dir, video_args) -> None:
 
         if image.height != output_size:
             full = image
-            image = full.resize((output_size, output_size), Image.Resampling.NEAREST)
+            image = full.resize((output_size, output_size), Image.Resampling.BILINEAR)
             full.close()
 
-        frame_shapes.append((image.height, image.width))
+        frame_shapes.append((output_size, output_size))
         image.save(seq_dir / f"{i:06d}.jpg", format="JPEG", quality=100)
         image.close()
 
@@ -1912,10 +1893,13 @@ def _matanyone_process_segment(matanyone_model, device, inference_core_cls, job,
     r_erode = args.erode
     r_dilate = args.dilate
     suffix = job.get('suffix', '')
+    orig_h = job.get('mask_square', max_size)
+    orig_w = job.get('mask_square', max_size)
  
     _config_overrides(matanyone_model, job, verbose=(job.get('op_num', 1) == 1))
     processor = inference_core_cls(matanyone_model, cfg=matanyone_model.cfg)
     frames, fps, length, video_name = video_frames(input_path, max_size)
+
     frames = frames.float()
     repeated_frames = frames[0].unsqueeze(0).repeat(n_warmup, 1, 1, 1)
     frames = torch.cat([repeated_frames, frames], dim=0).float()
@@ -1972,27 +1956,25 @@ def _matanyone_process_segment(matanyone_model, device, inference_core_cls, job,
         first_frame = first_frame.squeeze(0)
     height, width = first_frame.shape
 
-    command = [
+    filter_complex = f"[0:v]fps={fps},setpts=N/({fps}*TB),scale={orig_h}x{orig_w}:flags=lanczos:out_range=tv:threads=0"
+
+    cmd = [
         "ffmpeg",
         "-y",
         "-f", "rawvideo",
         "-vcodec", "rawvideo",
         "-pix_fmt", "gray",          
-        "-s", f"{width}x{height}",
+        "-s", f"{height}x{width}",
         "-r", str(fps),
-        "-i", "-",                  
-        "-c:v", ENCODER,
-        "-pix_fmt", "yuv420p",     
-        '-preset', 'p5',
-        '-profile:v', 'main10',            
-        output_file
+        "-i", "-",        
     ]
+    cmd.extend(encoder_args(fps))
+    cmd.append(output_file)
 
-    process = subprocess.Popen(command, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    process = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
 
     try:
         for pha in phas:
-
             process.stdin.write(pha.numpy().tobytes())
     finally:
         process.stdin.close()
@@ -2073,7 +2055,7 @@ def matanyone(segments: List[SegmentInfo], segments_dir: Path, mask_square: int,
                 'input_path': sbs_video,
                 'mask_path': seg.sbs_mask_path,
                 'output_path': matanyout,
-     
+                'mask_square': mask_square,
                 'ma2_mem_every': args.ma2_mem_every,
                 'ma2_max_mem_frames': args.ma2_max_mem_frames,
                 'ma2_use_long_term': args.ma2_use_long_term,
@@ -2088,7 +2070,7 @@ def matanyone(segments: List[SegmentInfo], segments_dir: Path, mask_square: int,
                 'input_path': seg_left_video,
                 'mask_path': seg.left_mask_path,
                 'output_path': matanyout,
-       
+                'mask_square': mask_square,
                 'ma2_mem_every': args.ma2_mem_every,
                 'ma2_max_mem_frames': args.ma2_max_mem_frames,
                 'ma2_use_long_term': args.ma2_use_long_term,
@@ -2100,7 +2082,7 @@ def matanyone(segments: List[SegmentInfo], segments_dir: Path, mask_square: int,
                 'input_path': seg_right_video,
                 'mask_path': seg.right_mask_path,
                 'output_path': matanyout,
-     
+                'mask_square': mask_square,
                 'ma2_mem_every': args.ma2_mem_every,
                 'ma2_max_mem_frames': args.ma2_max_mem_frames,
                 'ma2_use_long_term': args.ma2_use_long_term,
@@ -2169,7 +2151,7 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path, batch_m
 
     video_args = argparse.Namespace(**vars(args), video=video_path)
     alpha_output = video_args.alpha
-    mask_square = video_args.mask_height
+    mask_square = orig_h
     overlay_mask = video_args.overlay_mask
 
     if overlay_mask is None:
@@ -2223,9 +2205,12 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path, batch_m
                 overlay_target,
                 background_color=video_args.overlay_color,
                 video_args=video_args,
+
             )
 
-            print(f'Overlay preview: {overlay_video}')
+        src_w, src_h, src_fps, src_duration, src_fmt = info(overlay_target)
+        print(f"Overlay video info: {src_w}x{src_h} @ {src_fps}fps, duration: {src_duration}, format: {src_fmt}")
+
         print('=' * 60)
         print(f'Segments: {len(segments)} ({len(mask_segments)} masks) - Output: {output_mask}')
         print()
