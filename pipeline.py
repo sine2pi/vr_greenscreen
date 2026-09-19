@@ -8,6 +8,13 @@ from dataclasses import dataclass
 from enum import Enum
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+_matanyone_is_first_status = True
+_matanyone_tqdm_lines = 1
+
+IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.JPG', '.JPEG', '.PNG')
+VIDEO_EXTENSIONS = ('.mp4', '.mov', '.avi', '.MP4', '.MOV', '.AVI')
+ENCODER = 'hevc_nvenc'
+MATANYONE_V2 = "https://github.com/pq-yang/MatAnyone2/releases/download/v1.0.0/matanyone2.pth"
 
 class SegmentType(Enum):
     MASK = 'mask'
@@ -26,14 +33,6 @@ class SegmentInfo:
     sbs_mask_path: str = ''
     video_path: str = ''
 
-_matanyone_is_first_status = True
-_matanyone_tqdm_lines = 1
-
-IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.JPG', '.JPEG', '.PNG')
-VIDEO_EXTENSIONS = ('.mp4', '.mov', '.avi', '.MP4', '.MOV', '.AVI')
-ENCODER = 'hevc_nvenc'
-MATANYONE_V2 = "https://github.com/pq-yang/MatAnyone2/releases/download/v1.0.0/matanyone2.pth"
-
 def have(a):
     if a == bool:
         if a:
@@ -45,6 +44,43 @@ def aborc(a, b, c):
     return aorb(a, aorb(b, c))
 def abcord(a, b, c, d):
     return aorb(a, aborc(b, c, d))
+
+def _input_pairs(input_path: str) -> list[tuple[Path, Path]]:
+    path = Path(input_path).expanduser().resolve()
+
+    if not path.exists():
+        raise FileNotFoundError(f"Input path not found: {input_path}")
+
+    if path.is_file():
+        if path.suffix.lower() not in VIDEO_EXTENSIONS:
+            raise RuntimeError(f"Unsupported video file: {path}")
+
+        mask_path = path.with_name(f"{path.stem}_mask{path.suffix}")
+
+        if not mask_path.exists():
+            raise FileNotFoundError(f"Mask not found for {path}: expected {mask_path}")
+
+        return [(path, mask_path)]
+
+    if not path.is_dir():
+        raise RuntimeError(f"Input path is not a file or folder: {input_path}")
+
+    pairs: list[tuple[Path, Path]] = []
+    for candidate in sorted(path.rglob('*')):
+        if not candidate.is_file() or candidate.suffix.lower() not in VIDEO_EXTENSIONS:
+            continue
+
+        if candidate.stem.endswith('_mask'):
+            continue
+
+        mask_path = candidate.with_name(f"{candidate.stem}_mask{candidate.suffix}")
+        if mask_path.exists():
+            pairs.append((candidate.resolve(), mask_path.resolve()))
+
+    if not pairs:
+        raise RuntimeError(f"No original/mask video pairs found in folder: {input_path}")
+
+    return pairs
 
 def write_video_ffmpeg(output_file, arrays, fps, crf="15"):
 
@@ -624,7 +660,7 @@ def extract_segment_frames(
         '-r', str(fps) if fps is not None else '60',
         '-c:v', ENCODER,
         '-profile:v', 'main10',
-        '-pix_fmt', 'yuv420p',
+        '-pix_fmt', str(pix_fmt),
         '-b:v', '50M',
         '-map', '0:a?',
         '-c:a', 'copy',
@@ -723,10 +759,12 @@ def mask_overlay(source_video: str, mask_video: str, output_path: str, backgroun
     src_w, src_h, src_fps, src_duration, src_fmt = info(source_video)
     mask_w, mask_h, mask_fps, mask_duration, mask_fmt = info(mask_video)
     enc = encoder_args(fps=src_fps, pix_fmt=src_fmt)
+    print(f"src: {src_w}x{src_h} @ {src_fps}fps, duration: {src_duration}, format: {src_fmt}")
+    print(f"mask: {mask_w}x{mask_h} @ {mask_fps}fps, duration: {mask_duration}, format: {mask_fmt}")
 
-    orig_filter = f"format=rgba,fps={src_fps},setpts=N/({src_fps}*TB),scale={src_w}:{src_h}:flags=bilinear"
-    mask_filter = f"format=gray,fps={src_fps},setpts=N/({src_fps}*TB),scale={src_w}:{src_h}:flags=bilinear,lut=a=val/255"
-    bg_filter = f"format=rgba,fps={src_fps},setpts=N/({src_fps}*TB),scale={src_w}:{src_h}:flags=bilinear"
+    orig_filter = f"format=rgba"
+    mask_filter = f"format=gray,scale={src_w}:{src_h}:flags=bilinear,lut=a=val/255"
+    bg_filter = f"format=rgba"
 
     filter_complex = (
 
@@ -734,7 +772,7 @@ def mask_overlay(source_video: str, mask_video: str, output_path: str, backgroun
         f"[1:v]{mask_filter}[mask_alpha];"
         f"[orig][mask_alpha]alphamerge[alphaed];"
         f"[2:v]{bg_filter}[bg];"
-        f"[bg][alphaed]overlay=shortest=1:format=auto[out]"
+        f"[bg][alphaed]overlay[out]"
     )
 
     os.makedirs(os.path.dirname(os.path.abspath(resolved_path)) or '.', exist_ok=True)
@@ -744,10 +782,30 @@ def mask_overlay(source_video: str, mask_video: str, output_path: str, backgroun
         'ffmpeg', '-y', '-hide_banner',
         '-i', source_video,
         '-i', mask_video,
-        '-f', 'lavfi', '-i', f'color=c={background_color}:s={src_w}x{src_h}:d={src_duration}:r={src_fps}',
+        '-f', 'lavfi', '-i', f'color=c={background_color}:s={src_w}x{src_h}:d={src_duration}',
+        # '-shortest',
         '-filter_complex', filter_complex,
         '-map', '[out]',
-        *enc,
+        '-fps_mode', 'cfr',
+        # '-r', str(src_fps) if src_fps is not None else '60',
+        '-c:v', ENCODER,
+        '-preset', 'p5',
+        '-profile:v', 'main10',
+        '-pix_fmt', str(src_fmt) if src_fmt is not None else 'yuv420p',
+        '-g', '20',
+        '-b:v', '80M',
+        '-maxrate', '100M',
+        '-bufsize', '160M',
+        # '-rc:v', 'cbr',
+        '-tag:v', 'hvc1',
+        '-map', '0:a?',
+        # '-aspect', '2:1',
+        '-c:a', 'copy',
+        '-color_primaries', 'bt709',
+        '-color_trc', 'bt709',
+        '-colorspace', 'bt709',
+        '-metadata:s:v:0', 'stereo_mode=left_right',
+        '-movflags', '+faststart+write_colr+use_metadata_tags',
         resolved_path,
 
     ]
@@ -879,43 +937,6 @@ def get_circle_mask(size: int) -> str:
         subprocess.run(cmd, capture_output=True, text=True)
 
     return str(mask_path)
-
-def input_pairs(input_path: str) -> list[tuple[Path, Path]]:
-    path = Path(input_path).expanduser().resolve()
-
-    if not path.exists():
-        raise FileNotFoundError(f"Input path not found: {input_path}")
-
-    if path.is_file():
-        if path.suffix.lower() not in VIDEO_EXTENSIONS:
-            raise RuntimeError(f"Unsupported video file: {path}")
-
-        mask_path = path.with_name(f"{path.stem}_mask{path.suffix}")
-
-        if not mask_path.exists():
-            raise FileNotFoundError(f"Mask not found for {path}: expected {mask_path}")
-
-        return [(path, mask_path)]
-
-    if not path.is_dir():
-        raise RuntimeError(f"Input path is not a file or folder: {input_path}")
-
-    pairs: list[tuple[Path, Path]] = []
-    for candidate in sorted(path.rglob('*')):
-        if not candidate.is_file() or candidate.suffix.lower() not in VIDEO_EXTENSIONS:
-            continue
-
-        if candidate.stem.endswith('_mask'):
-            continue
-
-        mask_path = candidate.with_name(f"{candidate.stem}_mask{candidate.suffix}")
-        if mask_path.exists():
-            pairs.append((candidate.resolve(), mask_path.resolve()))
-
-    if not pairs:
-        raise RuntimeError(f"No original/mask video pairs found in folder: {input_path}")
-
-    return pairs
 
 def alpha_command(
     video_path: str,
@@ -1071,7 +1092,8 @@ def pack_video(
     return output_path
 
 def packer(input_path: str, sync_frames=None, fisheye=False) -> int:
-    input_pairs = input_pairs(input_path)
+
+    input_pairs = _input_pairs(input_path)
     processed = []
     for index, (video_path, mask_path) in enumerate(input_pairs, 1):
 
@@ -1488,11 +1510,11 @@ class sam3_video_inference:
             bpe_path = bpe_path,
             version = video_args.model,
             compile = False,
-            warm_up = False,
+            warm_up = True,
             max_num_objects = 1,
             multiplex_count = 16,
             use_rope_real = False,
-            async_loading_frames = False,
+            async_loading_frames = True,
             num_obj_for_compile=1,
             apply_temporal_disambiguation=True,
             device = "cuda",
@@ -1633,7 +1655,7 @@ def sam3_video(frames_dir, video_args) -> None:
 
         if image.height != output_size:
             full = image
-            image = full.resize((output_size, output_size), Image.Resampling.BICUBIC)
+            image = full.resize((output_size, output_size), Image.Resampling.NEAREST)
             full.close()
 
         frame_shapes.append((image.height, image.width))
@@ -2176,7 +2198,13 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path, batch_m
             video_args=video_args,
         )
 
-        segments = matanyone(segments, segments_dir, mask_square, video_args)
+        segments = matanyone(
+            segments, 
+            segments_dir, 
+            mask_square, 
+            video_args
+            )
+
         output_mask = finalize(
             segments,
             video_name,
@@ -2296,12 +2324,12 @@ def main() -> int:
     parser.add_argument("--segment-length", type=float, default=6)
     parser.add_argument("--erode", type=int, default=0)
     parser.add_argument("--dilate", type=int, default=0)
-    parser.add_argument("--prompt", type=str, default="one girl")
+    parser.add_argument("--prompt", type=str, default="agirl")
     parser.add_argument("--warmup", type=int, default=6)
-    parser.add_argument("--add-box", type=bool, default=True)
+    parser.add_argument("--add-box", type=bool, default=False)
     parser.add_argument("--sub-box", type=bool, default=False)
     parser.add_argument("--sbs", type=bool, default=False)
-    parser.add_argument('--ma2-mem-every', type=int, default=2, help='Override MatAnyone mem_every (works for v1 and v2; e.g. 2 or 3 for faster refresh)')
+    parser.add_argument('--ma2-mem-every', type=int, default=6, help='Override MatAnyone mem_every (works for v1 and v2; e.g. 2 or 3 for faster refresh)')
     parser.add_argument('--ma2-max-mem-frames', type=int, default=2, help='Override MatAnyone memory window in frames (works for v1 and v2)')
     parser.add_argument('--ma2-use-long-term', type=str, default='off', choices=['auto', 'on', 'off'], help='Override MatAnyone long-term memory ')
     parser.add_argument('--overlay-output', type=str, default='input_path', help='Write a composited video with the mask over the original source')
