@@ -594,14 +594,26 @@ class Attention(nn.Module):
                 relative_coords=self.relative_coords,
             )
 
-            # sdpa expects [B, nheads, H*W, C] so we transpose back
             q = q.reshape(B, self.num_heads, H * W, -1)
             k = k.reshape(B, self.num_heads, H * W, -1)
 
         if self.attn_type == AttentionType.Vanilla:
+            if self.use_fa3:
+                from sam3.perflib.fa3 import flash_attn_func
 
-            with sdpa_kernel([SDPBackend.CUDNN_ATTENTION, SDPBackend.MATH]):
+                x = flash_attn_func(
+                    q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2)
+                ).transpose(1, 2)
+            else:
                 x = F.scaled_dot_product_attention(q, k, v)
+        else:
+            raise NotImplementedError
+
+        # if self.attn_type == AttentionType.Vanilla:
+        #     # with sdpa_kernel([SDPBackend.CUDNN_ATTENTION, SDPBackend.MATH]):
+        #     x = F.scaled_dot_product_attention(q, k, v)
+        # else:
+        #     raise NotImplementedError
 
         if ndim == 4:
             x = (
