@@ -2431,7 +2431,7 @@ def main() -> int:
     parser.add_argument('--overlay-output', type=str, default='input_path', help='Write a composited video with the mask over the original source')
     parser.add_argument('--overlay-color', type=str, default='0x00ff00', help='Background color for overlay (use 0x00ff00 for pure green)')
     parser.add_argument('--overlay-mask', type=str, default=None, help='Write a composited video with a provided mask over the original source')
-    parser.add_argument('--alpha-packer', type=str, default=None, help='Run alpha packer. Provide folder with video and mask (_mask.<ext>)')
+    parser.add_argument('--alpha-packer', type=bool, default=False, help='Run alpha packer. Provide folder with video and mask (_mask.<ext>) for  input_path')
     parser.add_argument('--decompose-alpha', '--decompose_alpha', dest='decompose_alpha', action='store_true', help='Reverse of alpha packer')
     parser.add_argument('--decompose-clean-mask', type=str, default='assets/black_mask.png', help='PNG overlay used to clean alpha payload regions')
     parser.add_argument('--alpha', type=bool, default=False, help='Run alpha packer instead of overlay. --alpha <true|false>')
@@ -2451,7 +2451,7 @@ def main() -> int:
         args.ma2_use_long_term = (args.ma2_use_long_term == 'on')
 
     if args.alpha_packer:
-        return packer(input_path=args.alpha_packer, fisheye=args.fisheye180)
+        return packer(args.input_path, fisheye=args.fisheye180)
     if args.decompose_alpha:
         cleanup_mask = args.decompose_clean_mask
         if cleanup_mask is not None and str(cleanup_mask).strip().lower() in {'none', 'off', 'false', '0'}:
