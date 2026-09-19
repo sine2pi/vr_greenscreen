@@ -48,6 +48,28 @@ def aborc(a, b, c):
 def abcord(a, b, c, d):
     return aorb(a, aborc(b, c, d))
 
+def _save_frames_as_folder(frames, out_dir: Path):
+    _ensure_dir(out_dir)
+    for i, frame_rgb in enumerate(frames):
+        frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+        cv2.imwrite(str(out_dir / f"{i:05d}.png"), frame_bgr)
+
+def _save_mask(mask_gray: np.ndarray, out_path: Path):
+    _ensure_dir(out_path.parent)
+    Image.fromarray(mask_gray, mode="L").save(str(out_path))
+
+def _ensure_dir(path: Path):
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+def _safe_rel(path: Path, base: Path):
+    try:
+        return str(path.relative_to(base))
+    except Exception:
+        return str(path)
+
+##### Video Processing Utilities
+
 def check_vfr(video_path: str, max_packets_to_read: int = 500) -> bool:
 
     cmd = [
@@ -130,16 +152,17 @@ def encoder_args(fps=None, pix_fmt=None) -> list[str]:
 
     return [
 
+        '-sws_flags', 'lanczos+full_chroma_int+accurate_rnd+full_chroma_inp',
         '-fps_mode', 'cfr',
         '-r', str(fps) if fps is not None else '60',
         '-c:v', ENCODER,
         '-preset', 'p5',
         '-profile:v', 'main10',
-        '-pix_fmt', 'yuv420p',
+        '-pix_fmt', str(pix_fmt) if pix_fmt is not None else 'yuv420p',
         '-g', '20',
-        '-b:v', '80M',
-        '-maxrate', '100M',
-        '-bufsize', '160M',
+        '-b:v', '70M',
+        '-maxrate', '90M',
+        '-bufsize', '140M',
         '-rc:v', 'cbr',
         '-tag:v', 'hvc1',
         '-map', '0:a?',
@@ -310,7 +333,7 @@ def cfr_video(source_video, video_args = None, progress_prefix: str = "[normaliz
     fps = normalize_fps(fps)
 
     cmd = [
-        'ffmpeg', '-y', '-hwaccel', 'auto',
+        'ffmpeg', '-y', '-hwaccel', 'cuda',
         '-i', source_video,
         '-filter_complex', (
             f'[0:v]fps={fps},setpts=N/({fps}*TB),scale=w={w}:h={h}:flags=bilinear:out_range=tv:threads=0[v];'
@@ -360,7 +383,7 @@ def resize_video(source_video: str, output_video: str, width: int, height: int, 
 
     cmd = [
 
-        'ffmpeg', '-y', '-hwaccel', 'auto',
+        'ffmpeg', '-y', '-hwaccel', 'cuda',
         '-i', source_video,
         '-filter_complex', f'[0:v]fps={fps},setpts=N/({fps}*TB),scale={width}:{height}:flags=bilinear',
         *enc,
@@ -495,7 +518,7 @@ def eye_frames(video_path: str, timestamps: list[float], output_dir: str, height
 
         cmd = [
 
-            'ffmpeg', '-y', '-hwaccel', 'auto',
+            'ffmpeg', '-y', '-hwaccel', 'cuda',
             '-ss', str(ts),
             '-i', video_path,
             '-vf', crop_filter,
@@ -699,7 +722,6 @@ def mask_overlay(source_video: str, mask_video: str, output_path: str, backgroun
 
     duration = min(src_duration, mask_duration)
 
-
     filter_complex = (
 
         f"[0:v]format=yuva420p[orig];"
@@ -750,6 +772,34 @@ def stereo_video(left_video: str, right_video: str, output_path: str) -> str:
 
     return output_path
 
+# def video_frames(frame_root, max_size):
+
+#     if frame_root.endswith(VIDEO_EXTENSIONS):
+#         video_name = os.path.basename(frame_root)[:-4]
+#         container = av.open(frame_root)
+#         stream = container.streams.video[0]
+#         fps = float(stream.average_rate)
+#         frames_list = []
+
+#         for frame in container.decode(stream):
+#             arr = frame.to_ndarray(format='rgb24')
+#             frames_list.append(arr)
+
+#         container.close()
+#         frames = torch.from_numpy(np.stack(frames_list)).permute(0, 3, 1, 2).contiguous()
+#         frames = frames.float()
+
+#         if max_size is not None:
+#             if frames.shape != (max_size, max_size):
+#                 frames = torch.nn.functional.interpolate(
+#                     frames,
+#                     size=(max_size, max_size),
+#                     mode="area",
+#                 )
+
+#     length = frames.shape[0]
+#     return frames, fps, length, video_name
+
 def get_video_paths(input_root):
     video_paths = []
 
@@ -791,16 +841,11 @@ def get_circle_mask(size: int) -> str:
 
     except ImportError:
         cmd = [
-            "ffmpeg",
-            "-y",
-            "-f",
-            "lavfi",
-            "-i",
-            f"color=c=white:s={size}x{size}:d=1,format=gray",
-            "-vf",
-            "geq=lum='if(lte((X-W/2)*(X-W/2)+(Y-H/2)*(Y-H/2),(min(W,H)/2)*(min(W,H)/2)),255,0)'"
-            "-frames:v",
-            "1",
+            "ffmpeg","-y",
+            "-f","lavfi",
+            "-i", f"color=c=white:s={size}x{size}:d=1,format=gray",
+            "-vf", "geq=lum='if(lte((X-W/2)*(X-W/2)+(Y-H/2)*(Y-H/2),(min(W,H)/2)*(min(W,H)/2)),255,0)'"
+            "-frames:v", "1",
             str(mask_path),
         ]
 
@@ -808,7 +853,7 @@ def get_circle_mask(size: int) -> str:
 
     return str(mask_path)
 
-def input_pairs(input_path: str) -> list[tuple[Path, Path]]:
+def _input_pairs(input_path: str) -> list[tuple[Path, Path]]:
     path = Path(input_path).expanduser().resolve()
 
     if not path.exists():
@@ -819,7 +864,6 @@ def input_pairs(input_path: str) -> list[tuple[Path, Path]]:
             raise RuntimeError(f"Unsupported video file: {path}")
 
         mask_path = path.with_name(f"{path.stem}_mask{path.suffix}")
-
         if not mask_path.exists():
             raise FileNotFoundError(f"Mask not found for {path}: expected {mask_path}")
 
@@ -832,30 +876,48 @@ def input_pairs(input_path: str) -> list[tuple[Path, Path]]:
     for candidate in sorted(path.rglob('*')):
         if not candidate.is_file() or candidate.suffix.lower() not in VIDEO_EXTENSIONS:
             continue
-
         if candidate.stem.endswith('_mask'):
             continue
-
         mask_path = candidate.with_name(f"{candidate.stem}_mask{candidate.suffix}")
         if mask_path.exists():
             pairs.append((candidate.resolve(), mask_path.resolve()))
-
     if not pairs:
         raise RuntimeError(f"No original/mask video pairs found in folder: {input_path}")
-
     return pairs
 
-def alpha_command(
+def pack_video(
     video_path: str,
     mask_path: str,
-    output_path: str,
-    video_dims: tuple[int, int],
-) -> list[str]:
+    output_path: str | None = None,
+    sync_frames = None,
+    progress_prefix: str = "[ALPHA] "
 
-    _,_,src_fps,_,pix_fmt = info(video_path)
-    video_w, video_h = video_dims
+) -> str:
+
+    if not output_path:
+        base, ext = os.path.splitext(video_path)
+        output_path = f"{base}_alpha{ext}"
+
+    print(f"{'='*60}")
+    print(f"Alpha packing: {os.path.basename(video_path)}")
+    print(f"{'='*60}")
+
+    actual_mask = mask_path
+    synced_tmp = None
+
+    if sync_frames is not None:
+        fps = info(mask_path)[2]
+        print(f"Syncing mask by {sync_frames} frame(s)...")
+        synced_tmp = sync_mask_to_video(mask_path, fps=fps, frame_offset=sync_frames)
+        actual_mask = synced_tmp
+
+    video_w, video_h, src_fps, src_duration, pix_fmt = info(video_path)
+    mask_w, mask_h, *_ = info(actual_mask)
+    print(f"Video: {video_w}x{video_h}")
+    print(f"Mask: {mask_w}x{mask_h}")
+
     out_h = _ceil_to(video_h, 32)
-    enc = encoder_args(src_fps, pix_fmt=pix_fmt)
+    enc = encoder_args(src_fps, pix_fmt)
 
     if video_w == 2 * video_h:
         out_w = 2 * out_h
@@ -911,17 +973,14 @@ def alpha_command(
             "format=gbrp[right_scaled]"
         ),
         "[right_scaled][circle_r]alphamerge,format=rgba[right_circle]",
-
         "[left_circle]split=2[left_for_top][left_for_bottom]",
         f"[left_for_top]crop={overlay_size}:{half_overlay}:0:0,format=yuva420p[left_top]",
         f"[left_for_bottom]crop={overlay_size}:{half_overlay}:0:{half_overlay},format=yuva420p[left_bottom]",
-
         "[right_circle]split=4[r1][r2][r3][r4]",
         f"[r1]crop={half_overlay}:{half_overlay}:0:0,format=yuva420p[right_tl]",
         f"[r2]crop={half_overlay}:{half_overlay}:{half_overlay}:0,format=yuva420p[right_tr]",
         f"[r3]crop={half_overlay}:{half_overlay}:0:{half_overlay},format=yuva420p[right_bl]",
         f"[r4]crop={half_overlay}:{half_overlay}:{half_overlay}:{half_overlay},format=yuva420p[right_br]",
-
         "[vid][left_top]overlay=x=(main_w-overlay_w)/2:y=main_h-overlay_h[v1]",
         "[v1][left_bottom]overlay=x=(main_w-overlay_w)/2:y=0[v2]",
         "[v2][right_tl]overlay=x=main_w-overlay_w:y=main_h-overlay_h[v3]",
@@ -948,45 +1007,10 @@ def alpha_command(
         output_path,
     ]
 
-    return cmd
-
-def pack_video(
-    video_path: str,
-    mask_path: str,
-    output_path: str | None = None,
-    sync_frames = None,
-    progress_prefix: str = "[ALPHA] "
-
-) -> str:
-
-    if not output_path:
-        base, ext = os.path.splitext(video_path)
-        output_path = f"{base}_alpha{ext}"
-
-    print(f"{'='*60}")
-    print(f"Alpha packing: {os.path.basename(video_path)}")
-    print(f"{'='*60}")
-
-    actual_mask = mask_path
-    synced_tmp = None
-
-    if sync_frames is not None:
-        fps = info(mask_path)[2]
-        print(f"Syncing mask by {sync_frames} frame(s)...")
-        synced_tmp = sync_mask_to_video(mask_path, fps=fps, frame_offset=sync_frames)
-        actual_mask = synced_tmp
-
-    video_w, video_h, *_ = info(video_path)
-    mask_w, mask_h, *_ = info(actual_mask)
-    print(f"Video: {video_w}x{video_h}")
-    print(f"Mask: {mask_w}x{mask_h}")
-
-    cmd = alpha_command(video_path, actual_mask, output_path, (video_w, video_h))
     rc, stderr_text = ffmpeg_progress(cmd, progress_prefix=progress_prefix)
 
     if rc != 0:
         raise RuntimeError(
-
             "Alpha failed.\n\nFFmpeg tail:\n"
             + ''.join(stderr_text.splitlines(True)[-40:])
         )
@@ -999,7 +1023,7 @@ def pack_video(
     return output_path
 
 def packer(input_path: str, sync_frames=None, fisheye=False) -> int:
-    input_pairs = input_pairs(input_path)
+    input_pairs = _input_pairs(input_path)
     processed = []
     for index, (video_path, mask_path) in enumerate(input_pairs, 1):
 
@@ -1021,7 +1045,7 @@ def packer(input_path: str, sync_frames=None, fisheye=False) -> int:
 
     return 0
 
-def _decompose_output_paths(packed_video: Path) -> tuple[Path, Path]:
+def _decomp_paths(packed_video: Path) -> tuple[Path, Path]:
     stem = packed_video.stem
 
     if stem.endswith('_alpha'):
@@ -1033,7 +1057,7 @@ def _decompose_output_paths(packed_video: Path) -> tuple[Path, Path]:
     mask_output = packed_video.with_name(f'{base_stem}_mask{packed_video.suffix}')
     return video_output, mask_output
 
-def decompose_alpha_video(
+def alpha_decomp(
     packed_video: str,
     video_output: str | None = None,
     mask_output: str | None = None,
@@ -1058,7 +1082,7 @@ def decompose_alpha_video(
     if src_w < overlay_size or src_h < overlay_size:
         raise RuntimeError(f'Packed video dimensions are invalid for alpha payload decode: {src_w}x{src_h}')
 
-    default_video_out, default_mask_out = _decompose_output_paths(packed_path)
+    default_video_out, default_mask_out = _decomp_paths(packed_path)
     video_out = Path(video_output).expanduser().resolve() if video_output else default_video_out
     mask_out = Path(mask_output).expanduser().resolve() if mask_output else default_mask_out
 
@@ -1160,7 +1184,7 @@ def decompose_alpha(input_path: str, cleanup_mask_path: str | None = None) -> in
 
     for index, packed_video in enumerate(packed_videos, 1):
         print(f"[{index}/{len(packed_videos)}] Decompose: {packed_video.name}")
-        video_out, mask_out = decompose_alpha_video(
+        video_out, mask_out = alpha_decomp(
             str(packed_video),
             cleanup_mask_path=cleanup_mask_path,
         )
@@ -1224,7 +1248,6 @@ def fisheye180(input_video: str, mask_path: str | None = None) -> str:
         f'[right_src]crop=iw/2:ih:iw/2:0,v360=hequirect:fisheye:w={eye_w}:h={target_h}[right]',
         f'[left][right]hstack,scale=w={target_w}:h={target_h}:flags=bilinear[stacked]',
     ]
-
     mask_path = 'assets/black_mask.png'
     if mask_path is not None:
         mask_path = str(Path(mask_path).expanduser().resolve())
@@ -1345,15 +1368,16 @@ def video_frames(frame_root, max_size):
 
 class TorchCodecVideoLoader:
 
-    def __init__(self, video_path, image_size, offload_video_to_cpu, img_mean, img_std, gpu_device=None):
+    def __init__(self, video_path, image_size=None, offload_video_to_cpu=False, img_mean=None, img_std=None, gpu_device=None, norm=False):
         from torchcodec import _core as core
 
         self.image_size = image_size
+        self.norm = norm
         self.out_device = torch.device("cpu") if offload_video_to_cpu else (gpu_device or torch.device("cuda"))
         decode_device = (gpu_device or torch.device("cuda")) if torch.cuda.is_available() else torch.device("cpu")
-
-        self.img_mean = torch.tensor(img_mean, dtype=torch.float16, device=self.out_device).view(3, 1, 1)
-        self.img_std = torch.tensor(img_std, dtype=torch.float16, device=self.out_device).view(3, 1, 1)
+        if norm:
+            self.img_mean = torch.tensor(img_mean, dtype=torch.float16, device=self.out_device).view(3, 1, 1)
+            self.img_std = torch.tensor(img_std, dtype=torch.float16, device=self.out_device).view(3, 1, 1)
 
         self.decoder = core.create_from_file(video_path, "exact")
         core.scan_all_streams_to_update_metadata(self.decoder)
@@ -1383,14 +1407,15 @@ class TorchCodecVideoLoader:
                 frame_data, *_ = core.get_frame_at_index(self.decoder, frame_index=i)
                 frame = frame_data.float()
 
-                if self.image_size:
+                if self.image_size is not None:
                     frame = torch.nn.functional.interpolate(frame.unsqueeze(0), size=(self.image_size, self.image_size), mode="bicubic", align_corners=False).squeeze(0)
 
                 frame = frame.half() / 255.0
                 if frame.device != self.out_device:
                     frame = frame.to(self.out_device, non_blocking=True)
 
-                frame = (frame - self.img_mean) / self.img_std
+                if self.norm:
+                    frame = (frame - self.img_mean) / self.img_std
 
                 self.images[i] = frame
                 pbar.update(1)
@@ -1417,6 +1442,8 @@ class TorchCodecVideoLoader:
     def get_all_frames(self, start=0, max_frames=None):
         end = min(start + max_frames, self.num_frames) if max_frames else self.num_frames
         return torch.stack([self[i] for i in range(start, end)])
+
+####### SAM3
 
 def download_ckpt_from_hf(version="sam3", force_download=False, local_files_only=False, token=None):
     from huggingface_hub import hf_hub_download
@@ -1479,7 +1506,7 @@ class sam3_video_inference:
             num_obj_for_compile=1,
             apply_temporal_disambiguation=True,
             device = "cuda",
-            video_loader_type="cv2",
+            video_loader_type="torchcodec",
             load_from_HF=False,
             default_output_prob_thresh=0.1, 
             strict_state_dict_loading=False, 
@@ -1575,6 +1602,8 @@ class sam3_video_inference:
 
         prompt_text = prompt if prompt is not None else None
         frame_idx = 0
+        # obj_id = 0
+
         response = predictor.handle_request(
             request=dict(
                 type = "add_prompt",
@@ -1583,6 +1612,7 @@ class sam3_video_inference:
                 text = prompt_text,
                 bounding_boxes = boxes,
                 bounding_box_labels = labels,
+                # obj_id = obj_id,
             )
         )
 
@@ -1651,6 +1681,7 @@ def sam3_video(frames_dir, video_args) -> None:
             image = full.resize((output_size, output_size), Image.Resampling.BILINEAR)
             full.close()
 
+        print(f"Processing frame {i}: {frame_path.name} size={image.width}x{image.height} at Sam 3.1 Dense Tracking")
         frame_shapes.append((output_size, output_size))
         image.save(seq_dir / f"{i:06d}.jpg", format="JPEG", quality=100)
         image.close()
@@ -1698,6 +1729,7 @@ def sam3_video(frames_dir, video_args) -> None:
     filled_masks, filled_count = fill_soft(soft_masks, valid_flags, max_interp_gap=6)
     if filled_count > 0:
         print(f"Filled {filled_count} missing/weak SAM3 masks using temporal soft-mask interpolation")
+    
     for out_path, soft_mask in zip(output_paths, filled_masks):
         mask = Image.fromarray((np.clip((soft_mask - 0.5) * 10.0 + 0.5, 0.0, 1.0) * 255).astype(np.uint8), mode="L")
         
@@ -1797,6 +1829,8 @@ def sam3_masks(
                 seg.sbs_mask_path = final_mask_path
 
     return mask_segments
+
+#### Matanyone and pipeline integration
 
 def _update_status(op_num: int, total_ops: int, label: str, duration: float) -> None:
     global _matanyone_is_first_status
@@ -1926,6 +1960,7 @@ def gen_erosion(alpha: torch.Tensor, min_kernel_size: int, max_kernel_size: int)
     return (eroded[0, 0, :alpha.shape[-2], :alpha.shape[-1]] == kernel.sum()).to(alpha.dtype) * 255
 
 def _matanyone_process_segment(matanyone_model, device, inference_core_cls, job, args) -> str:
+    # g = np.minimum(g, (r.astype(np.int32) + b.astype(np.int32)) // 2)
     n_warmup = args.warmup
     input_path = job['input_path']
     mask_path = job['mask_path']
@@ -1989,10 +2024,13 @@ def _matanyone_process_segment(matanyone_model, device, inference_core_cls, job,
     output_file = os.path.join(output_path, f'{video_name}_pha.mp4')
     
     first_frame = phas[0]
+    print(f"first_frame.shape: {first_frame.shape}")
  
     if first_frame.ndim == 3:
         first_frame = first_frame.squeeze(0)
     height, width = first_frame.shape
+
+    # filter_complex = f"[0:v]fps={fps},setpts=N/({fps}*TB),scale={orig_h}x{orig_w}:flags=lanczos:out_range=tv:threads=0"
 
     cmd = [
         "ffmpeg",
@@ -2017,6 +2055,30 @@ def _matanyone_process_segment(matanyone_model, device, inference_core_cls, job,
         process.wait()
 
     return output_file
+
+    # with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
+    #     for ti in tqdm.tqdm(range(length)):
+    #         image = frames[ti]
+    #         image = (image / 255.).float().to(device)
+
+    #         if ti == 0:
+    #             output_prob = processor.step(image, mask, objects=objects)
+    #             output_prob = processor.step(image, first_frame_pred=True, force_permanent=False)
+
+    #         elif ti <= n_warmup:
+    #             output_prob = processor.step(image, first_frame_pred=True, force_permanent=False)
+
+    #         else:
+    #             output_prob = processor.step(image)
+    #         mask = processor.output_prob_to_mask(output_prob, matting = True)
+    #         if ti > (n_warmup-1):
+    #             pha = torch.round(mask * 255).to(torch.uint8)
+    #             pha = torch.clamp(pha, 0, 255).cpu()
+    #             phas.append(pha)
+
+    # output_file = os.path.join(output_path, f'{video_name}_pha.mp4')
+    # imageio.mimwrite(output_file, phas, fps=fps, quality=10)
+    # return output_file
 
 def matanyone_inference(jobs: list[dict], on_segment_done, args) -> list[str]:
     global _matanyone_is_first_status
