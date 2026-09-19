@@ -571,11 +571,14 @@ def extract_segment_frames(
     fine_seek = aligned_start - keyframe_seek
     seg_dur = frames / fps
 
-    orig_eye = height
+    orig_eye = hi
     target_eye = target_height
 
-    frame_left = f"crop={orig_eye}:{orig_eye}:0:0"
-    frame_right = f"crop={orig_eye}:{orig_eye}:{orig_eye}:0"
+    # frame_left = f"crop={orig_eye}:{orig_eye}:0:0"
+    # frame_right = f"crop={orig_eye}:{orig_eye}:{orig_eye}:0"
+
+    frame_left = f"crop={target_eye}:{target_eye}:0:0"
+    frame_right = f"crop={target_eye}:{target_eye}:{target_eye}:0"
 
     video_left = f"crop={target_eye}:{target_eye}:0:0"
     video_right = f"crop={target_eye}:{target_eye}:{target_eye}:0"
@@ -585,17 +588,17 @@ def extract_segment_frames(
 
     filter_complex = (
 
-        f"[0:v]trim=start={fine_seek}:duration={seg_dur},setpts=PTS-STARTPTS,fps={fps},split=2[full][toscale];"
+        f"[0:v]trim=start={fine_seek}:duration={seg_dur},setpts=PTS-STARTPTS,fps={fps},scale={scale_w}:{scale_h}:flags=bilinear,split=2[full][toscale];"
         f"[full]split=2[fullL][fullR];"
         f"[fullL]select=eq(n\\,0),{frame_left}[frame_left];"
         f"[fullR]select=eq(n\\,0),{frame_right}[frame_right];"
-        f"[toscale]format=nv12,scale={scale_w}:{scale_h}:flags=bilinear,split=2[sL][sR];"
+        f"[toscale]format=nv12,split=2[sL][sR];"
         f"[sL]{video_left}[video_left];"
         f"[sR]{video_right}[video_right]"
     )
 
     cmd = [
-        'ffmpeg', '-y', '-hwaccel', 'auto',
+        'ffmpeg', '-y', '-hwaccel', 'cuda',
         "-hide_banner",
     ]
 
@@ -613,11 +616,19 @@ def extract_segment_frames(
         "-ss", str(keyframe_seek),
         "-i", stereo_video,
         "-filter_complex", filter_complex,
-        "-map", "[frame_left]", "-frames:v", "1", "-compression_level", "1", left_frame_out,
-        "-map", "[frame_right]", "-frames:v", "1", "-compression_level", "1", right_frame_out,
+        "-map", "[frame_left]", "-frames:v", "1", left_frame_out,
+        "-map", "[frame_right]", "-frames:v", "1", right_frame_out,
         *left_output_args,
         *right_output_args,
-        *enc,
+        '-fps_mode', 'cfr',
+        '-r', str(fps) if fps is not None else '60',
+        '-c:v', ENCODER,
+        '-profile:v', 'main10',
+        '-pix_fmt', 'yuv420p',
+        '-b:v', '50M',
+        '-map', '0:a?',
+        '-c:a', 'copy',
+
     ])
     process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
@@ -2117,8 +2128,10 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path, batch_m
     video_path = str(Path(video_path).expanduser().resolve())
     video_name = Path(video_path).stem
     orig_w, orig_h, fps, duration, pix_fmt  = info(video_path)
+
     print(f'Specs: {orig_w}x{orig_h}, {fps:.2f}fps, {format_timestamp(duration)}, Mask height: {args.mask_height}px')
     print()
+
     safe_name = ''.join(ch if ch.isalnum() or ch in '._-' else '_' for ch in video_name)
     temp_dir = temp_root / safe_name
 
@@ -2145,6 +2158,7 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path, batch_m
             )
 
         mask_segments = [s for s in segments if s.seg_type == SegmentType.MASK]
+
         mask_segments = extract_segments(
             video_args,
             segments,
@@ -2240,38 +2254,24 @@ def extract_segments(
 
     for i, seg in enumerate(mask_segments) if debug is None else enumerate(mask_segments[:debug]):
         
-        if args.sbs:
-            sbs_frame = str(frames_dir / f'seg{seg.index:02d}_sbs.png')
-            sbs_video = str(segments_dir / f'seg{seg.index:02d}_sbs.mp4')
-            sbs_frame_path, _ = extract_segment_sbs(
-                        stereo_video=args.video,
-                        start=seg.start_time,
-                        end=seg.end_time,
-                        target_height=args.mask_height,
-                        sbs_frame_out = sbs_frame,
-                        sbs_video_out = sbs_video,
-                        progress_prefix=f'[{i + 1}/{len(mask_segments)}]')
-            seg.sbs_frame_path = sbs_frame_path
+        left_frame = str(frames_dir / f'seg{seg.index:02d}_left.jpg')
+        right_frame = str(frames_dir / f'seg{seg.index:02d}_right.jpg')
+        seg_left_video = str(segments_dir / f'seg{seg.index:02d}_left.mp4')
+        seg_right_video = str(segments_dir / f'seg{seg.index:02d}_right.mp4')
 
-        else:
-            left_frame = str(frames_dir / f'seg{seg.index:02d}_left.png')
-            right_frame = str(frames_dir / f'seg{seg.index:02d}_right.png')
-            seg_left_video = str(segments_dir / f'seg{seg.index:02d}_left.mp4')
-            seg_right_video = str(segments_dir / f'seg{seg.index:02d}_right.mp4')
-
-            left_frame_path, right_frame_path, _, _ = extract_segment_frames(
-                stereo_video=args.video,
-                start=seg.start_time,
-                end=seg.end_time,
-                height=orig_h,
-                target_height=args.mask_height,
-                left_frame_out=left_frame,
-                right_frame_out=right_frame,
-                left_video_out=seg_left_video,
-                right_video_out=seg_right_video,
-                progress_prefix=f'[{i + 1}/{len(mask_segments)}]')
-            seg.left_frame_path = left_frame_path
-            seg.right_frame_path = right_frame_path
+        left_frame_path, right_frame_path, _, _ = extract_segment_frames(
+            stereo_video=args.video,
+            start=seg.start_time,
+            end=seg.end_time,
+            height=orig_h,
+            target_height=args.mask_height,
+            left_frame_out=left_frame,
+            right_frame_out=right_frame,
+            left_video_out=seg_left_video,
+            right_video_out=seg_right_video,
+            progress_prefix=f'[{i + 1}/{len(mask_segments)}]')
+        seg.left_frame_path = left_frame_path
+        seg.right_frame_path = right_frame_path
 
     return mask_segments
 
