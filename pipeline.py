@@ -1,5 +1,6 @@
-import sys, functools, time, tqdm, random, shutil, gc, os, torch, cv2, numpy as np, glob, matplotlib.pyplot as plt, torch.nn.functional as F, argparse, imageio, re, subprocess, av, json, threading
+import sys, functools, time, tqdm, random, shutil, gc, os, torch, cv2, numpy as np, glob, matplotlib.pyplot as plt, torch.nn.functional as F, argparse, re, subprocess, json, threading
 from PIL import Image, ImageDraw, ImageFilter
+from av.video.frame import VideoFrame
 from pathlib import Path
 from typing import List
 from omegaconf import open_dict
@@ -772,34 +773,6 @@ def stereo_video(left_video: str, right_video: str, output_path: str) -> str:
 
     return output_path
 
-# def video_frames(frame_root, max_size):
-
-#     if frame_root.endswith(VIDEO_EXTENSIONS):
-#         video_name = os.path.basename(frame_root)[:-4]
-#         container = av.open(frame_root)
-#         stream = container.streams.video[0]
-#         fps = float(stream.average_rate)
-#         frames_list = []
-
-#         for frame in container.decode(stream):
-#             arr = frame.to_ndarray(format='rgb24')
-#             frames_list.append(arr)
-
-#         container.close()
-#         frames = torch.from_numpy(np.stack(frames_list)).permute(0, 3, 1, 2).contiguous()
-#         frames = frames.float()
-
-#         if max_size is not None:
-#             if frames.shape != (max_size, max_size):
-#                 frames = torch.nn.functional.interpolate(
-#                     frames,
-#                     size=(max_size, max_size),
-#                     mode="area",
-#                 )
-
-#     length = frames.shape[0]
-#     return frames, fps, length, video_name
-
 def get_video_paths(input_root):
     video_paths = []
 
@@ -1028,8 +1001,8 @@ def packer(input_path: str, sync_frames=None, fisheye=False) -> int:
     for index, (video_path, mask_path) in enumerate(input_pairs, 1):
 
         if fisheye:
-            video_path = fisheye180(input_video=str(video_path), mask_path=None)
-            mask_path = fisheye180(input_video=str(mask_path), mask_path=None)
+            video_path = fisheye180(input_video=str(video_path), mask_path=None, flag=False)
+            mask_path = fisheye180(input_video=str(mask_path), mask_path=None, flag=True)
 
         # print(f"[{index}/{len(input_pairs)}] Processing: {video_path.name} <- {mask_path.name}")
         packed_path = pack_video(str(video_path), str(mask_path), sync_frames=None)
@@ -1229,13 +1202,13 @@ def sync_mask_to_video(mask_path: str, fps: float, frame_offset: int = 0) -> str
 
     return synced_path
 
-def fisheye180(input_video: str, mask_path: str | None = None) -> str:
+def fisheye180(input_video: str, mask_path: str | None = None, flag=False) -> str:
 
     print('Starting FISHEYE180 conversion...')
 
     input_video = str(Path(input_video).expanduser().resolve())
     filename, ext = os.path.splitext(input_video)
-    output_video = f'{filename}_FISHEYE180{ext}'
+    output_video = f'{filename}_FISHEYE180{ext}' if not flag else f'{filename}_FISHEYE180_mask{ext}'
     target_w, target_h, fps, duration, pix_fmt  = info(input_video)
     eye_w = target_w // 2
 
@@ -1244,8 +1217,8 @@ def fisheye180(input_video: str, mask_path: str | None = None) -> str:
 
     filter_parts = [
         f'[0:v]fps={fps},setpts=N/({fps}*TB),split=2[left_src][right_src]',
-        f'[left_src]crop=iw/2:ih:0:0,v360=hequirect:fisheye:w={eye_w}:h={target_h}[left]',
-        f'[right_src]crop=iw/2:ih:iw/2:0,v360=hequirect:fisheye:w={eye_w}:h={target_h}[right]',
+        f'[left_src]crop=iw/2:ih:0:0,v360=input=hequirect:output=fisheye:iv_fov=180:ih_fov=180:v_fov=180:h_fov=180:w={eye_w}:h={target_h}[left]',
+        f'[right_src]crop=iw/2:ih:iw/2:0,v360=input=hequirect:output=fisheye:iv_fov=180:ih_fov=180:v_fov=180:h_fov=180:w={eye_w}:h={target_h}[right]',
         f'[left][right]hstack,scale=w={target_w}:h={target_h}:flags=bilinear[stacked]',
     ]
     mask_path = 'assets/black_mask.png'
@@ -1497,15 +1470,15 @@ class sam3_video_inference:
             bpe_path = bpe_path,
             version = video_args.model,
             compile = False,
-            warm_up = False,
+            warm_up = True,
             max_num_objects = 1,
             multiplex_count = 16,
             use_fa3 = False,
-            use_rope_real = False,
-            async_loading_frames = False,
+            use_rope_real = True,
+            async_loading_frames = True,
             num_obj_for_compile=1,
             apply_temporal_disambiguation=True,
-            device = "cuda",
+            device = device,
             video_loader_type="torchcodec",
             load_from_HF=False,
             default_output_prob_thresh=0.1, 
@@ -2414,7 +2387,7 @@ def main() -> int:
     start_time = time.time()
     parser = argparse.ArgumentParser(description="VR Video Masking Pipeline")
     parser.add_argument("--model", type=str, default="sam3.1")
-    parser.add_argument("input_path", type=str, default="/videos")
+    parser.add_argument("--input_path", type=str, default="videos")
     parser.add_argument("--mask-height", type=int, default=1024)
     parser.add_argument("--segment-length", type=float, default=6)
     parser.add_argument("--erode", type=int, default=6)
@@ -2425,7 +2398,7 @@ def main() -> int:
     parser.add_argument("--sub-box", type=bool, default=False)
     parser.add_argument("--sbs", type=bool, default=False)
     parser.add_argument('--matanyone-version', type=str, default='v2', choices=['v1', 'v2'], help='Select MatAnyone runtime version')
-    parser.add_argument('--ma2-mem-every', type=int, default=2, help='Override MatAnyone mem_every (works for v1 and v2; e.g. 2 or 3 for faster refresh)')
+    parser.add_argument('--ma2-mem-every', type=int, default=4, help='Override MatAnyone mem_every (works for v1 and v2; e.g. 2 or 3 for faster refresh)')
     parser.add_argument('--ma2-max-mem-frames', type=int, default=2, help='Override MatAnyone memory window in frames (works for v1 and v2)')
     parser.add_argument('--ma2-use-long-term', type=str, default='off', choices=['auto', 'on', 'off'], help='Override MatAnyone long-term memory ')
     parser.add_argument('--overlay-output', type=str, default='input_path', help='Write a composited video with the mask over the original source')
