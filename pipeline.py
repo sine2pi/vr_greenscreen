@@ -715,11 +715,11 @@ def mask_overlay(source_video: str, mask_video: str, output_path: str, backgroun
     src_w, src_h, src_fps, src_duration, src_fmt = info(source_video)
     mask_w, mask_h, mask_fps, mask_duration, mask_fmt = info(mask_video)
     enc = encoder_args(fps=src_fps, pix_fmt=src_fmt)
-    sourcef = frame_count(source_video)
-    maskf = frame_count(mask_video)
+    # sourcef = frame_count(source_video)
+    # maskf = frame_count(mask_video)
 
-    print(f"src: {src_w}x{src_h} @ {src_fps}fps, duration: {src_duration}, format: {src_fmt}, frames: {sourcef}")
-    print(f"mask: {mask_w}x{mask_h} @ {mask_fps}fps, duration: {mask_duration}, format: {mask_fmt}, frames: {maskf}")
+    print(f"src: {src_w}x{src_h} @ {src_fps}fps, duration: {src_duration}, format: {src_fmt}")
+    print(f"mask: {mask_w}x{mask_h} @ {mask_fps}fps, duration: {mask_duration}, format: {mask_fmt}")
 
     duration = min(src_duration, mask_duration)
 
@@ -1348,6 +1348,7 @@ class TorchCodecVideoLoader:
         self.norm = norm
         self.out_device = torch.device("cpu") if offload_video_to_cpu else (gpu_device or torch.device("cuda"))
         decode_device = (gpu_device or torch.device("cuda")) if torch.cuda.is_available() else torch.device("cpu")
+        
         if norm:
             self.img_mean = torch.tensor(img_mean, dtype=torch.float16, device=self.out_device).view(3, 1, 1)
             self.img_std = torch.tensor(img_std, dtype=torch.float16, device=self.out_device).view(3, 1, 1)
@@ -1382,11 +1383,9 @@ class TorchCodecVideoLoader:
 
                 if self.image_size is not None:
                     frame = torch.nn.functional.interpolate(frame.unsqueeze(0), size=(self.image_size, self.image_size), mode="bicubic", align_corners=False).squeeze(0)
-
                 frame = frame.half() / 255.0
                 if frame.device != self.out_device:
                     frame = frame.to(self.out_device, non_blocking=True)
-
                 if self.norm:
                     frame = (frame - self.img_mean) / self.img_std
 
@@ -1409,7 +1408,6 @@ class TorchCodecVideoLoader:
             if self.images[idx] is not None:
                 return self.images[idx]
             time.sleep(0.01)
-
         raise RuntimeError(f"Timeout waiting for frame {idx} to decode.")
 
     def get_all_frames(self, start=0, max_frames=None):
@@ -1424,31 +1422,22 @@ def download_ckpt_from_hf(version="sam3", force_download=False, local_files_only
     if version == "sam3.1":
         repo_id = "sin2piusc/sam31sin"
         ckpt_name = "sam3.1_multiplex.pt"
-        cfg_name = "config.json"
-
     elif version == "sam3lite":
         repo_id = "vil-uob/sam3-litetext-l"
         ckpt_name = "model.safetensors"
-        cfg_name = "config.json"
-
     elif version == "sam3image":
         repo_id = "sin2piusc/sam3_fta"
         ckpt_name = "sam3.pth"
-        cfg_name = "config.json"
-
     elif version == "sam3m":
         repo_id = "feyninc/multimatte"
         ckpt_name = "model.safetensors"
-        cfg_name = "config.json"
-
     elif version == "local":
         checkpoint_path = r"sam3/sam3.pt"
-
+        return checkpoint_path
     else:
         repo_id = "facebook/sam3"
         ckpt_name = "sam3.pt"
-        cfg_name = "config.json"
-
+  
     return hf_hub_download(
             repo_id=repo_id,
             filename=ckpt_name,
