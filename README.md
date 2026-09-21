@@ -2,7 +2,9 @@
 
 
 ```
-                                                 Uses sam3.1 and Matanyone2.
+                                                Uses sam3.1 and Matanyone2.
+                                                python pipeline.py "videos"
+                                                Daily Breaking Changes
 
 ```
 
