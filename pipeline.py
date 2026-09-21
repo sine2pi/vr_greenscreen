@@ -716,54 +716,21 @@ def mask_overlay(source_video: str, mask_video: str, output_path: str, backgroun
     mask_w, mask_h, mask_fps, mask_duration, mask_fmt = info(mask_video)
     enc = encoder_args(fps=src_fps, pix_fmt=src_fmt)
 
-    src_frames = frame_count(source_video)
-    mask_frames = frame_count(mask_video)
-    n_frames = min(src_frames, mask_frames)
-    duration = n_frames / src_fps
+    # src_frames = frame_count(source_video)
+    # mask_frames = frame_count(mask_video)
+    # n_frames = min(src_frames, mask_frames)
+    # duration = n_frames / src_fps
 
-    trim = f"trim=end_frame={n_frames},setpts=PTS-STARTPTS"
-
-    if src_h != mask_h:
-        orig_filter = f"{trim},fps={src_fps},format=rgba,scale={src_w}:{src_h}:flags=lanczos:out_range=pc:threads=0"
-        mask_filter = f"{trim},fps={src_fps},format=gray,scale={src_w}:{src_h}:flags=lanczos:out_range=pc:threads=0,lut=a=val/255"
-        bg_filter = f"{trim},fps={src_fps},format=rgba,scale={src_w}:{src_h}:flags=lanczos:out_range=pc:threads=0"
-    else:
-        orig_filter = f'{trim},fps={src_fps},format=rgba'
-        mask_filter = f'{trim},fps={src_fps},format=gray,lut=a=val/255'
-        bg_filter = f'{trim},fps={src_fps},format=rgba'
-
-    filter_complex = (
-        f"[0:v]{orig_filter}[orig];"
-        f"[1:v]{mask_filter}[mask_alpha];"
-        f"[orig][mask_alpha]alphamerge[alphaed];"
-        f"[2:v]{bg_filter}[bg];"
-        f"[bg][alphaed]overlay=format=auto[out]"
-    )
-
-    cmd = [
-        'ffmpeg', '-y', '-hwaccel', 'cuda',
-        '-i', source_video,
-        '-i', mask_video,
-        '-f', 'lavfi', '-i', f'color=c={background_color}:s={src_w}x{src_h}:d={duration}:r={src_fps}',
-        '-filter_complex', filter_complex,
-        '-map', '[out]',
-        '-frames:v', str(n_frames),
-        *enc,
-        resolved_path,
-    ]
-
-
-
-    # duration = min(src_duration, mask_duration)
+    # trim = f"trim=end_frame={n_frames},setpts=PTS-STARTPTS"
 
     # if src_h != mask_h:
-    #     orig_filter = f"setpts=PTS-STARTPTS,fps={src_fps},format=rgba,scale={src_w}:{src_h}:flags=lanczos:out_range=pc:threads=0"
-    #     mask_filter = f"setpts=PTS-STARTPTS,fps={src_fps},format=gray,scale={src_w}:{src_h}:flags=lanczos:out_range=pc:threads=0,lut=a=val/255"
-    #     bg_filter = f"setpts=PTS-STARTPTS,fps={src_fps},format=rgba,scale={src_w}:{src_h}:flags=lanczos:out_range=pc:threads=0"
+    #     orig_filter = f"{trim},fps={src_fps},format=rgba,scale={src_w}:{src_h}:flags=lanczos:out_range=pc:threads=0"
+    #     mask_filter = f"{trim},fps={src_fps},format=gray,scale={src_w}:{src_h}:flags=lanczos:out_range=pc:threads=0,lut=a=val/255"
+    #     bg_filter = f"{trim},fps={src_fps},format=rgba,scale={src_w}:{src_h}:flags=lanczos:out_range=pc:threads=0"
     # else:
-    #     orig_filter = f'setpts=PTS-STARTPTS,fps={src_fps},format=rgba'
-    #     mask_filter = f'setpts=PTS-STARTPTS,fps={src_fps},format=gray,lut=a=val/255'
-    #     bg_filter = f'setpts=PTS-STARTPTS,fps={src_fps},format=rgba'
+    #     orig_filter = f'{trim},fps={src_fps},format=rgba'
+    #     mask_filter = f'{trim},fps={src_fps},format=gray,lut=a=val/255'
+    #     bg_filter = f'{trim},fps={src_fps},format=rgba'
 
     # filter_complex = (
     #     f"[0:v]{orig_filter}[orig];"
@@ -780,10 +747,43 @@ def mask_overlay(source_video: str, mask_video: str, output_path: str, backgroun
     #     '-f', 'lavfi', '-i', f'color=c={background_color}:s={src_w}x{src_h}:d={duration}:r={src_fps}',
     #     '-filter_complex', filter_complex,
     #     '-map', '[out]',
-    #     '-t', str(duration),
+    #     '-frames:v', str(n_frames),
     #     *enc,
     #     resolved_path,
     # ]
+
+
+
+    duration = min(src_duration, mask_duration)
+
+    if src_h != mask_h:
+        orig_filter = f"setpts=PTS-STARTPTS,fps={src_fps},format=rgba,scale={src_w}:{src_h}:flags=lanczos:out_range=pc:threads=0"
+        mask_filter = f"setpts=PTS-STARTPTS,fps={src_fps},format=gray,scale={src_w}:{src_h}:flags=lanczos:out_range=pc:threads=0,lut=a=val/255"
+        bg_filter = f"setpts=PTS-STARTPTS,fps={src_fps},format=rgba,scale={src_w}:{src_h}:flags=lanczos:out_range=pc:threads=0"
+    else:
+        orig_filter = f'setpts=PTS-STARTPTS,fps={src_fps},format=rgba'
+        mask_filter = f'setpts=PTS-STARTPTS,fps={src_fps},format=gray,lut=a=val/255'
+        bg_filter = f'setpts=PTS-STARTPTS,fps={src_fps},format=rgba'
+
+    filter_complex = (
+        f"[0:v]{orig_filter}[orig];"
+        f"[1:v]{mask_filter}[mask_alpha];"
+        f"[orig][mask_alpha]alphamerge[alphaed];"
+        f"[2:v]{bg_filter}[bg];"
+        f"[bg][alphaed]overlay=format=auto[out]"
+    )
+
+    cmd = [
+        'ffmpeg', '-y', '-hwaccel', 'cuda',
+        '-i', source_video,
+        '-i', mask_video,
+        '-f', 'lavfi', '-i', f'color=c={background_color}:s={src_w}x{src_h}:d={duration}:r={src_fps}',
+        '-filter_complex', filter_complex,
+        '-map', '[out]',
+        '-t', str(duration),
+        *enc,
+        resolved_path,
+    ]
 
     rc, stderr_text = ffmpeg_progress(cmd)
     if rc != 0:
