@@ -10,6 +10,29 @@ from enum import Enum
 from sam3.visualization_utils import load_frame, prepare_masks_for_visualization, visualize_formatted_frame_output
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+def _setup_tf32() -> None:
+    if torch.cuda.is_available():
+        device_props = torch.cuda.get_device_properties(0)
+        if device_props.major >= 8:
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+            # torch.backends.cuda.enable_flash_sdp(enabled=True)
+
+_setup_tf32()
+
+
+
+# from torch.nn.attention import sdpa_kernel, SDPBackend
+# query = torch.rand(32, 8, 128, 64, dtype=torch.float16, device="cuda")
+# key = torch.rand(32, 8, 128, 64, dtype=torch.float16, device="cuda")
+# value = torch.rand(32, 8, 128, 64, dtype=torch.float16, device="cuda")
+# with sdpa_kernel(backends=[SDPBackend.FLASH_ATTENTION, SDPBackend.CUDNN_ATTENTION], set_priority=True):
+#     F.scaled_dot_product_attention(query,key,value)
+# with sdpa_kernel(backends=[SDPBackend.MATH]):
+#     F.scaled_dot_product_attention(query,key,value,enable_gqa=True)
+
+    # out = out.transpose(1, 2)
+    # out = out.reshape(b, n, cv)
 
 class SegmentType(Enum):
     MASK = 'mask'
@@ -36,6 +59,7 @@ VIDEO_EXTENSIONS = ('.mp4', '.mov', '.avi', '.MP4', '.MOV', '.AVI')
 ENCODER = 'hevc_nvenc'
 MATANYONE_V1 = "https://github.com/pq-yang/MatAnyone/releases/download/v1.0.0/matanyone.pth"
 MATANYONE_V2 = "https://github.com/pq-yang/MatAnyone2/releases/download/v1.0.0/matanyone2.pth"
+
 
 def have(a):
     if a == bool:
@@ -178,10 +202,8 @@ def encoder_args(fps=None, pix_fmt=None) -> list[str]:
 def _ffmpeg_progress(line: str) -> str:
 
     parts = []
-
     for field in ['time=', 'elapsed=', 'speed=']:
         match = re.search(rf'{field}(\S+)', line)
-
         if match:
             parts.append(f"{field}{match.group(1)}")
 
@@ -193,73 +215,109 @@ def ffmpeg_progress(cmd: list[str], progress_prefix: str = "", cwd: str | None =
     for line in process.stderr:
         stderr_lines.append(line)
         if 'frame=' in line:
+            print()
             print(f"\r{progress_prefix}{_ffmpeg_progress(line)}", end='', flush=True)
+            print()
     process.wait()
     print()
 
     return process.returncode, "".join(stderr_lines)
 
+
+
+
+# def info(video_path: str):
+
+#     cmd = [
+
+#         'ffprobe', '-v', 'error',
+#         '-select_streams', 'v:0',
+#         '-show_entries', 'stream=width,height,r_frame_rate',
+#         '-of', 'csv=p=0',
+#         video_path
+#     ]
+
+#     result = subprocess.run(cmd, capture_output=True, text=True)
+
+#     if result.returncode != 0:
+#         raise RuntimeError(f"ffprobe failed: {result.stderr}")
+
+#     lines = result.stdout.strip().split('\n')
+#     w,h,fps_str = lines[0].split(',')
+
+#     cmd2 = [
+#         'ffprobe', '-v', 'error',
+#         '-select_streams', 'v:0',
+#         '-show_entries', 'stream=duration',
+#         '-of', 'default=noprint_wrappers=1:nokey=1',
+#         video_path,
+#     ]
+#     stream_duration = subprocess.check_output(cmd2, text=True).strip()
+
+#     if stream_duration and stream_duration != 'N/A':
+#         duration = float(stream_duration)
+#     else:
+#         fallback_cmd = [
+#             'ffprobe', '-v', 'error',
+#             '-show_entries', 'format=duration',
+#             '-of', 'default=noprint_wrappers=1:nokey=1',
+#             video_path,
+#         ]
+#         duration = float(subprocess.check_output(fallback_cmd, text=True).strip())
+
+#     cmd3 = [
+
+#         'ffprobe', '-v', 'error',
+#         '-select_streams', 'v:0',
+#         '-show_entries', 'stream=pix_fmt',
+#         '-of', 'csv=p=0',
+#         video_path
+#     ]
+
+#     pix_fmt = str(subprocess.check_output(cmd3).decode().strip())
+
+#     if '/' in fps_str:
+#         num, den = fps_str.split('/')
+#         fps_str = float(num) / float(den)
+#         fps = fps_str
+
+#     else:
+#         fps_str = float(fps_str)
+#         fps = fps_str
+
+#     return int(w), int(h), fps, duration, pix_fmt
+
 @functools.lru_cache(maxsize=128)
-def info(video_path: str):
+def info(path):
+    cmd_key = ['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'frame=pict_type', '-of', 'csv=p=0', '-skip_frame', 'nokey', path]
+    res_key = subprocess.run(cmd_key, capture_output=True, text=True)
+    lines = res_key.stdout.strip().split('\n')
+    keyframes = len(lines)
+    cmd_stream = ['ffprobe', '-v', 'quiet', '-print_format', 'json', '-show_streams', '-select_streams', 'v:0', path]
+    res_stream = subprocess.run(cmd_stream, capture_output=True, text=True)
+    data = json.loads(res_stream.stdout)
 
-    cmd = [
+    if not data.get('streams'):
+        return None, None, None, None, None, None
+        
+    stream = data['streams'][0]
+    width = int(stream['width'])
+    height = int(stream['height'])
+    duration = float(stream.get('duration', 0))
+    pix_fmt = stream.get('pix_fmt', 'yuv420p')
+    fps_str = stream.get('r_frame_rate', '30/1')
+    num, denom = map(int, fps_str.split('/'))
+    fps = num / denom if denom != 0 else 60.0
+    f_tot = stream.get('nb_frames')
 
-        'ffprobe', '-v', 'error',
-        '-select_streams', 'v:0',
-        '-show_entries', 'stream=width,height,r_frame_rate',
-        '-of', 'csv=p=0',
-        video_path
-    ]
-
-    result = subprocess.run(cmd, capture_output=True, text=True)
-
-    if result.returncode != 0:
-        raise RuntimeError(f"ffprobe failed: {result.stderr}")
-
-    lines = result.stdout.strip().split('\n')
-    w,h,fps_str = lines[0].split(',')
-
-    cmd2 = [
-        'ffprobe', '-v', 'error',
-        '-select_streams', 'v:0',
-        '-show_entries', 'stream=duration',
-        '-of', 'default=noprint_wrappers=1:nokey=1',
-        video_path,
-    ]
-    stream_duration = subprocess.check_output(cmd2, text=True).strip()
-
-    if stream_duration and stream_duration != 'N/A':
-        duration = float(stream_duration)
+    if f_tot:
+        frames = int(f_tot)
     else:
-        fallback_cmd = [
-            'ffprobe', '-v', 'error',
-            '-show_entries', 'format=duration',
-            '-of', 'default=noprint_wrappers=1:nokey=1',
-            video_path,
-        ]
-        duration = float(subprocess.check_output(fallback_cmd, text=True).strip())
+        frames = int(duration * fps) if duration > 0 else 0
+        
+    return width, height, fps, duration, pix_fmt, frames
 
-    cmd3 = [
-
-        'ffprobe', '-v', 'error',
-        '-select_streams', 'v:0',
-        '-show_entries', 'stream=pix_fmt',
-        '-of', 'csv=p=0',
-        video_path
-    ]
-
-    pix_fmt = str(subprocess.check_output(cmd3).decode().strip())
-
-    if '/' in fps_str:
-        num, den = fps_str.split('/')
-        fps_str = float(num) / float(den)
-        fps = fps_str
-
-    else:
-        fps_str = float(fps_str)
-        fps = fps_str
-
-    return int(w), int(h), fps, duration, pix_fmt
+# width, height, fps, duration, pix_fmt, frames = info(some_video_path)
 
 def frame_count(video_path: str) -> int:
 
@@ -285,7 +343,7 @@ def frame_count(video_path: str) -> int:
 
 def norm_video(source_video, w = None, h = None, fps = None, progress_prefix: str = "[normalize] ", video_args = None) -> str:
 
-    wi, hi, _, duration, pix_fmt = info(source_video)
+    wi, hi, fps, duration, pix_fmt, frames = info(source_video)
 
     print(f"-- normalizing video")
     source_path = Path(source_video).expanduser().resolve()
@@ -322,7 +380,7 @@ def norm_video(source_video, w = None, h = None, fps = None, progress_prefix: st
 
 def cfr_video(source_video, video_args = None, progress_prefix: str = "[normalize]") -> str:
 
-    w, h, fps, duration, pix_fmt = info(source_video)
+    w, h, fps, duration, pix_fmt, frames = info(source_video)
 
     print(f"-- {source_video} has a Variable Frame Rate - Converting to CFR")
     
@@ -377,7 +435,7 @@ def cfr_video(source_video, video_args = None, progress_prefix: str = "[normaliz
 
 def resize_video(source_video: str, output_video: str, width: int, height: int, progress_prefix: str = "[resize] ") -> str:
 
-    wi, hi, fps, duration, pix_fmt = info(source_video)
+    wi, hi, fps, duration, pix_fmt, frames = info(source_video)
     enc = encoder_args(fps=fps, pix_fmt=pix_fmt)
     os.makedirs(os.path.dirname(os.path.abspath(output_video)) or '.', exist_ok=True)
 
@@ -405,7 +463,7 @@ def resize_video(source_video: str, output_video: str, width: int, height: int, 
 
 def concat_video(video_list: list[str], output_path: str, fps: float | None = None) -> str:
 
-    wi, hi, fps, duration, pix_fmt = info(video_list[0])
+    wi, hi, fps, duration, pix_fmt, frames = info(video_list[0])
 
     BATCH_SIZE = 50
     n = len(video_list)
@@ -548,7 +606,7 @@ def extract_segment_frames(
     progress_prefix: str = "",
 ) -> tuple[str, str, str, str]:
 
-    wi, hi, fps, duration, pix_fmt = info(stereo_video)
+    wi, hi, fps, duration, pix_fmt, frames = info(stereo_video)
     enc = encoder_args(fps=fps, pix_fmt=pix_fmt)
 
     start_frame = round(start * fps)
@@ -639,8 +697,8 @@ def extract_segment_sbs(
     progress_prefix: str = "",
 ) -> tuple[str, str]:
 
-    wi, hi, fps, duration, pix_fmt = info(stereo_video)
-    _ = wi, hi, duration, pix_fmt
+    wi, hi, fps, duration, pix_fmt, frames = info(stereo_video)
+    _ = wi, hi, duration, pix_fmt, frames
     enc = encoder_args(fps=fps, pix_fmt=pix_fmt)
     start_frame = round(start * fps)
     end_frame = round(end * fps)
@@ -712,8 +770,8 @@ def mask_overlay(source_video: str, mask_video: str, output_path: str, backgroun
 
     resolved_path = overlay_path(source_video, output_path)
     os.makedirs(os.path.dirname(os.path.abspath(resolved_path)) or '.', exist_ok=True)
-    src_w, src_h, src_fps, src_duration, src_fmt = info(source_video)
-    mask_w, mask_h, mask_fps, mask_duration, mask_fmt = info(mask_video)
+    src_w, src_h, src_fps, src_duration, src_fmt, src_frames = info(source_video)
+    mask_w, mask_h, mask_fps, mask_duration, mask_fmt, mask_frames = info(mask_video)
     enc = encoder_args(fps=src_fps, pix_fmt=src_fmt)
 
     # src_frames = frame_count(source_video)
@@ -724,13 +782,34 @@ def mask_overlay(source_video: str, mask_video: str, output_path: str, backgroun
     # trim = f"trim=end_frame={n_frames},setpts=PTS-STARTPTS"
 
     # if src_h != mask_h:
-    #     orig_filter = f"{trim},fps={src_fps},format=rgba,scale={src_w}:{src_h}:flags=lanczos:out_range=pc:threads=0"
-    #     mask_filter = f"{trim},fps={src_fps},format=gray,scale={src_w}:{src_h}:flags=lanczos:out_range=pc:threads=0,lut=a=val/255"
-    #     bg_filter = f"{trim},fps={src_fps},format=rgba,scale={src_w}:{src_h}:flags=lanczos:out_range=pc:threads=0"
+        # orig_filter = f"{trim},fps={src_fps},format=rgba,scale={src_w}:{src_h}:flags=lanczos:out_range=pc:threads=0"
+        # mask_filter = f"{trim},fps={src_fps},format=gray,scale={src_w}:{src_h}:flags=lanczos:out_range=pc:threads=0,lut=a=val/255"
+        # bg_filter = f"{trim},fps={src_fps},format=rgba,scale={src_w}:{src_h}:flags=lanczos:out_range=pc:threads=0"
+
+        
     # else:
     #     orig_filter = f'{trim},fps={src_fps},format=rgba'
     #     mask_filter = f'{trim},fps={src_fps},format=gray,lut=a=val/255'
     #     bg_filter = f'{trim},fps={src_fps},format=rgba'
+
+    # filter_complex = (
+    #     f"[0:v]{orig_filter}[orig_rgb];"
+    #     f"[1:v]{mask_filter}[mask_alpha];"
+    #     f"[orig_rgb][mask_alpha]alphamerge[alphaed];"
+    #     f"[2:v]{bg_filter}[bg];"
+    #     f"[bg][alphaed]overlay=shortest=1:format=auto[out]"
+    # )
+
+
+    # orig_filter = f"format=rgba,fps=fps={src_fps},setpts=N/({src_fps}*TB),scale={src_w}:{src_h}:flags=lanczos"
+    # mask_filter = f"format=gray,fps=fps={src_fps},setpts=N/({src_fps}*TB),scale={src_w}:{src_h}:flags=lanczos,lut=a=val/255"
+    # bg_filter = f"format=rgba,fps=fps={src_fps},setpts=N/({src_fps}*TB),scale={src_w}:{src_h}:flags=lanczos" 
+
+
+    # orig_filter = f'setpts=PTS-STARTPTS,fps={src_fps},format=rgba'
+    # mask_filter = f'setpts=PTS-STARTPTS,fps={src_fps},scale={src_w}:{src_h},format=gray,lut=a=val/255'
+    # bg_filter = f'setpts=PTS-STARTPTS,fps={src_fps},format=rgba'
+
 
     # filter_complex = (
     #     f"[0:v]{orig_filter}[orig];"
@@ -740,11 +819,30 @@ def mask_overlay(source_video: str, mask_video: str, output_path: str, backgroun
     #     f"[bg][alphaed]overlay=format=auto[out]"
     # )
 
+
+    # os.makedirs(os.path.dirname(os.path.abspath(resolved_path)) or '.', exist_ok=True)
+
+    # cmd = [
+    #     'ffmpeg', '-y',
+    #     '-hwaccel', 'cuda',
+    #     '-i', source_video,
+    #     '-i', mask_video,
+    #     '-f', 'lavfi', '-i', f'color=c={background_color}',  
+    #     '-filter_complex', filter_complex,
+    #     '-map', '[out]',
+    #     '-t', str(src_duration),
+
+    # ]
+
+    # cmd.extend(encoder_args(src_fps))
+    # cmd.append(resolved_path)
+
+
     # cmd = [
     #     'ffmpeg', '-y', '-hwaccel', 'cuda',
     #     '-i', source_video,
     #     '-i', mask_video,
-    #     '-f', 'lavfi', '-i', f'color=c={background_color}:s={src_w}x{src_h}:d={duration}:r={src_fps}',
+    #     '-f', 'lavfi', '-i', f'color=c={background_color}:s={src_w}x{src_h}:d={src_duration}:r={src_fps}',
     #     '-filter_complex', filter_complex,
     #     '-map', '[out]',
     #     '-frames:v', str(n_frames),
@@ -753,7 +851,7 @@ def mask_overlay(source_video: str, mask_video: str, output_path: str, backgroun
     # ]
 
 
-
+    os.makedirs(os.path.dirname(os.path.abspath(resolved_path)) or '.', exist_ok=True)
     duration = min(src_duration, mask_duration)
 
     if src_h != mask_h:
@@ -792,7 +890,7 @@ def mask_overlay(source_video: str, mask_video: str, output_path: str, backgroun
 
 def stereo_video(left_video: str, right_video: str, output_path: str) -> str:
 
-    w, h, fps, dur, pix_fmt = info(aorb(left_video, right_video))
+    w, h, fps, dur, pix_fmt, frames = info(aorb(left_video, right_video))
     enc = encoder_args(fps=fps, pix_fmt=pix_fmt)
     filter_complex = "[0:v][1:v]hstack=inputs=2[out]"
 
@@ -925,8 +1023,8 @@ def pack_video(
         synced_tmp = sync_mask_to_video(mask_path, fps=fps, frame_offset=sync_frames)
         actual_mask = synced_tmp
 
-    video_w, video_h, src_fps, src_duration, pix_fmt = info(video_path)
-    mask_w, mask_h, *_ = info(actual_mask)
+    video_w, video_h, src_fps, src_duration, pix_fmt, src_frames = info(video_path)
+    mask_w, mask_h, mask_fps, mask_duration, mask_pix_fmt, mask_frames = info(actual_mask)
     print(f"Video: {video_w}x{video_h}")
     print(f"Mask: {mask_w}x{mask_h}")
 
@@ -1084,7 +1182,7 @@ def alpha_decomp(
     if packed_path.suffix.lower() not in VIDEO_EXTENSIONS:
         raise RuntimeError(f'Unsupported video file: {packed_video}')
 
-    src_w, src_h, src_fps, _, src_pix_fmt = info(str(packed_path))
+    src_w, src_h, src_fps, _, src_pix_fmt, src_frames = info(str(packed_path))
     eye_size = src_h
     overlay_size = int(src_h * 0.4)
     overlay_size = (overlay_size // 4) * 4
@@ -1246,7 +1344,7 @@ def fisheye180(input_video: str, mask_path: str | None = None, flag=False) -> st
     input_video = str(Path(input_video).expanduser().resolve())
     filename, ext = os.path.splitext(input_video)
     output_video = f'{filename}_FISHEYE180{ext}' if not flag else f'{filename}_FISHEYE180_mask{ext}'
-    target_w, target_h, fps, duration, pix_fmt  = info(input_video)
+    target_w, target_h, fps, duration, pix_fmt, frames = info(input_video)
     eye_w = target_w // 2
 
     if eye_w <= 0 or target_h <= 0:
@@ -1521,7 +1619,6 @@ class sam3_video_inference:
         print(f"Prompt: {self.video_args.prompt}")
         print(f"Add box: {self.video_args.add_box}")
         print(f"Sub box: {self.video_args.sub_box}")
-   
         print()
 
         predictor=self.predictor
@@ -1693,8 +1790,6 @@ def sam3_video(frames_dir, video_args) -> None:
             outputs = inference_state.get(i)
             masks = (outputs or {}).get("out_binary_masks", None)
             scores = (outputs or {}).get("out_probs", None)
-            print(scores.shape)
-            print(masks.shape)
 
             if masks is None:
                 return None
@@ -1959,7 +2054,7 @@ def gen_erosion(alpha: torch.Tensor, min_kernel_size: int, max_kernel_size: int)
     eroded = F.conv2d(padded_foreground, kernel.unsqueeze(0).unsqueeze(0))
     return (eroded[0, 0, :alpha.shape[-2], :alpha.shape[-1]] == kernel.sum()).to(alpha.dtype) * 255
 
-def _matanyone_process_segment(matanyone_model, device, inference_core, job, args, source_info, save_image=True) -> str:
+def _matanyone_process_segment(matanyone_model, device, inference_core, job, args, source_info, save_image=False) -> str:
     # g = np.minimum(g, (r.astype(np.int32) + b.astype(np.int32)) // 2)
     n_warmup = args.warmup
     input_path = job['input_path']
@@ -2031,14 +2126,13 @@ def _matanyone_process_segment(matanyone_model, device, inference_core, job, arg
                 pha = torch.clamp(pha, 0, 255).cpu()
                 phas.append(pha)
 
-                # if save_image:
-                #     cv2.imwrite(
-                #         f"{output_path}/{video_name}/pha/{str(ti - n_warmup).zfill(5)}.png",
-                #         pha,
-                #     )
+            # if save_image:
+            #     cv2.imwrite(
+            #         f"{output_path}/{video_name}/pha/{str(ti - n_warmup).zfill(5)}.png",
+            #         pha,
+            #     )
 
     output_file = os.path.join(output_path, f'{video_name}_pha.mp4')
-    
     first_frame = phas[0]
     print(f"first_frame.shape: {first_frame.shape}")
  
@@ -2054,7 +2148,7 @@ def _matanyone_process_segment(matanyone_model, device, inference_core, job, arg
         cmd.extend(['-i', input_path, '-map', '0:v', '-map', '1:a?'])
 
     cmd.extend([
-        '-sws_flags', 'lanczos+full_chroma_int+accurate_rnd+full_chroma_inp', '-c:v', 'hevc_nvenc', '-profile:v', 'main10', '-pix_fmt', 'yuv420p', '-tag:v', 'hvc1', '-g', '20', '-b:v', '70M', '-preset', 'p5', '-c:a', 'aac', '-b:a', '256k', '-colorspace', 'bt709', '-color_primaries', 'bt709', '-fps_mode', 'cfr', '-r', str(src_fps), '-movflags', '+faststart+write_colr+use_metadata_tags', '-metadata:s:v:0', 'stereo_mode=left_right', '-color_trc', 'bt709', output_file])
+        '-sws_flags', 'lanczos+full_chroma_int+accurate_rnd+full_chroma_inp', '-c:v', 'hevc_nvenc', '-profile:v', 'main', '-pix_fmt', 'yuv420p', '-tag:v', 'hvc1', '-g', '20', '-b:v', '50M', '-c:a', 'aac', '-b:a', '256k', '-colorspace', 'bt709', '-color_primaries', 'bt709', '-fps_mode', 'cfr', '-r', str(src_fps), '-movflags', '+faststart+write_colr+use_metadata_tags', '-metadata:s:v:0', 'stereo_mode=left_right', '-color_trc', 'bt709', output_file])
 
     process = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
 
@@ -2231,8 +2325,7 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path, alpha_o
     
     video_path = str(Path(video_path).expanduser().resolve())
     video_name = Path(video_path).stem
-    src_w, src_h, src_fps, src_duration, src_fmt = info(video_path)
-    src_frames = int(src_duration * src_fps)
+    src_w, src_h, src_fps, src_duration, src_fmt, src_frames = info(video_path)
     print(f"Specs: {src_w}x{src_h} @ {src_fps}fps, duration: {src_duration}, format: {src_fmt}, frames: {src_frames}")
     print()
 
@@ -2307,8 +2400,7 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path, alpha_o
                 video_args=video_args,
             )
 
-        src_w, src_h, src_fps, src_duration, src_fmt = info(overlay_target)
-        src_frames = int(src_duration * src_fps)
+        src_w, src_h, src_fps, src_duration, src_fmt, src_frames = info(overlay_target)
         print(f"Overlay video info: {src_w}x{src_h} @ {src_fps}fps, duration: {src_duration}, format: {src_fmt}, frames: {src_frames}")
         print('=' * 60)
         print(f'Segments: {len(segments)} ({len(mask_segments)} masks) - Output: {output_mask}')
@@ -2413,6 +2505,7 @@ def finalize(segments: List[SegmentInfo], video_name: str, video_path: str, vide
     output_mask = concat_video(segment_vid, output_mask)
     return output_mask
 
+
 def main() -> int:
     start_time = time.time()
     parser = argparse.ArgumentParser(description="VR Video Masking Pipeline")
@@ -2423,12 +2516,12 @@ def main() -> int:
     parser.add_argument("--erode", type=int, default=6)
     parser.add_argument("--dilate", type=int, default=0)
     parser.add_argument("--prompt", type=str, default="agirl")
-    parser.add_argument("--warmup", type=int, default=8)
+    parser.add_argument("--warmup", type=int, default=6)
     parser.add_argument("--add-box", type=bool, default=False)
     parser.add_argument("--sub-box", type=bool, default=False)
     parser.add_argument("--sbs", type=bool, default=False)
     parser.add_argument('--matanyone-version', type=str, default='v2', choices=['v1', 'v2'], help='Select MatAnyone runtime version')
-    parser.add_argument('--ma2-mem-every', type=int, default=6, help='Override MatAnyone mem_every (works for v1 and v2; e.g. 2 or 3 for faster refresh)')
+    parser.add_argument('--ma2-mem-every', type=int, default=2, help='Override MatAnyone mem_every (works for v1 and v2; e.g. 2 or 3 for faster refresh)')
     parser.add_argument('--ma2-max-mem-frames', type=int, default=2, help='Override MatAnyone memory window in frames (works for v1 and v2)')
     parser.add_argument('--ma2-use-long-term', type=str, default='off', choices=['auto', 'on', 'off'], help='Override MatAnyone long-term memory ')
     parser.add_argument('--overlay-output', type=str, default='input_path', help='Write a composited video with the mask over the original source')
