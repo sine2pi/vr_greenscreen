@@ -889,7 +889,7 @@ def get_circle_mask(size: int) -> str:
     return str(mask_path)
 
 def _input_pairs(input_path: str) -> list[tuple[Path, Path]]:
-    path = Path(input_path).expanduser().resolve()
+    path = Path(str(input_path)).expanduser().resolve()
 
     if not path.exists():
         raise FileNotFoundError(f"Input path not found: {input_path}")
@@ -1056,15 +1056,15 @@ def pack_video(
     print(f"Alpha packed: {output_path}")
     return output_path
 
-def packer(input_path: str, fisheye=False) -> int:
+def packer(input_path, video_args=None) -> int:
+
     input_pairs = _input_pairs(input_path)
     processed = []
-    for (video_path, mask_path) in enumerate(input_pairs, 1):
-
-        if fisheye:
-            video_path = fisheye180(input_video=str(video_path), mask_path=None, flag=False)
-            mask_path = fisheye180(input_video=str(mask_path), mask_path=None, flag=True)
-
+    
+    for (video_path, mask_path) in input_pairs:
+        if video_args.fisheye180:
+            video_path = fisheye180(str(video_path), flag=False)
+            mask_path = fisheye180(str(mask_path), flag=True)
         packed_path = pack_video(str(video_path), str(mask_path))
         processed.append((str(video_path), str(mask_path), packed_path))
         print()
@@ -1235,6 +1235,8 @@ def decompose_alpha(input_path: str, cleanup_mask_path: str | None = None) -> in
 
 def sync_mask_to_video(mask_path: str, fps: float, frame_offset: int = 0) -> str:
 
+    data = info(mask_path)
+
     frame_duration = abs(frame_offset) / fps
     if frame_offset > 0:
         vf = f"trim=start={frame_duration},setpts=PTS-STARTPTS"
@@ -1251,20 +1253,20 @@ def sync_mask_to_video(mask_path: str, fps: float, frame_offset: int = 0) -> str
         'ffmpeg', '-y',
         '-i', mask_path,
         '-vf', vf,
-        *encoder_args(fps),
+        *encoder_args(data),
         synced_path,
     ]
 
     ffmpeg_progress(cmd)
     return synced_path
 
-def fisheye180(input_video: str, mask_path: str | None = None, flag=False) -> str:
-
+def fisheye180(input_video: str, flag=False) -> str:
+    data = info(input_video)
     print('Starting FISHEYE180 conversion...')
     input_video = str(Path(input_video).expanduser().resolve())
     filename, ext = os.path.splitext(input_video)
     output_video = f'{filename}_FISHEYE180{ext}' if not flag else f'{filename}_FISHEYE180_mask{ext}'
-    data = info(input_video)
+    
     target_w = data['width']
     target_h = data['height']
     fps = data['fps']
@@ -1279,13 +1281,13 @@ def fisheye180(input_video: str, mask_path: str | None = None, flag=False) -> st
         f'[right_src]crop=iw/2:ih:iw/2:0,v360=input=hequirect:output=fisheye:iv_fov=180:ih_fov=180:v_fov=180:h_fov=180:w={eye_w}:h={target_h}[right]',
         f'[left][right]hstack,scale=w={target_w}:h={target_h}:flags=bilinear[stacked]',
     ]
-    mask_path = 'assets/black_mask.png'
-    if mask_path is not None:
-        mask_path = str(Path(mask_path).expanduser().resolve())
-        if not os.path.exists(mask_path):
-            raise FileNotFoundError(f'Fisheye mask not found: {mask_path}')
-        if Path(mask_path).suffix.lower() != '.png':
-            raise RuntimeError(f'Fisheye mask must be a PNG image: {mask_path}')
+    mask_png = 'assets/black_mask.png'
+    if mask_png is not None:
+        mask_png = str(Path(mask_png).expanduser().resolve())
+        if not os.path.exists(mask_png):
+            raise FileNotFoundError(f'Fisheye mask not found: {mask_png}')
+        if Path(mask_png).suffix.lower() != '.png':
+            raise RuntimeError(f'Fisheye mask must be a PNG image: {mask_png}')
 
         filter_parts.extend([
             '[1:v]format=rgba[mask_src]',
@@ -1302,14 +1304,14 @@ def fisheye180(input_video: str, mask_path: str | None = None, flag=False) -> st
         '-i', input_video,
     ]
 
-    if mask_path is not None:
-        cmd.extend(['-i', mask_path])
+    if mask_png is not None:
+        cmd.extend(['-i', mask_png])
 
     cmd.extend([
         '-filter_complex', filter_complex,
         '-map', '[out]',
         '-map', '0:a?',
-        *encoder_args(fps),
+        *encoder_args(data),
         output_video,
     ])
 
@@ -1319,16 +1321,18 @@ def fisheye180(input_video: str, mask_path: str | None = None, flag=False) -> st
         raise RuntimeError(f'FFmpeg failed with exit code {rc}')
 
     print(f'FISHEYE180 output: {output_video}')
+
+    # return 0
     return output_video
 
-def run_fisheye180_mode(input_path: str, mask_path: str | None = None) -> int:
+def run_fisheye180_mode(input_path: str, flag: bool = False) -> int:
 
     video_paths = _input_videos(input_path)
     outputs: list[str] = []
 
     for index, video_path in enumerate(video_paths, 1):
         print(f'[{index}/{len(video_paths)}] FISHEYE180: {video_path}')
-        output_path = fisheye180(str(video_path), mask_path=mask_path)
+        output_path = fisheye180(str(video_path), flag=flag)
         outputs.append(output_path)
         print()
 
@@ -2325,9 +2329,9 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path) -> str:
         if alpha_output:
             alpha_video = packer(
                 video_path, 
-                fisheye=video_args.fisheye180
+                video_args
                 )
-
+      
         else:
             output_path = str(Path(video_path).with_name(f"{video_name}_overlay.mp4"))
             overlay_video = mask_overlay(
