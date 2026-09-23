@@ -969,7 +969,7 @@ class CrossAttention(nn.Module):
 
         # print("attn_mask:", attn_mask)
         # print("q:", q.shape, "k:", k.shape, "v:", v.shape, "x:", x.shape, "attn_mask:", attn_mask, "need_weights:", need_weights)
-        x, weights = self.cross_attn._attention(q, k, v, is_causal=attn_mask, attn_mask=None, need_weights=False)
+        x, weights = self.cross_attn._attention(q, k, v, is_causal=False, attn_mask=None, need_weights=False)
 
         if self.residual:
             return r + self.dropout(x), weights
