@@ -1056,7 +1056,7 @@ def pack_video(
     print(f"Alpha packed: {output_path}")
     return output_path
 
-def packer(input_path: str, sync_frames=None, fisheye=False) -> int:
+def packer(input_path: str, fisheye=False) -> int:
     input_pairs = _input_pairs(input_path)
     processed = []
     for (video_path, mask_path) in enumerate(input_pairs, 1):
@@ -1065,7 +1065,7 @@ def packer(input_path: str, sync_frames=None, fisheye=False) -> int:
             video_path = fisheye180(input_video=str(video_path), mask_path=None, flag=False)
             mask_path = fisheye180(input_video=str(mask_path), mask_path=None, flag=True)
 
-        packed_path = pack_video(str(video_path), str(mask_path), sync_frames=None)
+        packed_path = pack_video(str(video_path), str(mask_path))
         processed.append((str(video_path), str(mask_path), packed_path))
         print()
 
@@ -2067,12 +2067,6 @@ def _matanyone_process_segment(matanyone_model, device, inference_core, job, vid
                 pha = torch.clamp(pha, 0, 255).cpu()
                 phas.append(pha)
 
-            # if save_image:
-            #     cv2.imwrite(
-            #         f"{output_path}/{video_name}/pha/{str(ti - n_warmup).zfill(5)}.png",
-            #         pha,
-            #     )
-
     output_file = os.path.join(output_path, f'{video_name}_pha.mp4')
     first_frame = phas[0]
     print(f"first_frame.shape: {first_frame.shape}")
@@ -2329,20 +2323,23 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path) -> str:
         )
 
         if alpha_output:
-            alpha = pack_video(video_path, output_mask)
+            alpha_video = packer(
+                video_path, 
+                fisheye=video_args.fisheye180
+                )
 
         else:
-            overlay_target = str(Path(video_path).with_name(f"{video_name}_overlay.mp4"))
+            output_path = str(Path(video_path).with_name(f"{video_name}_overlay.mp4"))
             overlay_video = mask_overlay(
                 video_path,
                 output_mask,
-                overlay_target,
+                output_path,
                 background_color=video_args.overlay_color,
                 video_args=video_args,
             )
 
-        overlay_data = info(overlay_target)
-        print(f"Overlay video info: {overlay_data['width']}x{overlay_data['height']} @ {overlay_data['fps']}fps, duration: {overlay_data['duration']}, format: {overlay_data['pix_fmt']}, frames: {overlay_data['frames']}")
+            overlay_data = info(output_path)
+            print(f"Overlay video info: {overlay_data['width']}x{overlay_data['height']} @ {overlay_data['fps']}fps, duration: {overlay_data['duration']}, format: {overlay_data['pix_fmt']}, frames: {overlay_data['frames']}")
         print('=' * 60)
         print(f'Segments: {len(segments)} ({len(mask_segments)} masks) - Output: {output_mask}')
         print()
@@ -2366,7 +2363,7 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path) -> str:
 
         print(f'Overlay preview: {overlay_video}')
         print('=' * 60)
-        return overlay_video
+        return aorb(overlay_video, alpha_video)
 
 def calculate_segments(video_duration: float, max_segment_length: float = 5.0, debug = None) -> List[SegmentInfo]:
 
