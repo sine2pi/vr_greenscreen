@@ -211,11 +211,6 @@ def ffmpeg_progress(cmd: list[str], progress_prefix: str = "", cwd: str | None =
 @functools.lru_cache(maxsize=256)
 def info(path, ffprobe_bin=FFPROBE_BIN):
     metadata = {}
-    cmd_key = [ffprobe_bin, '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'frame=pict_type', '-of', 'csv=p=0', '-skip_frame', 'nokey', path]
-    res_key = subprocess.run(cmd_key, capture_output=True, text=True)
-    lines = res_key.stdout.strip().split('\n')
-    keyframes = len(lines)
-
     cmd_stream = [ffprobe_bin, '-v', 'quiet', '-print_format', 'json', '-show_streams', '-select_streams', 'v:0', path]
     res_stream = subprocess.run(cmd_stream, capture_output=True, text=True)
     data = json.loads(res_stream.stdout)
@@ -247,9 +242,7 @@ def info(path, ffprobe_bin=FFPROBE_BIN):
         'pix_fmt': pix_fmt,
         'fps_str': fps_str,
         'fps': fps,
-        'keyframes': keyframes,
         'frames': frames,
-      
     })
     return metadata
 
@@ -1885,8 +1878,7 @@ def _matanyone_process_segment(matanyone_model, device, inference_core, job, vid
     r_dilate = video_args.dilate
     suffix = job.get('suffix', '')
     output_path = output_path if output_path is not None else TemporaryDirectory().name
-  
-    data = info(input_path)
+
     _config_overrides(matanyone_model, job, verbose=(job.get('op_num', 1) == 1))
     processor = inference_core(matanyone_model, cfg=matanyone_model.cfg)
     frames, fps, length, video_name = video_frames(input_path, max_size)
@@ -2229,7 +2221,7 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path) -> str:
             for seg in segments:
                 f.write(f'{seg.index},{seg.seg_type.value},{seg.start_time:.3f},{seg.end_time:.3f},{seg.video_path}\n')
 
-        # f.cache_info()
+        print(f"info() cache: {info.cache_info()}")
         return output_mask
 
     else:
@@ -2397,6 +2389,7 @@ def main() -> int:
     total_end = time.time() - start_time
     print('=' * 60)
     print(f"Total time: {total_end:.2f}s")
+    print(f"info() cache: {info.cache_info()}")
     return 0
 
 if __name__ == '__main__':
