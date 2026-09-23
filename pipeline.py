@@ -166,7 +166,7 @@ def encoder_args(data=None) -> list[str]:
 
     return [
 
-        # '-sws_flags', 'lanczos+full_chroma_int+accurate_rnd+full_chroma_inp',
+        '-sws_flags', 'lanczos+full_chroma_int+accurate_rnd+full_chroma_inp',
         '-fps_mode', 'cfr',
         '-r', str(fps),
         '-c:v', ENCODER,
@@ -238,6 +238,8 @@ def info(path, ffprobe_bin=FFPROBE_BIN):
     fps = num / denom if denom != 0 else 60.0
     f_tot = stream.get('nb_frames')
 
+    print(f"Video info: width={width}, height={height}, codec={codec}, duration={duration}, fps={fps}, keyframes={keyframes}, frames={f_tot}")
+
     if f_tot:
         frames = int(f_tot)
     else:
@@ -255,6 +257,7 @@ def info(path, ffprobe_bin=FFPROBE_BIN):
         'frames': frames,
       
     })
+  
     return metadata
 
 
@@ -276,7 +279,7 @@ def norm_video(source_video, w = None, h = None, fps = None, progress_prefix: st
 
     cmd = [
 
-        'ffmpeg', '-y', '-hwaccel', 'auto',
+        'ffmpeg', '-y', '-hwaccel', 'cuda',
         '-i', source_video,
         '-filter_complex', f'[0:v]fps={fps},setpts=N/({fps}*TB),scale=w={wi}:h={hi}:flags=bilinear:out_range=tv:threads=0',
         *enc,
@@ -309,7 +312,7 @@ def cfr_video(source_video, video_args = None, progress_prefix: str = "[normaliz
     fps = normalize_fps(fps)
 
     cmd = [
-        'ffmpeg', '-y', '-hwaccel', 'auto',
+        'ffmpeg', '-y', '-hwaccel', 'cuda',
         '-i', source_video,
         '-filter_complex', (
             f'[0:v]fps={fps},setpts=N/({fps}*TB),scale=w={data["width"]}:h={data["height"]}:flags=bilinear:out_range=pc:threads=0[v];'
@@ -360,7 +363,7 @@ def resize_video(source_video, output_video, progress_prefix: str = "[resize] ")
 
     cmd = [
 
-        'ffmpeg', '-y', '-hwaccel', 'auto',
+        'ffmpeg', '-y', '-hwaccel', 'cuda',
         '-i', output_video,
         '-filter_complex', f'[0:v]fps={data["fps"]},setpts=N/({data["fps"]}*TB),scale={data["width"]}:{data["height"]}:flags=bilinear',
         *enc,
@@ -438,7 +441,7 @@ def concat_video(video_list: list[str], output_path: str, fps: float | None = No
 
     cmd_inline = [
 
-        'ffmpeg', '-y', '-hwaccel', 'auto',
+        'ffmpeg', '-y', '-hwaccel', 'cuda',
         *[item for rel in rel_vid for item in ['-i', rel]],
         '-filter_complex', filter_complex,
         '-map', '[outv]',
@@ -454,7 +457,7 @@ def concat_video(video_list: list[str], output_path: str, fps: float | None = No
 
         cmd_script = [
 
-            'ffmpeg', '-y', '-hwaccel', 'auto',
+            'ffmpeg', '-y', '-hwaccel', 'cuda',
             *[item for rel in rel_vid for item in ['-i', rel]],
             '-/filter_complex', '_concat_filter.txt', # this stays 
             '-map', '[outv]',
@@ -487,7 +490,7 @@ def eye_frames(video_path: str, timestamps: list[float], output_dir: str, height
 
         cmd = [
 
-            'ffmpeg', '-y', '-hwaccel', 'auto',
+            'ffmpeg', '-y', '-hwaccel', 'cuda',
             '-ss', str(ts),
             '-i', video_path,
             '-vf', crop_filter,
@@ -530,7 +533,8 @@ def extract_segment_frames(
     fine_seek = aligned_start - keyframe_seek
     seg_dur = frames / data['fps']
 
-    orig_eye = height
+    # orig_eye = height
+    orig_eye = target_height
     target_eye = target_height
 
     frame_left = f"crop={orig_eye}:{orig_eye}:0:0"
@@ -544,7 +548,7 @@ def extract_segment_frames(
 
     filter_complex = (
 
-        f"[0:v]trim=start={fine_seek}:duration={seg_dur},setpts=PTS-STARTPTS,fps={data['fps']},split=2[full][toscale];"
+        f"[0:v]trim=start={fine_seek}:duration={seg_dur},setpts=PTS-STARTPTS,fps={data['fps']},scale={scale_w}:{scale_h}:flags=bilinear,split=2[full][toscale];"
         f"[full]split=2[fullL][fullR];"
         f"[fullL]select=eq(n\\,0),{frame_left}[frame_left];"
         f"[fullR]select=eq(n\\,0),{frame_right}[frame_right];"
@@ -554,7 +558,7 @@ def extract_segment_frames(
     )
 
     cmd = [
-        'ffmpeg', '-y', '-hwaccel', 'auto',
+        'ffmpeg', '-y', '-hwaccel', 'cuda',
         "-hide_banner",
     ]
 
@@ -629,7 +633,7 @@ def extract_segment_sbs(
     )
 
     cmd_video = [
-        'ffmpeg', '-y', '-hwaccel', 'auto',
+        'ffmpeg', '-y', '-hwaccel', 'cuda',
         '-hide_banner',
         '-ss', str(keyframe_seek),
         '-i', stereo_video,
@@ -645,7 +649,7 @@ def extract_segment_sbs(
         raise RuntimeError(f"SBS segment extraction failed.\n\nFFmpeg tail:\n{tail}")
 
     cmd_frame = [
-        '-hwaccel', 'auto',
+        '-hwaccel', 'cuda',
         '-i', sbs_video_out,
         '-vf', 'select=eq(n\\,0)',
         '-frames:v', '1',
@@ -681,8 +685,6 @@ def mask_overlay(source_video: str, mask_video: str, output_path: str, backgroun
     os.makedirs(os.path.dirname(os.path.abspath(resolved_path)) or '.', exist_ok=True)
 
     data = info(source_video)
-    mask_data = info(mask_video)
-
     enc = encoder_args(data)
 
     # src_frames = frame_count(source_video)
@@ -713,7 +715,7 @@ def mask_overlay(source_video: str, mask_video: str, output_path: str, backgroun
     # )
 
     # cmd = [
-    #     'ffmpeg', '-y', '-hwaccel', 'auto',
+    #     'ffmpeg', '-y', '-hwaccel', 'cuda',
     #     '-i', source_video,
     #     '-i', mask_video,
     #     '-f', 'lavfi', '-i', f'color=c={background_color}:s={src_w}x{src_h}:d={src_duration}:r={src_fps}',
@@ -753,7 +755,7 @@ def mask_overlay(source_video: str, mask_video: str, output_path: str, backgroun
 
     # cmd = [
     #     'ffmpeg', '-y',
-    #     '-hwaccel', 'auto',
+    #     '-hwaccel', 'cuda',
     #     '-i', source_video,
     #     '-i', mask_video,
     #     '-f', 'lavfi', '-i', f'color=c={background_color}',  
@@ -768,7 +770,7 @@ def mask_overlay(source_video: str, mask_video: str, output_path: str, backgroun
 
 
     # cmd = [
-    #     'ffmpeg', '-y', '-hwaccel', 'auto',
+    #     'ffmpeg', '-y', '-hwaccel', 'cuda',
     #     '-i', source_video,
     #     '-i', mask_video,
     #     '-f', 'lavfi', '-i', f'color=c={background_color}:s={src_w}x{src_h}:d={src_duration}:r={src_fps}',
@@ -782,9 +784,9 @@ def mask_overlay(source_video: str, mask_video: str, output_path: str, backgroun
 
     os.makedirs(os.path.dirname(os.path.abspath(resolved_path)) or '.', exist_ok=True)
 
-    orig_filter = f"setpts=PTS-STARTPTS,fps={data['fps']},format=yuva420p"
+    orig_filter = f"setpts=PTS-STARTPTS,fps={data['fps']},format=rgba"
     mask_filter = f"setpts=PTS-STARTPTS,fps={data['fps']},format=gray,scale={data['width']}:{data['height']},lut=a=val/255"
-    bg_filter = f"setpts=PTS-STARTPTS,fps={data['fps']},format=yuva420p"
+    bg_filter = f"setpts=PTS-STARTPTS,fps={data['fps']},format=rgba"
 
     filter_complex = (
         f"[0:v]{orig_filter}[orig];"
@@ -795,7 +797,7 @@ def mask_overlay(source_video: str, mask_video: str, output_path: str, backgroun
     )
 
     cmd = [
-        'ffmpeg', '-y', '-hwaccel', 'auto',
+        'ffmpeg', '-y', '-hwaccel', 'cuda',
         '-i', source_video,
         '-i', mask_video,
         '-f', 'lavfi', '-i', f'color=c={background_color}:s={data["width"]}x{data["height"]}:d={data["duration"]}:r={data["fps"]}',
@@ -819,7 +821,7 @@ def stereo_video(left_video: str, right_video: str, output_path: str) -> str:
 
     cmd = [
 
-        'ffmpeg', '-y', '-hwaccel', 'auto',
+        'ffmpeg', '-y', '-hwaccel', 'cuda',
         '-i', left_video,
         '-i', right_video,
         '-filter_complex', filter_complex,
@@ -1008,13 +1010,13 @@ def pack_video(
         ),
         "[right_scaled][circle_r]alphamerge,format=rgba[right_circle]",
         "[left_circle]split=2[left_for_top][left_for_bottom]",
-        f"[left_for_top]crop={overlay_size}:{half_overlay}:0:0,format=yuva420p[left_top]",
-        f"[left_for_bottom]crop={overlay_size}:{half_overlay}:0:{half_overlay},format=yuva420p[left_bottom]",
+        f"[left_for_top]crop={overlay_size}:{half_overlay}:0:0,format=rgba[left_top]",
+        f"[left_for_bottom]crop={overlay_size}:{half_overlay}:0:{half_overlay},format=rgba[left_bottom]",
         "[right_circle]split=4[r1][r2][r3][r4]",
-        f"[r1]crop={half_overlay}:{half_overlay}:0:0,format=yuva420p[right_tl]",
-        f"[r2]crop={half_overlay}:{half_overlay}:{half_overlay}:0,format=yuva420p[right_tr]",
-        f"[r3]crop={half_overlay}:{half_overlay}:0:{half_overlay},format=yuva420p[right_bl]",
-        f"[r4]crop={half_overlay}:{half_overlay}:{half_overlay}:{half_overlay},format=yuva420p[right_br]",
+        f"[r1]crop={half_overlay}:{half_overlay}:0:0,format=rgba[right_tl]",
+        f"[r2]crop={half_overlay}:{half_overlay}:{half_overlay}:0,format=rgba[right_tr]",
+        f"[r3]crop={half_overlay}:{half_overlay}:0:{half_overlay},format=rgba[right_bl]",
+        f"[r4]crop={half_overlay}:{half_overlay}:{half_overlay}:{half_overlay},format=rgba[right_br]",
         "[vid][left_top]overlay=x=(main_w-overlay_w)/2:y=main_h-overlay_h[v1]",
         "[v1][left_bottom]overlay=x=(main_w-overlay_w)/2:y=0[v2]",
         "[v2][right_tl]overlay=x=main_w-overlay_w:y=main_h-overlay_h[v3]",
@@ -1027,7 +1029,7 @@ def pack_video(
 
     cmd: list[str] = [
 
-        'ffmpeg', '-y', '-hwaccel', 'auto',
+        'ffmpeg', '-y', '-hwaccel', 'cuda',
         "-filter_threads", "0",
         "-threads", "0",
         "-i", video_path,
@@ -1139,7 +1141,7 @@ def alpha_decomp(
             "[video][mask]overlay=0:0:format=auto[out]"
         )
         copy_cmd = [
-            'ffmpeg', '-y', '-hwaccel', 'auto',
+            'ffmpeg', '-y', '-hwaccel', 'cuda',
             '-i', str(packed_path),
             '-i', str(cleanup_mask),
             '-filter_complex', clean_filter,
@@ -1149,7 +1151,7 @@ def alpha_decomp(
         ]
     else:
         copy_cmd = [
-            'ffmpeg', '-y', '-hwaccel', 'auto',
+            'ffmpeg', '-y', '-hwaccel', 'cuda',
             '-i', str(packed_path),
             '-map', '0',
             '-c', 'copy',
@@ -1188,7 +1190,7 @@ def alpha_decomp(
     ]
 
     mask_cmd = [
-        'ffmpeg', '-y', '-hwaccel', 'auto',
+        'ffmpeg', '-y', '-hwaccel', 'cuda',
         '-i', str(packed_path),
         '-filter_complex', ';'.join(filter_parts),
         '-map', '[out]',
@@ -1300,7 +1302,7 @@ def fisheye180(input_video: str, flag=False) -> str:
     filter_complex = ';'.join(filter_parts)
 
     cmd = [
-        'ffmpeg', '-y', '-hwaccel', 'auto',
+        'ffmpeg', '-y', '-hwaccel', 'cuda',
         '-i', input_video,
     ]
 
@@ -1525,12 +1527,12 @@ class sam3_video_inference:
             max_num_objects = 1,
             multiplex_count = 16,
             use_fa3 = False,
-            use_rope_real = True,
-            async_loading_frames = True,
+            use_rope_real = False,
+            async_loading_frames = False,
             num_obj_for_compile=1,
             apply_temporal_disambiguation=True,
             device = device,
-            video_loader_type="torchcodec",
+            video_loader_type="cv2",
             load_from_HF=False,
             default_output_prob_thresh=0.1, 
             strict_state_dict_loading=False, 
@@ -1575,7 +1577,9 @@ class sam3_video_inference:
             raise ValueError(f"Unknown coord_type: {coord_type}")
 
     def track(self, video_path = None, remove = False, sub_box = False, add_point = 0, warp=False):
-        predictor, video_path, prompt, show_plots, add_box, sub_box = self.predictor, self.video_path, self.video_args.prompt, self.video_args.show_plots, self.video_args.add_box, self.video_args.sub_box
+
+        predictor, video_path, prompt, show_plots, add_box = self.predictor, self.video_path, self.video_args.prompt, self.video_args.show_plots, self.video_args.add_box
+
         if video_path is None:
             video_path = self.video_path
         
@@ -1599,6 +1603,7 @@ class sam3_video_inference:
 
         image = Image.fromarray(load_frame(frames[0]))
         W, H = image.size
+        print(f'Image size: {W}x{H}')
 
         response = predictor.handle_request(
             request=dict(
@@ -1672,8 +1677,8 @@ class sam3_video_inference:
 def sam3_video(frames_dir, mask_segments, video_args) -> None:
 
     output_size = video_args.mask_height
-    if output_size < 1008:
-        output_size = 1008
+    # if output_size < 1008:
+    #     output_size = 1008
     folder = Path(frames_dir)
     image_files = sorted(list(folder.glob("*.png")) + list(folder.glob("*.jpg")))
     image_files = [f for f in image_files if "_mask" not in f.stem]
@@ -1683,6 +1688,7 @@ def sam3_video(frames_dir, mask_segments, video_args) -> None:
 
     seq_dir = folder / "_sam3video_seq"
     video_frames_dir = folder / "_sam3video_frames"
+    print(output_size)
 
     if seq_dir.exists():
         shutil.rmtree(seq_dir)
@@ -1714,10 +1720,10 @@ def sam3_video(frames_dir, mask_segments, video_args) -> None:
         image = raw.convert("RGB")
         raw.close()
 
-        if image.height != output_size:
-            full = image
-            image = full.resize((output_size, output_size), Image.Resampling.BILINEAR)
-            full.close()
+            # if image.height != output_size:
+            #     full = image
+            #     image = full.resize((output_size, output_size), Image.Resampling.BILINEAR)
+            #     full.close()
 
         frame_shapes.append((output_size, output_size))
         image.save(seq_dir / f"{i:06d}.jpg", format="JPEG", quality=100)
@@ -1749,8 +1755,8 @@ def sam3_video(frames_dir, mask_segments, video_args) -> None:
                 masks = np.asarray(masks)
 
             if len(masks) == 0 or scores.size == 0:
-                best_soft = np.zeros((image.height, image.width), dtype=np.float32)
-                print(f"No SAM3 masks/scores for {frame_path.name}; marking as missing for temporal fill")
+                best_soft = np.zeros((out_h, out_w), dtype=np.float32)
+                print(f"No SAM3 masks/scores for {out_path.name}; marking as missing for temporal fill")
             
             else:
                 best_idx = int(np.argmax(scores))
@@ -1770,11 +1776,11 @@ def sam3_video(frames_dir, mask_segments, video_args) -> None:
     for out_path, soft_mask in zip(output_paths, filled_masks):
         mask = Image.fromarray((np.clip((soft_mask - 0.5) * 10.0 + 0.5, 0.0, 1.0) * 255).astype(np.uint8), mode="L")
         
-        output_size = video_args.mask_height
-        if mask.height != output_size:
-            full = mask
-            mask = full.resize((output_size, output_size), Image.Resampling.BILINEAR)
-            full.close()
+        # output_size = video_args.mask_height
+        # if mask.height != output_size:
+        #     full = mask
+        #     mask = full.resize((output_size, output_size), Image.Resampling.BILINEAR)
+        #     full.close()
         mask.save(out_path)
 
     if seq_dir.exists():
@@ -2456,11 +2462,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="VR Video Masking and things and stuff")
     parser.add_argument("--model", type=str, default="sam3.1")
     parser.add_argument("input_path", type=str, default="videos")
-    parser.add_argument("--mask-height", type=int, default=1280)
-    parser.add_argument("--segment-length", type=float, default=2)
+    parser.add_argument("--mask-height", type=int, default=1008)
+    parser.add_argument("--segment-length", type=float, default=10)
     parser.add_argument("--erode", type=int, default=0)
     parser.add_argument("--dilate", type=int, default=0)
-    parser.add_argument("--prompt", type=str, default="agirl")
+    parser.add_argument("--prompt", type=str, default="girl")
     parser.add_argument("--warmup", type=int, default=6)
     parser.add_argument("--add-box", type=bool, default=False)
     parser.add_argument("--sub-box", type=bool, default=False)
