@@ -2,8 +2,9 @@
 
 
 ```
+                                                8k VR - 8gb vram.
                                                 Daily Breaking Changes
-                                                Uses sam3.1 and Matanyone2.
+
                                                 use:
                                                   python pipeline.py "videos"
 
@@ -12,6 +13,6 @@
 
 ```
 
-8k VR - 8gb vram.
+
 <img width="850" height="100" alt="Screenshot 2026-09-23 090051" src="https://github.com/user-attachments/assets/bf03e744-fb82-42b8-990d-bfc0129edc23" />
 
