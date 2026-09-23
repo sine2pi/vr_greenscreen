@@ -17,7 +17,7 @@ def _setup_tf32() -> None:
         if device_props.major >= 8:
             torch.backends.cuda.matmul.allow_tf32 = True
             torch.backends.cudnn.allow_tf32 = True
-            # torch.backends.cuda.enable_flash_sdp(enabled=True)
+            torch.backends.cuda.enable_flash_sdp(enabled=True)
             torch.backends.cuda.enable_cudnn_sdp(enabled=True)
          
 _setup_tf32()
@@ -529,10 +529,9 @@ class AdaptiveSpan(BaseAttention):
 
 
 class attention(nn.Module):
-    def __init__(n, dims, head, layer, n_type=None, modal=False): 
+    def __init__(n, dims, head, layer=None, n_type=None, modal=False): 
         super().__init__()
         n.layer = layer
-
         n.scale = (dims // head) ** -0.25
         n.modal = modal
 
@@ -869,6 +868,8 @@ class MultiheadC(nn.Module):
         q = self._shape(q, ctx, batch)
         k = self._shape(k, k.size(1), batch)
         v = self._shape(v, v.size(1), batch)
+        # B, L, D = q.shape
+        # print("q shape:", q.shape, "k shape:", k.shape, "v shape:", v.shape)
 
         if need_weights:
 
@@ -883,19 +884,10 @@ class MultiheadC(nn.Module):
             out = self.o(output)
             return out, qk
 
-        
-
-        #     qk = (q) @ (k).transpose(-1, -2)
-        #     if attn_mask is not None:
-        #         qk = qk + attn_mask[:ctx, :ctx]
-        #     qk = qk.float()
-        # else:
-        #     qk=None
-
         else:
             qk=None
-            with sdpa_kernel([SDPBackend.CUDNN_ATTENTION]):
-                a = SDPA(q, k, v, attn_mask=attn_mask, is_causal=is_causal, enable_gqa=False) # sdpa folds weights into the attention computation
+            with sdpa_kernel([SDPBackend.FLASH_ATTENTION, SDPBackend.CUDNN_ATTENTION]):
+                a = SDPA(q, k, v, attn_mask=None, is_causal=have(attn_mask), enable_gqa=False) # sdpa folds weights into the attention computation
             out = a.permute(0, 2, 1, 3).flatten(start_dim=2).contiguous()
             out = self.o(out)
             return out, qk
@@ -929,7 +921,7 @@ class SelfAttention(nn.Module):
         else:
             q = k = v = x
         r = x
-        x, qk = self.self_attn._attention(q, k, v, is_causal=False, attn_mask=attn_mask, need_weights=False)[0]
+        x, qk = self.self_attn._attention(q, k, v, is_causal=False, attn_mask=attn_mask, need_weights=False)
         return r + self.dropout(x)
 
 
@@ -978,7 +970,10 @@ class CrossAttention(nn.Module):
         else:
             k = v = mem
         r = x
-        x, weights = self.cross_attn._attention(q, k, v, is_causal=False, attn_mask=attn_mask, need_weights=need_weights)
+
+        # print("attn_mask:", attn_mask)
+        # print("q:", q.shape, "k:", k.shape, "v:", v.shape, "x:", x.shape, "attn_mask:", attn_mask, "need_weights:", need_weights)
+        x, weights = self.cross_attn._attention(q, k, v, is_causal=attn_mask, attn_mask=None, need_weights=False)
 
         if self.residual:
             return r + self.dropout(x), weights
