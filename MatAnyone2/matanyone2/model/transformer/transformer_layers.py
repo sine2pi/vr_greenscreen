@@ -861,6 +861,10 @@ class MultiheadC(nn.Module):
     def _attention(self, q: Tensor, k: Tensor, v: Tensor, is_causal: bool, attn_mask: Optional[torch.Tensor] = None, need_weights=False) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         batch, ctx, dims = q.shape
 
+        # q = q * self.scale
+        # k = k * self.scale
+        # self.dims = dims
+
         q = self._shape(q, ctx, batch)
         k = self._shape(k, k.size(1), batch)
         v = self._shape(v, v.size(1), batch)
@@ -897,8 +901,12 @@ class SelfAttention(nn.Module):
                  batch_first: bool = True,
                  add_pe_to_qkv: List[bool] = [True, True, False]):
         super().__init__()
-# 
-        self.self_attn = MultiheadC(dim, nhead)
+
+        self.self_attn = nn.MultiheadAttention(dim,
+                                               nhead,
+                                               dropout=dropout,
+                                               batch_first=batch_first)
+        # self.self_attn = MultiheadC(dim, nhead)
         self.norm = nn.LayerNorm(dim)
         self.dropout = nn.Dropout(dropout)
         self.add_pe_to_qkv = add_pe_to_qkv
@@ -917,7 +925,7 @@ class SelfAttention(nn.Module):
         else:
             q = k = v = x
         r = x
-        x, qk = self.self_attn._attention(q, k, v, is_causal=False, attn_mask=attn_mask, need_weights=False)
+        x, qk = self.self_attn(q, k, v, is_causal=False, attn_mask=attn_mask, need_weights=False)
         return r + self.dropout(x)
 
 
@@ -932,11 +940,11 @@ class CrossAttention(nn.Module):
                  residual: bool = True,
                  norm: bool = True):
         super().__init__()
-        self.cross_attn = MultiheadC(dim, nhead)
-        # self.cross_attn = nn.MultiheadAttention(dim,
-        #                                         nhead,
-        #                                         dropout=dropout,
-        #                                         batch_first=batch_first)
+        # self.cross_attn = MultiheadC(dim, nhead)
+        self.cross_attn = nn.MultiheadAttention(dim,
+                                                nhead,
+                                                dropout=dropout,
+                                                batch_first=batch_first)
         if norm:
             self.norm = nn.LayerNorm(dim)
         else:
@@ -969,7 +977,7 @@ class CrossAttention(nn.Module):
 
         # print("attn_mask:", attn_mask)
         # print("q:", q.shape, "k:", k.shape, "v:", v.shape, "x:", x.shape, "attn_mask:", attn_mask, "need_weights:", need_weights)
-        x, weights = self.cross_attn._attention(q, k, v, is_causal=False, attn_mask=None, need_weights=False)
+        x, weights = self.cross_attn(q, k, v, is_causal=False, attn_mask=attn_mask, need_weights=need_weights)
 
         if self.residual:
             return r + self.dropout(x), weights
