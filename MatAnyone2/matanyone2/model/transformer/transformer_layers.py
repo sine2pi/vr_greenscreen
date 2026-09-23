@@ -861,10 +861,6 @@ class MultiheadC(nn.Module):
     def _attention(self, q: Tensor, k: Tensor, v: Tensor, is_causal: bool, attn_mask: Optional[torch.Tensor] = None, need_weights=False) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         batch, ctx, dims = q.shape
 
-        q = q * self.scale
-        k = k * self.scale
-        self.dims = dims
-
         q = self._shape(q, ctx, batch)
         k = self._shape(k, k.size(1), batch)
         v = self._shape(v, v.size(1), batch)
