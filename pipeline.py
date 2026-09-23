@@ -1,4 +1,3 @@
-from httpx import stream
 import sys, functools, time, tqdm, random, shutil, gc, os, torch, cv2, numpy as np, glob, matplotlib.pyplot as plt, torch.nn.functional as F, argparse, re, subprocess, json, threading
 from PIL import Image, ImageDraw, ImageFilter
 from tempfile import TemporaryDirectory
@@ -8,7 +7,6 @@ from omegaconf import open_dict
 from sam3.model_builder import build_sam3_predictor
 from dataclasses import dataclass
 from enum import Enum
-from sam3.train import data
 from sam3.visualization_utils import load_frame, prepare_masks_for_visualization, visualize_formatted_frame_output
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -210,6 +208,7 @@ def ffmpeg_progress(cmd: list[str], progress_prefix: str = "", cwd: str | None =
 
     return process.returncode, "".join(stderr_lines)
 
+@functools.lru_cache(maxsize=256)
 def info(path, ffprobe_bin=FFPROBE_BIN):
     metadata = {}
     cmd_key = [ffprobe_bin, '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'frame=pict_type', '-of', 'csv=p=0', '-skip_frame', 'nokey', path]
@@ -2229,6 +2228,8 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path) -> str:
             f.write(f'# {video_name}\n')
             for seg in segments:
                 f.write(f'{seg.index},{seg.seg_type.value},{seg.start_time:.3f},{seg.end_time:.3f},{seg.video_path}\n')
+
+        # f.cache_info()
         return output_mask
 
     else:
