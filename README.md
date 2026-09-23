@@ -2,14 +2,14 @@
 
 
 ```
-                                                8k VR - 8gb vram.
-                                                Daily Breaking Changes
+8k VR - 8gb vram.
+ Daily Breaking Changes
 
-                                                use:
-                                                  python pipeline.py "videos"
+ use:
+     python pipeline.py "videos"
 
  or try : 
-    python pipeline.py "videos" --alpha True --fisheye180 True --erode 6 --dilate 3 --segment-length 6 --mask-height 1008 --prompt "agirl" --warmup 6 --add-box True --ma2-mem-every 6 --overlay-color '0x00ff00' --show-plots True
+     python pipeline.py "videos" --alpha True --fisheye180 True --erode 6 --dilate 3 --segment-length 6 --mask-height 1008 --prompt "agirl" --warmup 6 --add-box True --ma2-mem-every 6 --overlay-color '0x00ff00' --show-plots True
 
 ```
 
