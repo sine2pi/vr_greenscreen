@@ -859,21 +859,46 @@ class MultiheadC(nn.Module):
         wv = self._attention(q, k, v, is_causal=is_causal)
         return self.o(wv), None
 
-    def _attention(self, q: Tensor, k: Tensor, v: Tensor, is_causal: bool, attn_mask: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        batch, ctx, self.dims = q.shape
+    def _attention(self, q: Tensor, k: Tensor, v: Tensor, is_causal: bool, attn_mask: Optional[torch.Tensor] = None, need_weights=False) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        batch, ctx, dims = q.shape
 
         q = q * self.scale
         k = k * self.scale
+        self.dims = dims
 
         q = self._shape(q, ctx, batch)
         k = self._shape(k, k.size(1), batch)
         v = self._shape(v, v.size(1), batch)
 
-        with sdpa_kernel([SDPBackend.CUDNN_ATTENTION]):
-            a = SDPA(q, k, v, attn_mask=attn_mask, is_causal=is_causal, enable_gqa=False)
-        out = a.permute(0, 2, 1, 3).flatten(start_dim=2)
-        out = self.o(out)
-        return out
+        if need_weights:
+
+            qk = (q) @ (k).transpose(-1, -2)
+            if attn_mask is not None:
+                qk = qk + attn_mask[:ctx, :ctx]
+            qk = qk.float()
+            w = F.softmax(qk, dim=-1).to(q.dtype)
+            output = (w @ v).permute(0, 2, 1, 3).flatten(start_dim=2).contiguous()
+            qk = qk.detach()
+            output = output.transpose(1, 2).flatten(-2).contiguous()   # (B, L, head * head_dim) -> (B, L, D)
+            out = self.o(output)
+            return out, qk
+
+        
+
+        #     qk = (q) @ (k).transpose(-1, -2)
+        #     if attn_mask is not None:
+        #         qk = qk + attn_mask[:ctx, :ctx]
+        #     qk = qk.float()
+        # else:
+        #     qk=None
+
+        else:
+            qk=None
+            with sdpa_kernel([SDPBackend.CUDNN_ATTENTION]):
+                a = SDPA(q, k, v, attn_mask=attn_mask, is_causal=is_causal, enable_gqa=False) # sdpa folds weights into the attention computation
+            out = a.permute(0, 2, 1, 3).flatten(start_dim=2).contiguous()
+            out = self.o(out)
+            return out, qk
 
 
 class SelfAttention(nn.Module):
@@ -904,7 +929,7 @@ class SelfAttention(nn.Module):
         else:
             q = k = v = x
         r = x
-        x = self.self_attn._attention(q, k, v, is_causal=False, attn_mask=attn_mask)[0]
+        x, qk = self.self_attn._attention(q, k, v, is_causal=False, attn_mask=attn_mask, need_weights=False)[0]
         return r + self.dropout(x)
 
 
@@ -919,10 +944,11 @@ class CrossAttention(nn.Module):
                  residual: bool = True,
                  norm: bool = True):
         super().__init__()
-        self.cross_attn = nn.MultiheadAttention(dim,
-                                                nhead,
-                                                dropout=dropout,
-                                                batch_first=batch_first)
+        self.cross_attn = MultiheadC(dim, nhead)
+        # self.cross_attn = nn.MultiheadAttention(dim,
+        #                                         nhead,
+        #                                         dropout=dropout,
+        #                                         batch_first=batch_first)
         if norm:
             self.norm = nn.LayerNorm(dim)
         else:
@@ -952,12 +978,7 @@ class CrossAttention(nn.Module):
         else:
             k = v = mem
         r = x
-        x, weights = self.cross_attn(q,
-                                     k,
-                                     v,
-                                     attn_mask=attn_mask,
-                                     need_weights=need_weights,
-                                     average_attn_weights=False)
+        x, weights = self.cross_attn._attention(q, k, v, is_causal=False, attn_mask=attn_mask, need_weights=need_weights)
 
         if self.residual:
             return r + self.dropout(x), weights
