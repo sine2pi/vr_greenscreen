@@ -1934,6 +1934,9 @@ def _matanyone_process_segment(matanyone_model, device, inference_core, job, vid
     cmd.extend([
         '-sws_flags', 'lanczos+full_chroma_int+accurate_rnd+full_chroma_inp', '-c:v', 'hevc_nvenc', '-profile:v', 'main', '-pix_fmt', 'yuv420p', '-tag:v', 'hvc1', '-g', '20', '-b:v', '50M', '-c:a', 'aac', '-b:a', '256k', '-colorspace', 'bt709', '-color_primaries', 'bt709', '-fps_mode', 'cfr', '-r', str(fps), '-movflags', '+faststart+write_colr+use_metadata_tags', '-metadata:s:v:0', 'stereo_mode=left_right', '-color_trc', 'bt709', output_file])
 
+        # cmd.extend([
+        # '-sws_flags', 'lanczos+full_chroma_int+accurate_rnd+full_chroma_inp', '-c:v', 'hevc_qsv', '-profile:v', 'main10', '-pix_fmt', 'p010le', '-tag:v', 'hvc1', '-g', '20', '-b:v', '50M', '-preset', 'medium', '-c:a', 'aac', '-b:a', '256k', '-colorspace', 'bt709', '-color_primaries', 'bt709', '-fps_mode', 'cfr', '-r', str(fps), '-movflags', '-color_trc', 'bt709', out_path])
+
     process = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
 
     try:
@@ -2171,7 +2174,7 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path) -> str:
         )
 
         if alpha_output:
-            alpha_video = packer(
+            overlay_video = packer(
                 video_path, 
                 video_args
                 )
@@ -2213,7 +2216,7 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path) -> str:
 
         print(f'Overlay preview: {overlay_video}')
         print('=' * 60)
-        return aorb(overlay_video, alpha_video)
+        return overlay_video
 
 def calculate_segments(video_duration: float, max_segment_length: float = 5.0, debug = None) -> List[SegmentInfo]:
 
@@ -2299,7 +2302,7 @@ def main() -> int:
     parser.add_argument("--model", type=str, default="sam3.1")
     parser.add_argument("input_path", type=str, default="videos")
     parser.add_argument("--mask-height", type=int, default=1280)
-    parser.add_argument("--segment-length", type=float, default=2)
+    parser.add_argument("--segment-length", type=float, default=6)
     parser.add_argument("--erode", type=int, default=6)
     parser.add_argument("--dilate", type=int, default=0)
     parser.add_argument("--prompt", type=str, default="agirl")
@@ -2311,7 +2314,7 @@ def main() -> int:
     parser.add_argument('--ma2-mem-every', type=int, default=2, help='Override MatAnyone mem_every (works for v1 and v2; e.g. 2 or 3 for faster refresh)')
     parser.add_argument('--ma2-max-mem-frames', type=int, default=2, help='Override MatAnyone memory window in frames (works for v1 and v2)')
     parser.add_argument('--ma2-use-long-term', type=str, default='off', choices=['auto', 'on', 'off'], help='Override MatAnyone long-term memory ')
-    parser.add_argument('--overlay-output', type=str, default='input_path', help='Write a composited video with the mask over the original source')
+    parser.add_argument('--overlay-output', type=str, default='input_path', help='Write a composited video with the mask over the original source. Set a high segment length')
     parser.add_argument('--overlay-color', type=str, default='0x00ff00', help='Background color for overlay (use 0x00ff00 for pure green)')
     parser.add_argument('--overlay-mask', type=str, default=None, help='Write a composited video with a provided mask over the original source')
     parser.add_argument('--alpha-packer', type=bool, default=False, help='Run alpha packer. Provide folder with video and mask (_mask.<ext>) for  input_path')
