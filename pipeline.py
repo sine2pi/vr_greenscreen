@@ -59,26 +59,6 @@ def aborc(a, b, c):
 def abcord(a, b, c, d):
     return aorb(a, aborc(b, c, d))
 
-def _save_frames_as_folder(frames, out_dir: Path):
-    _ensure_dir(out_dir)
-    for i, frame_rgb in enumerate(frames):
-        frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
-        cv2.imwrite(str(out_dir / f"{i:05d}.png"), frame_bgr)
-
-def _save_mask(mask_gray: np.ndarray, out_path: Path):
-    _ensure_dir(out_path.parent)
-    Image.fromarray(mask_gray, mode="L").save(str(out_path))
-
-def _ensure_dir(path: Path):
-    path.mkdir(parents=True, exist_ok=True)
-    return path
-
-def _safe_rel(path: Path, base: Path):
-    try:
-        return str(path.relative_to(base))
-    except Exception:
-        return str(path)
-
 def check_vfr(video_path: str, max_packets_to_read: int = 500) -> bool:
 
     cmd = [
@@ -347,7 +327,7 @@ def resize_video(source_video, output_video, progress_prefix: str = "[resize] ")
     cmd = [
 
         'ffmpeg', '-y', '-hwaccel', 'cuda',
-        '-i', output_video,
+        '-i', source_video,
         '-filter_complex', f'[0:v]fps={data["fps"]},setpts=N/({data["fps"]}*TB),scale={data["width"]}:{data["height"]}:flags=bilinear',
         *enc,
         output_video,
@@ -2264,12 +2244,9 @@ def extract_segments(
 
 ) -> List[SegmentInfo]:
 
-    print(f'Total: {len(segments)} segments')
     for seg in segments:
         dur = seg.end_time - seg.start_time
-        print(f'[{seg.index}] {seg.seg_type.value.upper():5} '
-            f'{format_timestamp(seg.start_time)} → {format_timestamp(seg.end_time)} ({dur:.1f}s)')
-    print()
+    print(f'Total: {len(segments)} segments at ({dur:.1f}s each)')
 
     for i, seg in enumerate(mask_segments) if video_args.debug is None else enumerate(mask_segments[:video_args.debug]):
         
@@ -2361,7 +2338,7 @@ def main() -> int:
         args.ma2_use_long_term = (args.ma2_use_long_term == 'on')
 
     if args.alpha_packer:
-        return packer(args.input_path, fisheye=args.fisheye180)
+        return packer(args.input_path, args)
     if args.decompose_alpha:
         cleanup_mask = args.decompose_clean_mask
         if cleanup_mask is not None and str(cleanup_mask).strip().lower() in {'none', 'off', 'false', '0'}:
