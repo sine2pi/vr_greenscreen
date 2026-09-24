@@ -114,8 +114,7 @@ def _input_videos(input_path: str) -> List[Path]:
 
     videos = sorted(
         p.resolve() for p in path.rglob('*')
-        if p.is_file() and p.suffix.lower() in VIDEO_EXTENSIONS
-        )
+        if p.is_file() and p.suffix.lower() in VIDEO_EXTENSIONS)
 
     if not videos:
         raise RuntimeError(f'No supported video files found in folder: {input_path}')
@@ -137,7 +136,6 @@ def format_timestamp(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:06.3f}"
 
 def encoder_args(data=None) -> list[str]:
-
     fps = data['fps'] if data is not None else 60
 
     return [
@@ -164,27 +162,25 @@ def encoder_args(data=None) -> list[str]:
         '-movflags', '+faststart+write_colr+use_metadata_tags',
     ]
 
-def _ffmpeg_progress(line: str) -> str:
+# def _ffmpeg_progress(line: str) -> str:
 
-    parts = []
-    for field in ['time=', 'elapsed=', 'speed=']:
-        match = re.search(rf'{field}(\S+)', line)
-        if match:
-            parts.append(f"{field}{match.group(1)}")
+#     parts = []
+#     for field in ['time=', 'elapsed=', 'speed=']:
+#         match = re.search(rf'{field}(\S+)', line)
+#         if match:
+#             parts.append(f"{field}{match.group(1)}")
 
-    return (' '.join(parts) + '\033[K') if parts else line.strip()
+#     return (' '.join(parts) + '\033[K') if parts else line.strip()
 
 def ffmpeg_progress(cmd: list[str], progress_prefix: str = "", cwd: str | None = None) -> tuple[int, str]:
     process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=cwd)
     stderr_lines = []
     for line in process.stderr:
         stderr_lines.append(line)
-        if 'frame=' in line:
-            print()
-            print(f"\r{progress_prefix}{_ffmpeg_progress(line)}", end='', flush=True)
-            print()
+        # if 'frame=' in line:
+        #     print()
     process.wait()
-    print()
+    # print()
 
     return process.returncode, "".join(stderr_lines)
 
@@ -652,7 +648,7 @@ def mask_overlay(source_video: str, mask_video: str, output_path: str, backgroun
     os.makedirs(os.path.dirname(os.path.abspath(resolved_path)) or '.', exist_ok=True)
 
     orig_filter = f"setpts=PTS-STARTPTS,fps={data['fps']},format=rgba"
-    mask_filter = f"setpts=PTS-STARTPTS,fps={data['fps']},format=gray,scale={data['width']}:{data['height']},lut=a=val/255"
+    mask_filter = f"setpts=PTS-STARTPTS,fps={data['fps']},format=gray,scale={data['width']}:{data['height']}:flags=area,lut=a=val/255"
     bg_filter = f"setpts=PTS-STARTPTS,fps={data['fps']},format=rgba"
 
     filter_complex = (
@@ -717,6 +713,7 @@ def get_video_paths(input_root):
 def _ceil_to(n: int, base: int) -> int:
     return ((n + base - 1) // base) * base
 
+@functools.lru_cache(maxsize=8)
 def get_circle_mask(size: int) -> str:
 
     import tempfile
@@ -1193,7 +1190,6 @@ def fisheye180(input_video: str, flag=False) -> str:
         raise RuntimeError(f'FFmpeg failed with exit code {rc}')
 
     print(f'FISHEYE180 output: {output_video}')
-
     return output_video
 
 def run_fisheye180_mode(input_path: str, flag: bool = False) -> int:
@@ -1216,7 +1212,6 @@ def run_fisheye180_mode(input_path: str, flag: bool = False) -> int:
     return 0
 
 def video_frames(frame_root, max_size):
-
     if frame_root.endswith(VIDEO_EXTENSIONS):
         video_name = os.path.basename(frame_root)[:-4]
 
@@ -1249,7 +1244,7 @@ def video_frames(frame_root, max_size):
         ]
 
         command.extend([
-        '-sws_flags', 'lanczos+full_chroma_int+accurate_rnd+full_chroma_inp', '-c:v', 'hevc_nvenc', '-profile:v', 'main', '-pix_fmt', 'yuv420p', '-tag:v', 'hvc1', '-g', '20', '-b:v', '50M', '-c:a', 'aac', '-b:a', '256k', '-colorspace', 'bt709', '-color_primaries', 'bt709', '-fps_mode', 'cfr', '-r', str(fps), '-movflags', '+faststart+write_colr+use_metadata_tags', '-metadata:s:v:0', 'stereo_mode=left_right', '-color_trc', 'bt709'])
+        '-c:v', 'hevc_nvenc', '-profile:v', 'main', '-pix_fmt', 'yuv420p', '-tag:v', 'hvc1', '-g', '20', '-b:v', '50M', '-c:a', 'aac', '-b:a', '256k', '-colorspace', 'bt709', '-color_primaries', 'bt709', '-fps_mode', 'cfr', '-r', str(fps), '-movflags', '+faststart+write_colr+use_metadata_tags', '-metadata:s:v:0', 'stereo_mode=left_right', '-color_trc', 'bt709'])
 
         process = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         if process.returncode != 0:
@@ -1276,7 +1271,6 @@ def video_frames(frame_root, max_size):
     return frames, fps, length, video_name
 
 class TorchCodecVideoLoader:
-
     def __init__(self, video_path, image_size=None, offload_video_to_cpu=False, img_mean=None, img_std=None, gpu_device=None, norm=False):
         from torchcodec import _core as core
 
@@ -1446,34 +1440,37 @@ class sam3_video_inference:
         else:
             raise ValueError(f"Unknown coord_type: {coord_type}")
 
-    def track(self, video_path = None, remove = False, sub_box = False, add_point = 0, warp=False):
-
+    def track(self, video_path = None, remove = False, sub_box = False, add_point = 0, warp=False, frame=None):
         predictor, video_path, prompt, show_plots, add_box = self.predictor, self.video_path, self.video_args.prompt, self.video_args.show_plots, self.video_args.add_box
 
         if video_path is None:
             video_path = self.video_path
-        
-        if isinstance(video_path, str) and video_path.endswith(".mp4"):
-            cap = cv2.VideoCapture(video_path)
-            frames = []
-            while True:
-                ret, frame = cap.read()
-                if not ret:
-                    break
-                frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-            cap.release()
-        else:
-            frames = glob.glob(os.path.join(video_path, "*.jpg"))
-            try:
-                frames.sort(key=lambda p: int(os.path.splitext(os.path.basename(p))[0]))
-            except ValueError:
-                print(f'frame names are not in "<frame_idx>.jpg" format: {frames[:5]=}, '
-                    f"falling back to lexicographic sort.")
-                frames.sort()
 
-        image = Image.fromarray(load_frame(frames[0]))
-        W, H = image.size
-        print(f'Image size: {W}x{H}')
+        if frame is not None:
+            W, H = frame.shape[1], frame.shape[0]
+            frames = [frame]
+
+        else:
+            if isinstance(video_path, str) and video_path.endswith(".mp4"):
+                cap = cv2.VideoCapture(video_path)
+                frames = []
+                while True:
+                    ret, frame = cap.read()
+                    if not ret:
+                        break
+                    frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                cap.release()
+            else:
+                frames = glob.glob(os.path.join(video_path, "*.jpg"))
+                try:
+                    frames.sort(key=lambda p: int(os.path.splitext(os.path.basename(p))[0]))
+                except ValueError:
+                    print(f'frame names are not in "<frame_idx>.jpg" format: {frames[:5]=}, '
+                        f"falling back to lexicographic sort.")
+                    frames.sort()
+
+            image = Image.fromarray(load_frame(frames[0]))
+            W, H = image.size
 
         response = predictor.handle_request(
             request=dict(
@@ -1554,7 +1551,6 @@ def sam3_video(frames_dir, mask_segments, video_args) -> None:
 
     seq_dir = folder / "_sam3video_seq"
     video_frames_dir = folder / "_sam3video_frames"
-    print(output_size)
 
     if seq_dir.exists():
         shutil.rmtree(seq_dir)
@@ -1582,7 +1578,7 @@ def sam3_video(frames_dir, mask_segments, video_args) -> None:
         image.close()
 
     tracker = sam3_video_inference(video_path=str(seq_dir), video_args=video_args)
-    inference_state = tracker.track()
+    inference_state = tracker.track(frame=image)
 
     with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
         for i, out_path in enumerate(output_paths):
@@ -2115,7 +2111,7 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path) -> str:
     video_path = str(Path(video_path).expanduser().resolve())
     video_name = Path(video_path).stem
     data = info(video_path)
-    print(f"Specs: {data['width']}x{data['height']} @ {data['fps']}fps, duration: {data['duration']}, format: {data['pix_fmt']}, frames: {data['frames']}")
+    print(f"Specs: {data['width']}x{data['height']} @ {data['fps']}fps, duration: {data['duration']}, format: {data['pix_fmt']}")
     print()
     
     safe_name = ''.join(ch if ch.isalnum() or ch in '._-' else '_' for ch in video_name)
@@ -2131,7 +2127,7 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path) -> str:
     for d in [frames_dir, masks_dir, segments_dir]:
         d.mkdir(parents=True, exist_ok=True)
 
-    video_args = argparse.Namespace(**vars(args), video=video_path)
+    video_args = argparse.Namespace(**vars(args), video_path=video_path)
     alpha_output = video_args.alpha
     overlay_mask = video_args.overlay_mask
 
@@ -2254,7 +2250,7 @@ def extract_segments(
             sbs_frame = str(frames_dir / f'seg{seg.index:02d}_sbs.png')
             sbs_video = str(segments_dir / f'seg{seg.index:02d}_sbs.mp4')
             sbs_frame_path, _ = extract_segment_sbs(
-                        stereo_video=video_args.video,
+                        stereo_video=video_args.video_path,
                         start=seg.start_time,
                         end=seg.end_time,
                         target_height=video_args.mask_height,
@@ -2270,7 +2266,7 @@ def extract_segments(
             seg_right_video = str(segments_dir / f'seg{seg.index:02d}_right.mp4')
 
             left_frame_path, right_frame_path, _, _ = extract_segment_frames(
-                stereo_video=video_args.video,
+                stereo_video=video_args.video_path,
                 start=seg.start_time,
                 end=seg.end_time,
                 height=data['height'],
@@ -2354,7 +2350,7 @@ def main() -> int:
     batch_mode = len(video_paths) > 1
     for index, video_path in enumerate(video_paths, 1):
         video_path = str(video_path)
-        video_args = argparse.Namespace(**vars(args), video=video_path)
+        video_args = argparse.Namespace(**vars(args), video_path=video_path)
         is_vfr = check_vfr(video_path)
         if is_vfr:
             video_path = cfr_video(video_path, video_args) 
