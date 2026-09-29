@@ -2247,7 +2247,7 @@ def extract_segments(
 
     for seg in segments:
         dur = seg.end_time - seg.start_time
-    print(f'Total: {len(segments)} segments at ({dur:.1f}s each)')
+    print(f'Total: {len(segments)} segments')
 
     for i, seg in enumerate(mask_segments) if video_args.debug is None else enumerate(mask_segments[:video_args.debug]):
         
