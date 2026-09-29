@@ -637,18 +637,19 @@ def get_bg(mask_path: str, size: int, background_color: str = '0x00ff00'):
     subprocess.run(cmd, capture_output=True, text=True)
     return str(mask_path)
 
-def mask_overlay(source_video: str, mask_video: str, output_path: str, background_color: str = '0x00ff00', video_args: argparse.Namespace = None) -> str:
+def mask_overlay(source_video: str, mask_video: str, output_path: str, background_color: str = '0x00ff00', video_args: argparse.Namespace = None, data: dict = None) -> str:
 
     resolved_path = overlay_path(source_video, output_path)
     os.makedirs(os.path.dirname(os.path.abspath(resolved_path)) or '.', exist_ok=True)
 
-    data = info(source_video)
+    if data is None:
+        data = info(source_video)
     enc = encoder_args(data)
 
     os.makedirs(os.path.dirname(os.path.abspath(resolved_path)) or '.', exist_ok=True)
 
     orig_filter = f"setpts=PTS-STARTPTS,fps={data['fps']},format=rgba"
-    mask_filter = f"setpts=PTS-STARTPTS,fps={data['fps']},format=gray,scale={data['width']}:{data['height']}:flags=area,lut=a=val/255"
+    mask_filter = f"setpts=PTS-STARTPTS,fps={data['fps']},format=gray,scale={data['width']}:{data['height']},lut=a=val/255"
     bg_filter = f"setpts=PTS-STARTPTS,fps={data['fps']},format=rgba"
 
     filter_complex = (
@@ -1391,7 +1392,7 @@ class sam3_video_inference:
             max_num_objects = 1,
             multiplex_count = 16,
             use_fa3 = False,
-            use_rope_real = False,
+            use_rope_real = True,
             async_loading_frames = False,
             num_obj_for_compile=1,
             apply_temporal_disambiguation=True,
@@ -1446,28 +1447,29 @@ class sam3_video_inference:
         if video_path is None:
             video_path = self.video_path
 
-        if frame is not None:
-            W, H = frame.shape[1], frame.shape[0]
-            frames = [frame]
+        # if frame is not None:
+        #     W, H = frame.shape[1], frame.shape[0]
+        #     frames = [frame]
 
+        # else:
+
+        if isinstance(video_path, str) and video_path.endswith(".mp4"):
+            cap = cv2.VideoCapture(video_path)
+            frames = []
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+            cap.release()
         else:
-            if isinstance(video_path, str) and video_path.endswith(".mp4"):
-                cap = cv2.VideoCapture(video_path)
-                frames = []
-                while True:
-                    ret, frame = cap.read()
-                    if not ret:
-                        break
-                    frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-                cap.release()
-            else:
-                frames = glob.glob(os.path.join(video_path, "*.jpg"))
-                try:
-                    frames.sort(key=lambda p: int(os.path.splitext(os.path.basename(p))[0]))
-                except ValueError:
-                    print(f'frame names are not in "<frame_idx>.jpg" format: {frames[:5]=}, '
-                        f"falling back to lexicographic sort.")
-                    frames.sort()
+            frames = glob.glob(os.path.join(video_path, "*.jpg"))
+            try:
+                frames.sort(key=lambda p: int(os.path.splitext(os.path.basename(p))[0]))
+            except ValueError:
+                print(f'frame names are not in "<frame_idx>.jpg" format: {frames[:5]=}, '
+                    f"falling back to lexicographic sort.")
+                frames.sort()
 
             image = Image.fromarray(load_frame(frames[0]))
             W, H = image.size
@@ -2302,7 +2304,7 @@ def main() -> int:
     parser.add_argument("--model", type=str, default="sam3.1")
     parser.add_argument("input_path", type=str, default="videos")
     parser.add_argument("--mask-height", type=int, default=1280)
-    parser.add_argument("--segment-length", type=float, default=6)
+    parser.add_argument("--segment-length", type=float, default=1)
     parser.add_argument("--erode", type=int, default=6)
     parser.add_argument("--dilate", type=int, default=0)
     parser.add_argument("--prompt", type=str, default="agirl")
@@ -2311,10 +2313,9 @@ def main() -> int:
     parser.add_argument("--sub-box", type=bool, default=False)
     parser.add_argument("--sbs", type=bool, default=False)
     parser.add_argument('--matanyone-version', type=str, default='v2', choices=['v1', 'v2'], help='Select MatAnyone runtime version')
-    parser.add_argument('--ma2-mem-every', type=int, default=2, help='Override MatAnyone mem_every (works for v1 and v2; e.g. 2 or 3 for faster refresh)')
+    parser.add_argument('--ma2-mem-every', type=int, default=8, help='Override MatAnyone mem_every')
     parser.add_argument('--ma2-max-mem-frames', type=int, default=2, help='Override MatAnyone memory window in frames (works for v1 and v2)')
     parser.add_argument('--ma2-use-long-term', type=str, default='off', choices=['auto', 'on', 'off'], help='Override MatAnyone long-term memory ')
-    parser.add_argument('--overlay-output', type=str, default='input_path', help='Write a composited video with the mask over the original source. Set a high segment length')
     parser.add_argument('--overlay-color', type=str, default='0x00ff00', help='Background color for overlay (use 0x00ff00 for pure green)')
     parser.add_argument('--overlay-mask', type=str, default=None, help='Write a composited video with a provided mask over the original source')
     parser.add_argument('--alpha-packer', type=bool, default=False, help='Run alpha packer. Provide folder with video and mask (_mask.<ext>) for  input_path')
