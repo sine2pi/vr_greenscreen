@@ -2,17 +2,14 @@
 
 
 ```
-8k VR - 8gb vram.
+
  Daily Breaking Changes
 
  use:
      python pipeline.py "videos"
 
- or try : 
-     python pipeline.py "videos" --alpha True --fisheye180 True --erode 6 --dilate 3 --segment-length 6 --mask-height 1008 --prompt "agirl" --warmup 6 --add-box True --ma2-mem-every 6 --overlay-color '0x00ff00' --show-plots True
+To turn a folder of 180 sbs videos into fisheye alpha packed and create the matte/mask use : 
+     python pipeline.py "Videos" --alpha True --fisheye180 True
 
 ```
-
-
-<img width="850" height="100" alt="Screenshot 2026-09-23 090051" src="https://github.com/user-attachments/assets/bf03e744-fb82-42b8-990d-bfc0129edc23" />
 
