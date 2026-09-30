@@ -1575,10 +1575,15 @@ def sam3_video(frames_dir, mask_segments, video_args) -> None:
         image = raw.convert("RGB")
         raw.close()
 
-        frame_shapes.append((output_size, output_size))
+        if image.height != output_size:
+            full = image
+            image = full.resize((output_size, output_size), Image.Resampling.BICUBIC)
+            full.close()
+
+        frame_shapes.append((image.height, image.width))
         image.save(seq_dir / f"{i:06d}.jpg", format="JPEG", quality=100)
         image.close()
-
+        
     tracker = sam3_video_inference(video_path=str(seq_dir), video_args=video_args)
     inference_state = tracker.track(frame=image)
 
