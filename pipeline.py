@@ -1401,12 +1401,12 @@ class sam3_video_inference:
             max_num_objects = 1,
             multiplex_count = 16,
             use_fa3 = False,
-            use_rope_real = False,
+            use_rope_real = True,
             async_loading_frames = False,
             num_obj_for_compile=1,
             apply_temporal_disambiguation=True,
             device = device,
-            video_loader_type="cv2",
+            video_loader_type="torchcodec",
             load_from_HF=False,
             default_output_prob_thresh=0.1, 
             strict_state_dict_loading=False, 
@@ -1433,7 +1433,7 @@ class sam3_video_inference:
                     type="propagate_in_video",
                     session_id=session_id,
                     propagation_direction="forward",
-                    output_prob_thresh = 0.4,
+                    output_prob_thresh = 0.1,
                     frame_idx=0,
                     max_frame_num_to_track=max_frame_num_to_track,
 
@@ -1451,8 +1451,10 @@ class sam3_video_inference:
         else:
             raise ValueError(f"Unknown coord_type: {coord_type}")
 
-    def track(self, video_path = None, remove = False, sub_box = False, add_point = 0, warp=False):
+    def track(self, video_path = None, boxes = None, labels = None):
+
         predictor, video_path, prompt, show_plots, add_box, sub_box = self.predictor, self.video_path, self.video_args.prompt, self.video_args.show_plots, self.video_args.add_box, self.video_args.sub_box
+        
         if video_path is None:
             video_path = self.video_path
 
@@ -1498,11 +1500,16 @@ class sam3_video_inference:
         print(f'is_success: {is_success["is_success"]}')
         predictor.model.hotstart_delay = 0
 
-        boxes = np.array([[0.2, 0.2, 0.6, 0.6], [0.7, 0.0, 0.3, 0.99], [0.0, 0.0, 0.3, 0.99], [0.1, 0.8, 0.7, 0.1]]) if add_box else None
-        labels = np.array([1,0,0,0]) if add_box else None
+        if add_box:
+            boxes = np.array([[0.2, 0.2, 0.6, 0.6]])
+            labels = np.array([1])
+        if sub_box:
+            boxes = np.array([[0.1, 0.8, 0.7, 0.1]]) 
+            labels = np.array([0])
 
         prompt_text = prompt if prompt is not None else None
         frame_idx = 0
+        obj_id = 0
 
         response = predictor.handle_request(
             request=dict(
@@ -1512,6 +1519,7 @@ class sam3_video_inference:
                 text = prompt_text,
                 bounding_boxes = boxes,
                 bounding_box_labels = labels,
+                obj_id = obj_id
             )
         )
 
@@ -1542,6 +1550,7 @@ class sam3_video_inference:
         )
 
         predictor.shutdown()
+       
         return outputs
 
 def sam3_video(frames_dir, video_args) -> None:
@@ -1590,10 +1599,10 @@ def sam3_video(frames_dir, video_args) -> None:
 
     with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
         for i, out_path in enumerate(output_paths):
-            out_h, out_w = frame_shapes[i]
-            outputs = inference_state.get(i)
-            masks = (outputs or {}).get("out_binary_masks", None)
-            scores = (outputs or {}).get("out_probs", None)
+            # out_h, out_w = frame_shapes[i]
+            # outputs = inference_state.get(i)
+            masks = (inference_state.get(i) or {}).get("out_binary_masks", None)
+            scores = (inference_state.get(i) or {}).get("out_probs", None)
 
             if masks is None:
                 return None
@@ -1624,7 +1633,7 @@ def sam3_video(frames_dir, video_args) -> None:
 
             soft_masks.append(best_soft)
             valid_flags.append(np.count_nonzero(best_soft >= 0.5) >= min_valid_pixels)
-
+   
     filled_masks, filled_count = fill_soft(soft_masks, valid_flags, max_interp_gap=6)
     if filled_count > 0:
         print(f"Filled {filled_count} missing/weak SAM3 masks using temporal soft-mask interpolation")
@@ -1637,7 +1646,7 @@ def sam3_video(frames_dir, video_args) -> None:
     if seq_dir.exists():
         shutil.rmtree(seq_dir)
 
-    del tracker, inference_state
+    del tracker, inference_state, soft_masks, valid_flags, filled_masks
     gc.collect()
     torch.cuda.empty_cache()
 
@@ -1783,7 +1792,6 @@ def stereo_seed_report(mask_segments: List[SegmentInfo]) -> None:
         print(f"  seg{seg.index:02d}: area ratio {ratio:.3f}, vertical extent diff {dy * 100:.1f}% of height")
 
 def stereo_matte_report(left_pha: str, right_pha: str, label: str, size: int = 250, ratio_warn: float = 0.85, dy_warn: float = 0.05) -> None:
-    """Compare the left and right MatAnyone mattes frame by frame (area ratio and vertical extent)."""
 
     def load(path):
         raw = subprocess.run(
@@ -2178,7 +2186,7 @@ def matanyone(
         if not os.path.exists(left_pha) or not os.path.exists(right_pha):
             raise RuntimeError(f'Could not find generated masks for segment {seg.index}')
 
-        stereo_matte_report(left_pha, right_pha, f'seg{seg.index:02d}')
+        # stereo_matte_report(left_pha, right_pha, f'seg{seg.index:02d}')
 
         stereo_output = str(segments_dir / f'seg{seg.index:02d}_stereo.mkv')
         seg.video_path = stereo_video(
@@ -2260,7 +2268,7 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path) -> str:
                 mask_segments, 
             )
 
-        stereo_seed_report(mask_segments)
+        # stereo_seed_report(mask_segments)
 
         segments = matanyone(
             video_args,
