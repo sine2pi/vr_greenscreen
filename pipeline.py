@@ -1,5 +1,6 @@
 import sys, functools, time, tqdm, random, shutil, gc, os, torch, cv2, numpy as np, glob, matplotlib.pyplot as plt, torch.nn.functional as F, argparse, re, subprocess, json, threading
 from PIL import Image, ImageDraw, ImageFilter
+import tempfile
 from tempfile import TemporaryDirectory
 from pathlib import Path
 from typing import List
@@ -162,25 +163,12 @@ def encoder_args(data=None) -> list[str]:
         '-movflags', '+faststart+write_colr+use_metadata_tags',
     ]
 
-# def _ffmpeg_progress(line: str) -> str:
-
-#     parts = []
-#     for field in ['time=', 'elapsed=', 'speed=']:
-#         match = re.search(rf'{field}(\S+)', line)
-#         if match:
-#             parts.append(f"{field}{match.group(1)}")
-
-#     return (' '.join(parts) + '\033[K') if parts else line.strip()
-
 def ffmpeg_progress(cmd: list[str], progress_prefix: str = "", cwd: str | None = None) -> tuple[int, str]:
     process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=cwd)
     stderr_lines = []
     for line in process.stderr:
         stderr_lines.append(line)
-        # if 'frame=' in line:
-        #     print()
     process.wait()
-    # print()
 
     return process.returncode, "".join(stderr_lines)
 
@@ -342,27 +330,28 @@ def resize_video(source_video, output_video, progress_prefix: str = "[resize] ")
 
     return output_video
 
-def concat_video(video_list: list[str], output_path: str, fps: float | None = None) -> str:
+def concat_video(video_list: list[str], output_path: str, fps: float | None = None, lossless: bool = False) -> str:
 
     data = info(video_list[0])
 
     BATCH_SIZE = 50
     n = len(video_list)
-    enc = encoder_args(data)
+    # Inputs are lossless mattes: only the final output is lossy encoded, intermediate batches stay lossless
+    enc = ['-c:v', 'ffv1', '-level', '3', '-slices', '4', '-pix_fmt', 'gray'] if lossless else encoder_args(data)
 
     if n > BATCH_SIZE:
 
-        base_path, ext = os.path.splitext(os.path.abspath(output_path))
+        base_path, _ = os.path.splitext(os.path.abspath(output_path))
         temp_batches = []
 
         try:
             for i in range(0, n, BATCH_SIZE):
                 batch_files = video_list[i:i + BATCH_SIZE]
-                batch_out = f"{base_path}_batch_{i//BATCH_SIZE}{ext}"
+                batch_out = f"{base_path}_batch_{i//BATCH_SIZE}.mkv"
                 temp_batches.append(batch_out)
-                concat_video(batch_files, batch_out, fps=fps)
+                concat_video(batch_files, batch_out, fps=fps, lossless=True)
 
-            return concat_video(temp_batches, output_path, fps=fps)
+            return concat_video(temp_batches, output_path, fps=fps, lossless=lossless)
         finally:
             for tb in temp_batches:
                 if os.path.exists(tb):
@@ -400,10 +389,11 @@ def concat_video(video_list: list[str], output_path: str, fps: float | None = No
 
     cmd_inline = [
 
-        'ffmpeg', '-y', '-hwaccel', 'cuda',
+        'ffmpeg', '-y',
         *[item for rel in rel_vid for item in ['-i', rel]],
         '-filter_complex', filter_complex,
         '-map', '[outv]',
+        *enc,
         rel_output,
     ]
 
@@ -416,10 +406,11 @@ def concat_video(video_list: list[str], output_path: str, fps: float | None = No
 
         cmd_script = [
 
-            'ffmpeg', '-y', '-hwaccel', 'cuda',
+            'ffmpeg', '-y',
             *[item for rel in rel_vid for item in ['-i', rel]],
             '-/filter_complex', '_concat_filter.txt',
             '-map', '[outv]',
+            *enc,
             rel_output,
         ]
 
@@ -648,16 +639,17 @@ def mask_overlay(source_video: str, mask_video: str, output_path: str, backgroun
 
     os.makedirs(os.path.dirname(os.path.abspath(resolved_path)) or '.', exist_ok=True)
 
-    orig_filter = f"setpts=PTS-STARTPTS,fps={data['fps']},format=rgba"
-    mask_filter = f"setpts=PTS-STARTPTS,fps={data['fps']},format=gray,scale={data['width']}:{data['height']},lut=a=val/255"
-    bg_filter = f"setpts=PTS-STARTPTS,fps={data['fps']},format=rgba"
+    # Stay in YUV 4:2:0 to avoid a full-resolution RGBA round-trip; matte is upscaled with explicit bicubic (no lanczos ringing)
+    orig_filter = f"setpts=PTS-STARTPTS,fps={data['fps']},format=yuva420p"
+    mask_filter = f"setpts=PTS-STARTPTS,fps={data['fps']},format=gray,scale={data['width']}:{data['height']}:flags=bicubic+accurate_rnd"
+    bg_filter = f"setpts=PTS-STARTPTS,fps={data['fps']},format=yuv420p"
 
     filter_complex = (
         f"[0:v]{orig_filter}[orig];"
         f"[1:v]{mask_filter}[mask_alpha];"
         f"[orig][mask_alpha]alphamerge[alphaed];"
         f"[2:v]{bg_filter}[bg];"
-        f"[bg][alphaed]overlay=format=auto[out]"
+        f"[bg][alphaed]overlay=format=yuv420[out]"
     )
 
     cmd = [
@@ -678,19 +670,14 @@ def mask_overlay(source_video: str, mask_video: str, output_path: str, backgroun
     return resolved_path
 
 def stereo_video(left_video: str, right_video: str, output_path: str) -> str:
-
-    data = info(left_video)
-    enc = encoder_args(data)
-    filter_complex = "[0:v][1:v]hstack=inputs=2[out]"
-
+    # Inputs are lossless gray mattes; keep the stitched output lossless as well
     cmd = [
-
-        'ffmpeg', '-y', '-hwaccel', 'cuda',
+        'ffmpeg', '-y', '-v', 'error',
         '-i', left_video,
         '-i', right_video,
-        '-filter_complex', filter_complex,
+        '-filter_complex', '[0:v][1:v]hstack=inputs=2[out]',
         '-map', '[out]',
-        *enc,
+        '-c:v', 'ffv1', '-level', '3', '-slices', '4', '-pix_fmt', 'gray',
         output_path,
     ]
 
@@ -1244,9 +1231,6 @@ def video_frames(frame_root, max_size):
             "-",
         ]
 
-        command.extend([
-        '-c:v', 'hevc_nvenc', '-profile:v', 'main', '-pix_fmt', 'yuv420p', '-tag:v', 'hvc1', '-g', '20', '-b:v', '50M', '-c:a', 'aac', '-b:a', '256k', '-colorspace', 'bt709', '-color_primaries', 'bt709', '-fps_mode', 'cfr', '-r', str(fps), '-movflags', '+faststart+write_colr+use_metadata_tags', '-metadata:s:v:0', 'stereo_mode=left_right', '-color_trc', 'bt709'])
-
         process = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         if process.returncode != 0:
             raise RuntimeError(f"Frame extraction failed: {process.stderr.decode(errors='ignore')}")
@@ -1258,15 +1242,17 @@ def video_frames(frame_root, max_size):
         arr = arr.reshape(num_frames, height, width, 3)
 
         frames = torch.from_numpy(arr.copy()).permute(0, 3, 1, 2).contiguous()
-        frames = frames.float()
 
-        if max_size is not None:
-            if frames.shape != (max_size, max_size):
-                frames = torch.nn.functional.interpolate(
-                    frames,
+        if max_size is not None and (height, width) != (max_size, max_size):
+            # Resize in chunks and keep uint8 to avoid holding a float32 copy of the whole segment
+            frames = torch.cat([
+                torch.nn.functional.interpolate(
+                    chunk.float(),
                     size=(max_size, max_size),
                     mode="area",
-                )
+                ).round().clamp(0, 255).to(torch.uint8)
+                for chunk in frames.split(32)
+            ])
 
     length = frames.shape[0]
     return frames, fps, length, video_name
@@ -1375,172 +1361,6 @@ def download_ckpt_from_hf(version="sam3", force_download=False, local_files_only
             token=token,
         )
  
-# class sam3_video_inference:
-#     def __init__(self, video_path, video_args):
-
-#         self.video_path = video_path
-#         self.video_args = video_args
-#         bpe_path = 'assets/bpe_simple_vocab_16e6.txt.gz'
-#         checkpoint_path = download_ckpt_from_hf(version=video_args.model, force_download=False, local_files_only=False)
-
-#         self.predictor = build_sam3_predictor(
-#             checkpoint_path = checkpoint_path,
-#             bpe_path = bpe_path,
-#             version = video_args.model,
-#             compile = False,
-#             warm_up = True,
-#             max_num_objects = 1,
-#             multiplex_count = 16,
-#             use_fa3 = False,
-#             use_rope_real = True,
-#             async_loading_frames = False,
-#             num_obj_for_compile=1,
-#             apply_temporal_disambiguation=True,
-#             device = device,
-#             video_loader_type="cv2",
-#             load_from_HF=False,
-#             default_output_prob_thresh=0.1, 
-#             strict_state_dict_loading=False, 
-#             session_expiration_sec=1200, 
-#             eval_mode=True, 
-       
-#         )
-
-#     def propagate_in_video(self, predictor=None, session_id=None, max_frame_num_to_track=None):
-
-#         print()
-#         print(f"Sam3 inference. ... ♩ ♪ ♫ ♬")
-#         print(f"Prompt: {self.video_args.prompt}")
-#         print(f"Add box: {self.video_args.add_box}")
-#         print(f"Sub box: {self.video_args.sub_box}")
-#         print()
-
-#         predictor=self.predictor
-#         outputs = {}
-
-#         for response in predictor.handle_stream_request(
-
-#                 request=dict(
-#                     type="propagate_in_video",
-#                     session_id=session_id,
-#                     propagation_direction="forward",
-#                     output_prob_thresh = 0.1,
-#                     frame_idx=0,
-
-#                 )):
-
-#             outputs[response["frame_idx"]] = response["outputs"]
-
-#         return outputs
-
-#     def abs_to_rel_coords(self, coords=None, IMG_WIDTH=None, IMG_HEIGHT=None, coord_type="box"):
-#         if coord_type == "point":
-#             return [[x / IMG_WIDTH, y / IMG_HEIGHT] for x, y in coords]
-#         elif coord_type == "box":
-#             return [[x / IMG_WIDTH, y / IMG_HEIGHT, w / IMG_WIDTH, h / IMG_HEIGHT] for x, y, w, h in coords]
-#         else:
-#             raise ValueError(f"Unknown coord_type: {coord_type}")
-
-#     def track(self, video_path = None, remove = False, sub_box = False, add_point = 0, warp=False, frame=None):
-#         predictor, video_path, prompt, show_plots, add_box = self.predictor, self.video_path, self.video_args.prompt, self.video_args.show_plots, self.video_args.add_box
-
-#         if video_path is None:
-#             video_path = self.video_path
-
-#         # if frame is not None:
-#         #     W, H = frame.shape[1], frame.shape[0]
-#         #     frames = [frame]
-
-#         # else:
-
-#         if isinstance(video_path, str) and video_path.endswith(".mp4"):
-#             cap = cv2.VideoCapture(video_path)
-#             frames = []
-#             while True:
-#                 ret, frame = cap.read()
-#                 if not ret:
-#                     break
-#                 frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-#             cap.release()
-#         else:
-#             frames = glob.glob(os.path.join(video_path, "*.jpg"))
-#             try:
-#                 frames.sort(key=lambda p: int(os.path.splitext(os.path.basename(p))[0]))
-#             except ValueError:
-#                 print(f'frame names are not in "<frame_idx>.jpg" format: {frames[:5]=}, '
-#                     f"falling back to lexicographic sort.")
-#                 frames.sort()
-
-#             image = Image.fromarray(load_frame(frames[0]))
-#             W, H = image.size
-
-#         response = predictor.handle_request(
-#             request=dict(
-#                 type="start_session",
-#                 resource_path=video_path,
-#                 offload_video_to_cpu=True,
-
-#             )
-#         )
-
-#         session_id = response["session_id"]
-#         is_success = predictor.handle_request(
-#             request=dict(
-#                 type="reset_session",
-#                 session_id=session_id,
-#             )
-#         )
-
-#         print(f'is_success: {is_success["is_success"]}')
-#         predictor.model.hotstart_delay = 0
-
-#         boxes = np.array([[0.2, 0.2, 0.6, 0.6], [0.7, 0.0, 0.3, 0.99], [0.0, 0.0, 0.3, 0.99], [0.1, 0.8, 0.7, 0.1]]) if add_box else None
-#         labels = np.array([1,0,0,0]) if add_box else None
-
-#         prompt_text = prompt if prompt is not None else None
-#         frame_idx = 0
-
-#         response = predictor.handle_request(
-#             request=dict(
-#                 type = "add_prompt",
-#                 session_id = session_id,
-#                 frame_idx = frame_idx,
-#                 text = prompt_text,
-#                 bounding_boxes = boxes,
-#                 bounding_box_labels = labels,
-#             )
-#         )
-
-#         frame_idx = response["frame_idx"]
-#         outputs = self.propagate_in_video(predictor, session_id)
-
-#         if show_plots:
-
-#             out = response["outputs"]
-#             outputs_per_frame = prepare_masks_for_visualization({frame_idx: out})
-#             vis_frame_stride = 2
-#             plt.close("all")
-#             for frame_idx in range(0, len(outputs_per_frame), vis_frame_stride):
-#                 visualize_formatted_frame_output(
-#                     frame_idx,
-#                     frames,
-#                     outputs_list=[outputs_per_frame],
-#                     titles=["SAM 3.1 Dense Tracking outputs"],
-#                     figsize=(6, 6))
-
-#         _ = predictor.handle_request(
-
-#             request=dict(
-#                 type="close_session",
-#                 session_id=session_id,
-#                 run_gc_collect=True,
-#                 clear_cache_threshold=100
-#             )
-#         )
-
-#         predictor.shutdown()
-#         return outputs
-
 class sam3_video_inference:
     def __init__(self, video_path, video_args):
 
@@ -1589,7 +1409,6 @@ class sam3_video_inference:
                 request=dict(
                     type="propagate_in_video",
                     session_id=session_id,
-                    # max_frame_num_to_track=max_frame_num_to_track,
                     propagation_direction="forward",
                     output_prob_thresh = 0.1,
                     frame_idx=0,
@@ -1660,7 +1479,6 @@ class sam3_video_inference:
 
         prompt_text = prompt if prompt is not None else None
         frame_idx = 0
-        # obj_id = 0
 
         response = predictor.handle_request(
             request=dict(
@@ -1670,7 +1488,6 @@ class sam3_video_inference:
                 text = prompt_text,
                 bounding_boxes = boxes,
                 bounding_box_labels = labels,
-                # obj_id = obj_id,
             )
         )
 
@@ -1790,11 +1607,6 @@ def sam3_video(frames_dir, video_args) -> None:
     for out_path, soft_mask in zip(output_paths, filled_masks):
         mask = Image.fromarray((np.clip((soft_mask - 0.5) * 10.0 + 0.5, 0.0, 1.0) * 255).astype(np.uint8), mode="L")
         
-        # if mask.height != video_args.matanyone_height:
-        #     full = mask
-        #     mask = full.resize((video_args.matanyone_height, video_args.matanyone_height), Image.Resampling.BILINEAR)
-        #     full.close()
-
         mask.save(out_path)
 
     if seq_dir.exists():
@@ -1803,105 +1615,6 @@ def sam3_video(frames_dir, video_args) -> None:
     del tracker, inference_state
     gc.collect()
     torch.cuda.empty_cache()
-
-# def sam3_video(frames_dir, mask_segments, video_args) -> None:
-
-#     output_size = video_args.sam3_height
-#     folder = Path(frames_dir)
-#     image_files = sorted(list(folder.glob("*.png")) + list(folder.glob("*.jpg")))
-#     image_files = [f for f in image_files if "_mask" not in f.stem]
-
-#     if not image_files:
-#         return
-
-#     seq_dir = folder / "_sam3video_seq"
-#     video_frames_dir = folder / "_sam3video_frames"
-
-#     if seq_dir.exists():
-#         shutil.rmtree(seq_dir)
-#     if video_frames_dir.exists():
-#         shutil.rmtree(video_frames_dir)
-
-#     video_frames_dir.mkdir(parents=True, exist_ok=True)
-#     seq_dir.mkdir(parents=True, exist_ok=True)
-#     frame_shapes: list[tuple[int, int]] = []
-#     output_paths: list[Path] = []
-
-#     soft_masks = []
-#     valid_flags = []
-#     min_valid_pixels = int(output_size * 0.8)
-
-#     for i, frame_path in enumerate(image_files):
-#         out_path = frame_path.parent / f"{frame_path.stem}_mask.png"
-#         output_paths.append(out_path)
-#         raw = Image.open(frame_path)
-#         image = raw.convert("RGB")
-#         raw.close()
-
-#         if image.height != output_size:
-#             full = image
-#             image = full.resize((output_size, output_size), Image.Resampling.BICUBIC)
-#             full.close()
-
-#         frame_shapes.append((image.height, image.width))
-#         image.save(seq_dir / f"{i:06d}.jpg", format="JPEG", quality=100)
-#         image.close()
-        
-#     tracker = sam3_video_inference(video_path=str(seq_dir), video_args=video_args)
-#     inference_state = tracker.track(frame=image)
-
-#     with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
-#         for i, out_path in enumerate(output_paths):
-#             out_h, out_w = frame_shapes[i]
-#             outputs = inference_state.get(i)
-#             masks = (outputs or {}).get("out_binary_masks", None)
-#             scores = (outputs or {}).get("out_probs", None)
-
-#             if masks is None:
-#                 return None
-
-#             if isinstance(scores, torch.Tensor):
-#                 scores = scores.cpu().numpy()
-            
-#             else:
-#                 scores = np.asarray(scores)
-
-#             if isinstance(masks, torch.Tensor):
-#                 masks = masks.cpu().numpy()
-           
-#             else:
-#                 masks = np.asarray(masks)
-
-#             if len(masks) == 0 or scores.size == 0:
-#                 best_soft = np.zeros((out_h, out_w), dtype=np.float32)
-#                 print(f"No SAM3 masks/scores for {out_path.name}; marking as missing for temporal fill")
-            
-#             else:
-#                 best_idx = int(np.argmax(scores))
-#                 best_soft = masks[best_idx]
-#                 if len(best_soft.shape) == 3:
-#                     best_soft = best_soft[0]
-#                 best_soft = np.asarray(best_soft, dtype=np.float32)
-#                 print("Confidence:", scores[best_idx])
-
-#             soft_masks.append(best_soft)
-#             valid_flags.append(np.count_nonzero(best_soft >= 0.5) >= min_valid_pixels)
-
-#     filled_masks, filled_count = fill_soft(soft_masks, valid_flags, max_interp_gap=6)
-#     if filled_count > 0:
-#         print(f"Filled {filled_count} missing/weak SAM3 masks using temporal soft-mask interpolation")
-    
-#     for out_path, soft_mask in zip(output_paths, filled_masks):
-#         mask = Image.fromarray((np.clip((soft_mask - 0.5) * 10.0 + 0.5, 0.0, 1.0) * 255).astype(np.uint8), mode="L")
-        
-#         mask.save(out_path)
-
-#     if seq_dir.exists():
-#         shutil.rmtree(seq_dir)
-
-#     del tracker, inference_state
-#     gc.collect()
-#     torch.cuda.empty_cache()
 
 def fill_soft(
     soft_masks,
@@ -2129,9 +1842,8 @@ def _matanyone_process_segment(matanyone_model, device, inference_core, job, vid
     processor = inference_core(matanyone_model, cfg=matanyone_model.cfg)
     frames, fps, length, video_name = video_frames(input_path, max_size)
     
-    frames = frames.float()
     repeated_frames = frames[0].unsqueeze(0).repeat(n_warmup, 1, 1, 1)
-    frames = torch.cat([repeated_frames, frames], dim=0).float()
+    frames = torch.cat([repeated_frames, frames], dim=0)
     length += n_warmup
 
     os.makedirs(output_path, exist_ok=True)
@@ -2165,8 +1877,7 @@ def _matanyone_process_segment(matanyone_model, device, inference_core, job, vid
 
     with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
         for ti in tqdm.tqdm(range(length)):
-            image = frames[ti]
-            image = (image / 255.).float().to(device)
+            image = frames[ti].to(device).float() / 255.
 
             if ti == 0:
                 output_prob = processor.step(image, mask, objects=objects)
@@ -2179,14 +1890,14 @@ def _matanyone_process_segment(matanyone_model, device, inference_core, job, vid
                 output_prob = processor.step(image)
 
             mask = processor.output_prob_to_mask(output_prob, matting=True)
-            pha = mask.unsqueeze(2).cpu().numpy()
 
             if ti > (n_warmup-1):
                 pha = torch.round(mask * 255).to(torch.uint8)
                 pha = torch.clamp(pha, 0, 255).cpu()
                 phas.append(pha)
 
-    output_file = os.path.join(output_path, f'{video_name}_pha.mp4')
+    # Lossless gray intermediate so the matte is not re-compressed before the final mask encode
+    output_file = os.path.join(output_path, f'{video_name}_pha.mkv')
     first_frame = phas[0]
     print(f"first_frame.shape: {first_frame.shape}")
  
@@ -2195,23 +1906,28 @@ def _matanyone_process_segment(matanyone_model, device, inference_core, job, vid
     height, width = first_frame.shape
 
     cmd = [
-        'ffmpeg', '-y', '-f', 'rawvideo', '-vcodec', 'rawvideo', '-s', f'{width}x{height}', "-pix_fmt", "gray", '-r', str(fps),
-        '-i', '-']
+        'ffmpeg', '-y', '-v', 'error', '-f', 'rawvideo', '-vcodec', 'rawvideo', '-s', f'{width}x{height}', '-pix_fmt', 'gray', '-r', str(fps),
+        '-i', '-',
+        '-c:v', 'ffv1', '-level', '3', '-slices', '4', '-pix_fmt', 'gray', '-fps_mode', 'cfr', '-r', str(fps),
+        output_file]
 
-    if input_path:
-        cmd.extend(['-i', input_path, '-map', '0:v', '-map', '1:a?'])
+    with tempfile.TemporaryFile() as err_file:
+        process = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=err_file)
+        try:
+            for pha in phas:
+                process.stdin.write(pha.numpy().tobytes())
+        except BrokenPipeError:
+            pass
+        finally:
+            try:
+                process.stdin.close()
+            except BrokenPipeError:
+                pass
+            process.wait()
 
-    cmd.extend([
-        '-sws_flags', 'lanczos+full_chroma_int+accurate_rnd+full_chroma_inp', '-c:v', 'hevc_nvenc', '-profile:v', 'main', '-pix_fmt', 'yuv420p', '-tag:v', 'hvc1', '-g', '20', '-b:v', '50M', '-c:a', 'aac', '-b:a', '256k', '-colorspace', 'bt709', '-color_primaries', 'bt709', '-fps_mode', 'cfr', '-r', str(fps), '-movflags', '+faststart+write_colr+use_metadata_tags', '-metadata:s:v:0', 'stereo_mode=left_right', '-color_trc', 'bt709', output_file])
-
-    process = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
-
-    try:
-        for pha in phas:
-            process.stdin.write(pha.numpy().tobytes())
-    finally:
-        process.stdin.close()
-        process.wait()
+        if process.returncode != 0:
+            err_file.seek(0)
+            raise RuntimeError(f"Mask encode failed for {video_name}:\n{err_file.read().decode(errors='ignore')[-2000:]}")
 
     return output_file
 
@@ -2280,12 +1996,7 @@ def matanyone(
             mask_segments: List[SegmentInfo], 
             segments: List[SegmentInfo],
             data: dict,
-): # matanyone2 This is a mix of resnet and caching using standard pytorch multihead modules without any custom attention or positional embedding optimizations. 
-# Reference:
-# https://github.com/facebookresearch/Mask2Former/blob/main/mask2former/modeling/transformer_decoder/position_encoding.py
-# https://github.com/tatp22/multidim-positional-encoding/blob/master/positional_encodings/torch_encodings.py
-# https://pytorch.org/docs/stable/generated/torch.nn.functional.scaled_dot_product_attention.html#torch.nn.functional.scaled_dot_product_attention
-# Modified from PyTorch nn.Transformer
+):
 
     print()
     print(f"MatAnyone inference. ... ♩ ♪ ♫ ♬")
@@ -2352,13 +2063,13 @@ def matanyone(
     for seg in mask_segments:
         left_basename = os.path.splitext(os.path.basename(f'seg{seg.index:02d}_left.mp4'))[0]
         right_basename = os.path.splitext(os.path.basename(f'seg{seg.index:02d}_right.mp4'))[0]
-        left_pha = os.path.join(matanyout, f'{left_basename}_pha.mp4')
-        right_pha = os.path.join(matanyout, f'{right_basename}_pha.mp4')
+        left_pha = os.path.join(matanyout, f'{left_basename}_pha.mkv')
+        right_pha = os.path.join(matanyout, f'{right_basename}_pha.mkv')
 
         if not os.path.exists(left_pha) or not os.path.exists(right_pha):
             raise RuntimeError(f'Could not find generated masks for segment {seg.index}')
 
-        stereo_output = str(segments_dir / f'seg{seg.index:02d}_stereo.mp4')
+        stereo_output = str(segments_dir / f'seg{seg.index:02d}_stereo.mkv')
         seg.video_path = stereo_video(
             left_pha,
             right_pha,
