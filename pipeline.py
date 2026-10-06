@@ -794,7 +794,7 @@ def pack_video(
     synced_tmp = None
 
     if sync_frames is not None:
-        fps = info(mask_path)[2]
+        fps = info(mask_path)['fps']
         print(f"Syncing mask by {sync_frames} frame(s)...")
         synced_tmp = sync_mask_to_video(mask_path, fps=fps, frame_offset=sync_frames)
         actual_mask = synced_tmp
@@ -885,12 +885,12 @@ def pack_video(
         "-filter_threads", "0",
         "-threads", "0",
         "-i", video_path,
-        "-i", mask_path,
+        "-i", actual_mask,
         "-loop", "1",
         "-i", circle_mask,
         "-filter_complex", filter_complex,
         "-map", "[out]",
-        "-shortest",
+        "-t", str(data["duration"]),
         *enc,
         output_path,
     ]
@@ -2285,9 +2285,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="VR Video Masking and things and stuff")
     parser.add_argument("--model", type=str, default="sam3.1")
     parser.add_argument("input_path", type=str, default="videos")
-    parser.add_argument("--matanyone-height", type=int, default=1280)
+    parser.add_argument("--matanyone-height", type=int, default=1008)
     parser.add_argument("--sam3-height", type=int, default=1008)
-    parser.add_argument("--segment-length", type=float, default=1)
+    parser.add_argument("--segment-length", type=float, default=10)
     parser.add_argument("--erode", type=int, default=6)
     parser.add_argument("--dilate", type=int, default=0)
     parser.add_argument("--prompt", type=str, default="agirl")
