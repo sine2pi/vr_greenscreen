@@ -2280,7 +2280,13 @@ def matanyone(
             mask_segments: List[SegmentInfo], 
             segments: List[SegmentInfo],
             data: dict,
-):
+): # matanyone2 This is a mix of resnet and caching using standard pytorch multihead modules without any custom attention or positional embedding optimizations. 
+# Reference:
+# https://github.com/facebookresearch/Mask2Former/blob/main/mask2former/modeling/transformer_decoder/position_encoding.py
+# https://github.com/tatp22/multidim-positional-encoding/blob/master/positional_encodings/torch_encodings.py
+# https://pytorch.org/docs/stable/generated/torch.nn.functional.scaled_dot_product_attention.html#torch.nn.functional.scaled_dot_product_attention
+# Modified from PyTorch nn.Transformer
+
     print()
     print(f"MatAnyone inference. ... ♩ ♪ ♫ ♬")
     print(f"MatAnyone model: {video_args.matanyone_version}")
