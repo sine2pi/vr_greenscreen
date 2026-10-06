@@ -336,7 +336,6 @@ def concat_video(video_list: list[str], output_path: str, fps: float | None = No
 
     BATCH_SIZE = 50
     n = len(video_list)
-    # Inputs are lossless mattes: only the final output is lossy encoded, intermediate batches stay lossless
     enc = ['-c:v', 'ffv1', '-level', '3', '-slices', '4', '-pix_fmt', 'gray'] if lossless else encoder_args(data)
 
     if n > BATCH_SIZE:
@@ -639,7 +638,6 @@ def mask_overlay(source_video: str, mask_video: str, output_path: str, backgroun
 
     os.makedirs(os.path.dirname(os.path.abspath(resolved_path)) or '.', exist_ok=True)
 
-    # Stay in YUV 4:2:0 to avoid a full-resolution RGBA round-trip; matte is upscaled with explicit bicubic (no lanczos ringing)
     orig_filter = f"setpts=PTS-STARTPTS,fps={data['fps']},format=yuva420p"
     mask_filter = f"setpts=PTS-STARTPTS,fps={data['fps']},format=gray,scale={data['width']}:{data['height']}:flags=bicubic+accurate_rnd"
     bg_filter = f"setpts=PTS-STARTPTS,fps={data['fps']},format=yuv420p"
@@ -670,7 +668,6 @@ def mask_overlay(source_video: str, mask_video: str, output_path: str, backgroun
     return resolved_path
 
 def stereo_video(left_video: str, right_video: str, output_path: str) -> str:
-    # Inputs are lossless gray mattes; keep the stitched output lossless as well
     cmd = [
         'ffmpeg', '-y', '-v', 'error',
         '-i', left_video,
@@ -778,9 +775,18 @@ def pack_video(
     mask_path: str,
     output_path: str | None = None,
     sync_frames = None,
-    progress_prefix: str = "[ALPHA] "
+    progress_prefix: str = "[ALPHA] ",
+    erode: int = 1,
+    blur: float = 1.8,
+    contrast: float | None = None,
+    gamma: float | None = None,
+    ref_size: int = 1024,
+    tmix: int = 1,
 
 ) -> str:
+
+    if tmix < 1 or tmix % 2 == 0:
+        raise ValueError(f"alpha tmix must be an odd number >= 1, got {tmix}")
 
     if not output_path:
         base, ext = os.path.splitext(video_path)
@@ -822,33 +828,42 @@ def pack_video(
     print(f"Half overlay size: {half_overlay}, overlay size: {overlay_size}, out_w: {out_w}, out_h: {out_h}")
 
     if data['height'] <= 2400:
-        erosion_threshold = 32768
-        contrast = 2.0
-        gamma = 1.2
-
+        default_contrast, default_gamma = 2.0, 1.2
     else:
-        erosion_threshold = 65535
-        contrast = 2.5
-        gamma = 1.4
+        default_contrast, default_gamma = 2.5, 1.4
 
-    sigma = 1.8
+    contrast = default_contrast if contrast is None else contrast
+    gamma = default_gamma if gamma is None else gamma
 
-    erosion_filter = f"erosion=threshold0={erosion_threshold}:coordinates=255,"
-    print(f"Mask Gen Params: gblur={sigma:.1f}, erosion={erosion_threshold}, contrast={contrast}, gamma={gamma}")
+    size_scale = overlay_size / ref_size if ref_size > 0 else 1.0
+    sigma = blur * size_scale
+    erode_iters = max(1, round(erode * size_scale)) if erode > 0 else 0
+
+    shaping = "erosion," * erode_iters
+    if sigma > 0:
+        shaping += f"gblur=sigma={sigma:.3f},"
+    if contrast != 1.0 or gamma != 1.0:
+        shaping += f"eq=contrast={contrast}:gamma={gamma},"
+
+    if tmix > 1:
+        mask_prep = f"[1:v]tmix=frames={tmix},trim=start_frame={(tmix - 1) // 2},setpts=PTS-STARTPTS,split=2[mask1][mask2]"
+    else:
+        mask_prep = "[1:v]split=2[mask1][mask2]"
+
+    print(f"Mask Gen Params: erode={erode_iters}, gblur={sigma:.2f}, contrast={contrast}, gamma={gamma}, tmix={tmix} (payload scale x{size_scale:.2f})")
     print(f"Adjusted overlay size: {overlay_size}")
     circle_mask = get_circle_mask(overlay_size)
 
     filter_parts: list[str] = [
 
         f"[0:v]scale=w={out_w}:h={out_h}:flags=bilinear[vid]",
-        "[1:v]split=2[mask1][mask2]",
+        mask_prep,
         "[2:v]format=gray,split=2[circle_l][circle_r]",
 
         (
             f"[mask1]crop=ih:ih:0:0,"
             f"scale={overlay_size}:{overlay_size}:flags=area,"
-            f"{erosion_filter}"
-            f"gblur=sigma={sigma},eq=contrast={contrast}:gamma={gamma},"
+            f"{shaping}"
             "format=gbrp[left_scaled]"
         ),
         "[left_scaled][circle_l]alphamerge,format=rgba[left_circle]",
@@ -856,8 +871,7 @@ def pack_video(
         (
             f"[mask2]crop=ih:ih:iw-ih:0,"
             f"scale={overlay_size}:{overlay_size}:flags=area,"
-            f"{erosion_filter}"
-            f"gblur=sigma={sigma},eq=contrast={contrast}:gamma={gamma},"
+            f"{shaping}"
             "format=gbrp[right_scaled]"
         ),
         "[right_scaled][circle_r]alphamerge,format=rgba[right_circle]",
@@ -910,6 +924,16 @@ def pack_video(
     print(f"Alpha packed: {output_path}")
     return output_path
 
+def _alpha_pack_params(video_args) -> dict:
+    return {
+        'erode': getattr(video_args, 'alpha_erode', 1),
+        'blur': getattr(video_args, 'alpha_blur', 1.8),
+        'contrast': getattr(video_args, 'alpha_contrast', None),
+        'gamma': getattr(video_args, 'alpha_gamma', None),
+        'ref_size': getattr(video_args, 'alpha_ref_size', 1024),
+        'tmix': getattr(video_args, 'alpha_tmix', 1),
+    }
+
 def packer(input_path, video_args=None) -> int:
 
     input_pairs = _input_pairs(input_path)
@@ -919,7 +943,7 @@ def packer(input_path, video_args=None) -> int:
         if video_args.fisheye180:
             video_path = fisheye180(str(video_path), flag=False)
             mask_path = fisheye180(str(mask_path), flag=True)
-        packed_path = pack_video(str(video_path), str(mask_path))
+        packed_path = pack_video(str(video_path), str(mask_path), **_alpha_pack_params(video_args))
         processed.append((str(video_path), str(mask_path), packed_path))
         print()
 
@@ -1244,7 +1268,6 @@ def video_frames(frame_root, max_size):
         frames = torch.from_numpy(arr.copy()).permute(0, 3, 1, 2).contiguous()
 
         if max_size is not None and (height, width) != (max_size, max_size):
-            # Resize in chunks and keep uint8 to avoid holding a float32 copy of the whole segment
             frames = torch.cat([
                 torch.nn.functional.interpolate(
                     chunk.float(),
@@ -1700,6 +1723,91 @@ def sam3_masks(
 
     return mask_segments
 
+def sam3_masks_sbs(
+            video_args: argparse.Namespace,
+            sbs_dir: Path,
+            masks_dir: Path,
+            mask_segments: List[SegmentInfo],
+) -> List[SegmentInfo]:
+    """Seed both eyes with one SAM3 pass over side-by-side frames. Returns the segments that need the per-eye fallback."""
+
+    sbs_dir.mkdir(parents=True, exist_ok=True)
+    candidates = [s for s in mask_segments if s.left_frame_path and s.right_frame_path]
+
+    for seg in candidates:
+        with Image.open(seg.left_frame_path) as left, Image.open(seg.right_frame_path) as right:
+            sbs = Image.new('RGB', (left.width + right.width, max(left.height, right.height)))
+            sbs.paste(left.convert('RGB'), (0, 0))
+            sbs.paste(right.convert('RGB'), (left.width, 0))
+            sbs.save(sbs_dir / f'seg{seg.index:02d}_sbs.png', compress_level=1)
+
+    sam3_video(str(sbs_dir), video_args)
+
+    failed = []
+    for seg in candidates:
+        mask_src = sbs_dir / f'seg{seg.index:02d}_sbs_mask.png'
+        if not mask_src.exists():
+            failed.append(seg)
+            continue
+
+        mask = np.array(Image.open(mask_src).convert('L'))
+        height, width = mask.shape
+        halves = {'left': mask[:, :width // 2], 'right': mask[:, width // 2:]}
+        areas = {name: int((half > 127).sum()) for name, half in halves.items()}
+
+        if min(areas.values()) == 0 or min(areas.values()) < 0.5 * max(areas.values()):
+            print(f"seg{seg.index:02d}: SBS mask halves disagree (areas L={areas['left']} R={areas['right']}), using per-eye SAM3")
+            failed.append(seg)
+            continue
+
+        for name, half in halves.items():
+            final_mask_path = str(masks_dir / f'seg{seg.index:02d}_{name}_mask.png')
+            Image.fromarray(half).resize((height, height), Image.Resampling.BILINEAR).save(final_mask_path)
+            setattr(seg, f'{name}_mask_path', final_mask_path)
+
+    return failed
+
+def stereo_seed_report(mask_segments: List[SegmentInfo]) -> None:
+    print("Stereo seed masks (left vs right):")
+    for seg in mask_segments:
+        if not (seg.left_mask_path and seg.right_mask_path):
+            continue
+        left = np.array(Image.open(seg.left_mask_path).convert('L')) > 127
+        right = np.array(Image.open(seg.right_mask_path).convert('L')) > 127
+        la, ra = int(left.sum()), int(right.sum())
+        ratio = min(la, ra) / max(la, ra, 1)
+        rows = [np.where(m.any(axis=1))[0] for m in (left, right)]
+        dy = max(abs(int(rows[0][0]) - int(rows[1][0])), abs(int(rows[0][-1]) - int(rows[1][-1]))) / left.shape[0] if all(len(r) for r in rows) else 1.0
+        print(f"  seg{seg.index:02d}: area ratio {ratio:.3f}, vertical extent diff {dy * 100:.1f}% of height")
+
+def stereo_matte_report(left_pha: str, right_pha: str, label: str, size: int = 250, ratio_warn: float = 0.85, dy_warn: float = 0.05) -> None:
+    """Compare the left and right MatAnyone mattes frame by frame (area ratio and vertical extent)."""
+
+    def load(path):
+        raw = subprocess.run(
+            ['ffmpeg', '-v', 'error', '-i', path, '-vf', f'scale={size}:{size}:flags=area,format=gray', '-f', 'rawvideo', '-pix_fmt', 'gray', '-'],
+            capture_output=True).stdout
+        return np.frombuffer(raw, np.uint8).reshape(-1, size, size) > 127
+
+    left, right = load(left_pha), load(right_pha)
+    n = min(len(left), len(right))
+    if n == 0:
+        print(f"{label}: stereo matte check skipped (could not read mattes)")
+        return
+
+    ratios, dys = [], []
+    for i in range(n):
+        la, ra = int(left[i].sum()), int(right[i].sum())
+        ratios.append(min(la, ra) / max(la, ra, 1))
+        rows = [np.where(m.any(axis=1))[0] for m in (left[i], right[i])]
+        dys.append(max(abs(int(rows[0][0]) - int(rows[1][0])), abs(int(rows[0][-1]) - int(rows[1][-1]))) / size if all(len(r) for r in rows) else 1.0)
+
+    worst = int(np.argmin(ratios))
+    flagged = sum((r < ratio_warn) or (d > dy_warn) for r, d in zip(ratios, dys))
+    status = "WARN" if flagged else "ok"
+    print(f"{label}: stereo matte check {status} - worst area ratio {ratios[worst]:.3f} at frame {worst}, "
+          f"max vertical extent diff {max(dys) * 100:.1f}%, frames flagged (ratio < {ratio_warn} or extent diff > {dy_warn * 100:.0f}%): {flagged}/{n}")
+
 def _update_status(op_num: int, total_ops: int, label: str, duration: float) -> None:
     global _matanyone_is_first_status
 
@@ -1896,7 +2004,6 @@ def _matanyone_process_segment(matanyone_model, device, inference_core, job, vid
                 pha = torch.clamp(pha, 0, 255).cpu()
                 phas.append(pha)
 
-    # Lossless gray intermediate so the matte is not re-compressed before the final mask encode
     output_file = os.path.join(output_path, f'{video_name}_pha.mkv')
     first_frame = phas[0]
     print(f"first_frame.shape: {first_frame.shape}")
@@ -2069,6 +2176,8 @@ def matanyone(
         if not os.path.exists(left_pha) or not os.path.exists(right_pha):
             raise RuntimeError(f'Could not find generated masks for segment {seg.index}')
 
+        stereo_matte_report(left_pha, right_pha, f'seg{seg.index:02d}')
+
         stereo_output = str(segments_dir / f'seg{seg.index:02d}_stereo.mkv')
         seg.video_path = stereo_video(
             left_pha,
@@ -2136,12 +2245,19 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path) -> str:
             data,
         )
 
-        mask_segments = sam3_masks(
-            video_args,
-            frames_dir, 
-            masks_dir, 
-            mask_segments, 
-        )
+        if video_args.sam3_sbs:
+            failed = sam3_masks_sbs(video_args, temp_dir / 'sbs_frames', masks_dir, mask_segments)
+            if failed:
+                sam3_masks(video_args, frames_dir, masks_dir, failed)
+        else:
+            mask_segments = sam3_masks(
+                video_args,
+                frames_dir, 
+                masks_dir, 
+                mask_segments, 
+            )
+
+        stereo_seed_report(mask_segments)
 
         segments = matanyone(
             video_args,
@@ -2285,16 +2401,17 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="VR Video Masking and things and stuff")
     parser.add_argument("--model", type=str, default="sam3.1")
     parser.add_argument("input_path", type=str, default="videos")
-    parser.add_argument("--matanyone-height", type=int, default=1008)
-    parser.add_argument("--sam3-height", type=int, default=1008)
-    parser.add_argument("--segment-length", type=float, default=10)
-    parser.add_argument("--erode", type=int, default=6)
+    parser.add_argument("--matanyone-height", type=int, default=1024)
+    parser.add_argument("--sam3-height", type=int, default=1024)
+    parser.add_argument("--segment-length", type=float, default=2)
+    parser.add_argument("--erode", type=int, default=0)
     parser.add_argument("--dilate", type=int, default=0)
     parser.add_argument("--prompt", type=str, default="agirl")
     parser.add_argument("--warmup", type=int, default=6)
     parser.add_argument("--add-box", type=bool, default=False)
     parser.add_argument("--sub-box", type=bool, default=False)
     parser.add_argument("--sbs", type=bool, default=False)
+    parser.add_argument('--sam3-sbs', action='store_true', help='Seed both eyes from one SAM3 pass over side-by-side frames (falls back to per-eye SAM3 if the halves disagree)')
     parser.add_argument('--matanyone-version', type=str, default='v2', choices=['v1', 'v2'], help='Select MatAnyone runtime version')
     parser.add_argument('--ma2-mem-every', type=int, default=8, help='Override MatAnyone mem_every')
     parser.add_argument('--ma2-max-mem-frames', type=int, default=2, help='Override MatAnyone memory window in frames (works for v1 and v2)')
@@ -2305,6 +2422,12 @@ def main() -> int:
     parser.add_argument('--decompose-alpha', '--decompose_alpha', dest='decompose_alpha', action='store_true', help='Reverse of alpha packer')
     parser.add_argument('--decompose-clean-mask', type=str, default='assets/black_mask.png', help='PNG overlay used to clean alpha payload regions')
     parser.add_argument('--alpha', type=bool, default=False, help='Run alpha packer instead of overlay. --alpha <true|false>')
+    parser.add_argument('--alpha-erode', type=int, default=1, help='Alpha pack matte choke (3x3 erosion passes at --alpha-ref-size payload size; 0 = off)')
+    parser.add_argument('--alpha-blur', type=float, default=1.8, help='Alpha pack matte feather (gblur sigma at --alpha-ref-size payload size; 0 = off)')
+    parser.add_argument('--alpha-contrast', type=float, default=None, help='Alpha pack matte contrast (default: 2.0 up to 2400px high, else 2.5; 1.0 = off)')
+    parser.add_argument('--alpha-gamma', type=float, default=None, help='Alpha pack matte gamma (default: 1.2 up to 2400px high, else 1.4; 1.0 = off)')
+    parser.add_argument('--alpha-ref-size', type=int, default=1024, help='Payload size in px that --alpha-erode/--alpha-blur refer to; they scale with the real payload size (0 = no scaling)')
+    parser.add_argument('--alpha-tmix', type=int, default=1, help='Odd number of frames to average the matte over before packing (1 = off)')
     parser.add_argument('--show-plots', type=bool, default=False, help='Sam3 mask plots will be displayed if True.')
     parser.add_argument('--fisheye180', type=bool, default=False, help='Convert video or folder to SBS fisheye180. Works with alphapacker')
     parser.add_argument('--debug', type=int, default=None, help='Debug mode: process only the first N segments')
