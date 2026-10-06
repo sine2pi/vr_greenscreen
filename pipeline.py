@@ -260,7 +260,7 @@ def norm_video(source_video, w = None, h = None, fps = None, progress_prefix: st
 
     return output_video
 
-def cfr_video(source_video, video_args = None, progress_prefix: str = "[normalize]") -> str:
+def cfr_video(source_video) -> str:
 
     data = info(source_video)
     print(f"-- {source_video} has a Variable Frame Rate - Converting to CFR")
@@ -301,16 +301,16 @@ def cfr_video(source_video, video_args = None, progress_prefix: str = "[normaliz
         output_video,
     ]
 
-    rc, stderr_text = ffmpeg_progress(cmd, progress_prefix=progress_prefix)
+    rc, stderr_text = ffmpeg_progress(cmd, progress_prefix = "[cfr]")
 
     if rc != 0:
         raise RuntimeError(
-            "Input normalization failed.\n\nFFmpeg tail:\n"
+            "CFR conversion failed.\n\nFFmpeg tail:\n"
             + ''.join(stderr_text.splitlines(True)[-40:])
         )
 
     if not os.path.exists(output_video):
-        raise RuntimeError(f"Normalized video not created: {output_video}")
+        raise RuntimeError(f"CFR video not created: {output_video}")
 
     return output_video
 
@@ -1375,6 +1375,172 @@ def download_ckpt_from_hf(version="sam3", force_download=False, local_files_only
             token=token,
         )
  
+# class sam3_video_inference:
+#     def __init__(self, video_path, video_args):
+
+#         self.video_path = video_path
+#         self.video_args = video_args
+#         bpe_path = 'assets/bpe_simple_vocab_16e6.txt.gz'
+#         checkpoint_path = download_ckpt_from_hf(version=video_args.model, force_download=False, local_files_only=False)
+
+#         self.predictor = build_sam3_predictor(
+#             checkpoint_path = checkpoint_path,
+#             bpe_path = bpe_path,
+#             version = video_args.model,
+#             compile = False,
+#             warm_up = True,
+#             max_num_objects = 1,
+#             multiplex_count = 16,
+#             use_fa3 = False,
+#             use_rope_real = True,
+#             async_loading_frames = False,
+#             num_obj_for_compile=1,
+#             apply_temporal_disambiguation=True,
+#             device = device,
+#             video_loader_type="cv2",
+#             load_from_HF=False,
+#             default_output_prob_thresh=0.1, 
+#             strict_state_dict_loading=False, 
+#             session_expiration_sec=1200, 
+#             eval_mode=True, 
+       
+#         )
+
+#     def propagate_in_video(self, predictor=None, session_id=None, max_frame_num_to_track=None):
+
+#         print()
+#         print(f"Sam3 inference. ... ♩ ♪ ♫ ♬")
+#         print(f"Prompt: {self.video_args.prompt}")
+#         print(f"Add box: {self.video_args.add_box}")
+#         print(f"Sub box: {self.video_args.sub_box}")
+#         print()
+
+#         predictor=self.predictor
+#         outputs = {}
+
+#         for response in predictor.handle_stream_request(
+
+#                 request=dict(
+#                     type="propagate_in_video",
+#                     session_id=session_id,
+#                     propagation_direction="forward",
+#                     output_prob_thresh = 0.1,
+#                     frame_idx=0,
+
+#                 )):
+
+#             outputs[response["frame_idx"]] = response["outputs"]
+
+#         return outputs
+
+#     def abs_to_rel_coords(self, coords=None, IMG_WIDTH=None, IMG_HEIGHT=None, coord_type="box"):
+#         if coord_type == "point":
+#             return [[x / IMG_WIDTH, y / IMG_HEIGHT] for x, y in coords]
+#         elif coord_type == "box":
+#             return [[x / IMG_WIDTH, y / IMG_HEIGHT, w / IMG_WIDTH, h / IMG_HEIGHT] for x, y, w, h in coords]
+#         else:
+#             raise ValueError(f"Unknown coord_type: {coord_type}")
+
+#     def track(self, video_path = None, remove = False, sub_box = False, add_point = 0, warp=False, frame=None):
+#         predictor, video_path, prompt, show_plots, add_box = self.predictor, self.video_path, self.video_args.prompt, self.video_args.show_plots, self.video_args.add_box
+
+#         if video_path is None:
+#             video_path = self.video_path
+
+#         # if frame is not None:
+#         #     W, H = frame.shape[1], frame.shape[0]
+#         #     frames = [frame]
+
+#         # else:
+
+#         if isinstance(video_path, str) and video_path.endswith(".mp4"):
+#             cap = cv2.VideoCapture(video_path)
+#             frames = []
+#             while True:
+#                 ret, frame = cap.read()
+#                 if not ret:
+#                     break
+#                 frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+#             cap.release()
+#         else:
+#             frames = glob.glob(os.path.join(video_path, "*.jpg"))
+#             try:
+#                 frames.sort(key=lambda p: int(os.path.splitext(os.path.basename(p))[0]))
+#             except ValueError:
+#                 print(f'frame names are not in "<frame_idx>.jpg" format: {frames[:5]=}, '
+#                     f"falling back to lexicographic sort.")
+#                 frames.sort()
+
+#             image = Image.fromarray(load_frame(frames[0]))
+#             W, H = image.size
+
+#         response = predictor.handle_request(
+#             request=dict(
+#                 type="start_session",
+#                 resource_path=video_path,
+#                 offload_video_to_cpu=True,
+
+#             )
+#         )
+
+#         session_id = response["session_id"]
+#         is_success = predictor.handle_request(
+#             request=dict(
+#                 type="reset_session",
+#                 session_id=session_id,
+#             )
+#         )
+
+#         print(f'is_success: {is_success["is_success"]}')
+#         predictor.model.hotstart_delay = 0
+
+#         boxes = np.array([[0.2, 0.2, 0.6, 0.6], [0.7, 0.0, 0.3, 0.99], [0.0, 0.0, 0.3, 0.99], [0.1, 0.8, 0.7, 0.1]]) if add_box else None
+#         labels = np.array([1,0,0,0]) if add_box else None
+
+#         prompt_text = prompt if prompt is not None else None
+#         frame_idx = 0
+
+#         response = predictor.handle_request(
+#             request=dict(
+#                 type = "add_prompt",
+#                 session_id = session_id,
+#                 frame_idx = frame_idx,
+#                 text = prompt_text,
+#                 bounding_boxes = boxes,
+#                 bounding_box_labels = labels,
+#             )
+#         )
+
+#         frame_idx = response["frame_idx"]
+#         outputs = self.propagate_in_video(predictor, session_id)
+
+#         if show_plots:
+
+#             out = response["outputs"]
+#             outputs_per_frame = prepare_masks_for_visualization({frame_idx: out})
+#             vis_frame_stride = 2
+#             plt.close("all")
+#             for frame_idx in range(0, len(outputs_per_frame), vis_frame_stride):
+#                 visualize_formatted_frame_output(
+#                     frame_idx,
+#                     frames,
+#                     outputs_list=[outputs_per_frame],
+#                     titles=["SAM 3.1 Dense Tracking outputs"],
+#                     figsize=(6, 6))
+
+#         _ = predictor.handle_request(
+
+#             request=dict(
+#                 type="close_session",
+#                 session_id=session_id,
+#                 run_gc_collect=True,
+#                 clear_cache_threshold=100
+#             )
+#         )
+
+#         predictor.shutdown()
+#         return outputs
+
 class sam3_video_inference:
     def __init__(self, video_path, video_args):
 
@@ -1388,11 +1554,11 @@ class sam3_video_inference:
             bpe_path = bpe_path,
             version = video_args.model,
             compile = False,
-            warm_up = True,
+            warm_up = False,
             max_num_objects = 1,
             multiplex_count = 16,
             use_fa3 = False,
-            use_rope_real = True,
+            use_rope_real = False,
             async_loading_frames = False,
             num_obj_for_compile=1,
             apply_temporal_disambiguation=True,
@@ -1406,7 +1572,7 @@ class sam3_video_inference:
        
         )
 
-    def propagate_in_video(self, predictor=None, session_id=None, max_frame_num_to_track=None):
+    def propagate_in_video(self, predictor=None, session_id=None, max_frame_num_to_track=200):
 
         print()
         print(f"Sam3 inference. ... ♩ ♪ ♫ ♬")
@@ -1423,6 +1589,7 @@ class sam3_video_inference:
                 request=dict(
                     type="propagate_in_video",
                     session_id=session_id,
+                    # max_frame_num_to_track=max_frame_num_to_track,
                     propagation_direction="forward",
                     output_prob_thresh = 0.1,
                     frame_idx=0,
@@ -1441,17 +1608,10 @@ class sam3_video_inference:
         else:
             raise ValueError(f"Unknown coord_type: {coord_type}")
 
-    def track(self, video_path = None, remove = False, sub_box = False, add_point = 0, warp=False, frame=None):
-        predictor, video_path, prompt, show_plots, add_box = self.predictor, self.video_path, self.video_args.prompt, self.video_args.show_plots, self.video_args.add_box
-
+    def track(self, video_path = None, remove = False, sub_box = False, add_point = 0, warp=False):
+        predictor, video_path, prompt, show_plots, add_box, sub_box = self.predictor, self.video_path, self.video_args.prompt, self.video_args.show_plots, self.video_args.add_box, self.video_args.sub_box
         if video_path is None:
             video_path = self.video_path
-
-        # if frame is not None:
-        #     W, H = frame.shape[1], frame.shape[0]
-        #     frames = [frame]
-
-        # else:
 
         if isinstance(video_path, str) and video_path.endswith(".mp4"):
             cap = cv2.VideoCapture(video_path)
@@ -1471,8 +1631,8 @@ class sam3_video_inference:
                     f"falling back to lexicographic sort.")
                 frames.sort()
 
-            image = Image.fromarray(load_frame(frames[0]))
-            W, H = image.size
+        image = Image.fromarray(load_frame(frames[0]))
+        W, H = image.size
 
         response = predictor.handle_request(
             request=dict(
@@ -1488,6 +1648,7 @@ class sam3_video_inference:
             request=dict(
                 type="reset_session",
                 session_id=session_id,
+                run_gc_collect=True,
             )
         )
 
@@ -1499,6 +1660,7 @@ class sam3_video_inference:
 
         prompt_text = prompt if prompt is not None else None
         frame_idx = 0
+        # obj_id = 0
 
         response = predictor.handle_request(
             request=dict(
@@ -1508,6 +1670,7 @@ class sam3_video_inference:
                 text = prompt_text,
                 bounding_boxes = boxes,
                 bounding_box_labels = labels,
+                # obj_id = obj_id,
             )
         )
 
@@ -1533,17 +1696,17 @@ class sam3_video_inference:
             request=dict(
                 type="close_session",
                 session_id=session_id,
-                run_gc_collect=True,
-                clear_cache_threshold=100
             )
         )
 
         predictor.shutdown()
         return outputs
 
-def sam3_video(frames_dir, mask_segments, video_args) -> None:
+def sam3_video(frames_dir, video_args) -> None:
 
-    output_size = video_args.mask_height
+    sam3_height = video_args.sam3_height
+    if sam3_height < 1008:
+        sam3_height = 1008
     folder = Path(frames_dir)
     image_files = sorted(list(folder.glob("*.png")) + list(folder.glob("*.jpg")))
     image_files = [f for f in image_files if "_mask" not in f.stem]
@@ -1552,21 +1715,17 @@ def sam3_video(frames_dir, mask_segments, video_args) -> None:
         return
 
     seq_dir = folder / "_sam3video_seq"
-    video_frames_dir = folder / "_sam3video_frames"
 
     if seq_dir.exists():
         shutil.rmtree(seq_dir)
-    if video_frames_dir.exists():
-        shutil.rmtree(video_frames_dir)
 
-    video_frames_dir.mkdir(parents=True, exist_ok=True)
     seq_dir.mkdir(parents=True, exist_ok=True)
     frame_shapes: list[tuple[int, int]] = []
     output_paths: list[Path] = []
 
     soft_masks = []
     valid_flags = []
-    min_valid_pixels = int(output_size * 0.8)
+    min_valid_pixels = int(sam3_height * 0.8)
 
     for i, frame_path in enumerate(image_files):
         out_path = frame_path.parent / f"{frame_path.stem}_mask.png"
@@ -1575,17 +1734,17 @@ def sam3_video(frames_dir, mask_segments, video_args) -> None:
         image = raw.convert("RGB")
         raw.close()
 
-        if image.height != output_size:
+        if image.height != sam3_height:
             full = image
-            image = full.resize((output_size, output_size), Image.Resampling.BICUBIC)
+            image = full.resize((sam3_height, sam3_height), Image.Resampling.BILINEAR)
             full.close()
 
-        frame_shapes.append((image.height, image.width))
+        frame_shapes.append((sam3_height, sam3_height))
         image.save(seq_dir / f"{i:06d}.jpg", format="JPEG", quality=100)
         image.close()
-        
+
     tracker = sam3_video_inference(video_path=str(seq_dir), video_args=video_args)
-    inference_state = tracker.track(frame=image)
+    inference_state = tracker.track()
 
     with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
         for i, out_path in enumerate(output_paths):
@@ -1610,8 +1769,8 @@ def sam3_video(frames_dir, mask_segments, video_args) -> None:
                 masks = np.asarray(masks)
 
             if len(masks) == 0 or scores.size == 0:
-                best_soft = np.zeros((out_h, out_w), dtype=np.float32)
-                print(f"No SAM3 masks/scores for {out_path.name}; marking as missing for temporal fill")
+                best_soft = np.zeros((sam3_height, sam3_height), dtype=np.float32)
+                print(f"No SAM3 masks/scores for {frame_path.name}; marking as missing for temporal fill")
             
             else:
                 best_idx = int(np.argmax(scores))
@@ -1631,6 +1790,11 @@ def sam3_video(frames_dir, mask_segments, video_args) -> None:
     for out_path, soft_mask in zip(output_paths, filled_masks):
         mask = Image.fromarray((np.clip((soft_mask - 0.5) * 10.0 + 0.5, 0.0, 1.0) * 255).astype(np.uint8), mode="L")
         
+        # if mask.height != video_args.matanyone_height:
+        #     full = mask
+        #     mask = full.resize((video_args.matanyone_height, video_args.matanyone_height), Image.Resampling.BILINEAR)
+        #     full.close()
+
         mask.save(out_path)
 
     if seq_dir.exists():
@@ -1639,6 +1803,105 @@ def sam3_video(frames_dir, mask_segments, video_args) -> None:
     del tracker, inference_state
     gc.collect()
     torch.cuda.empty_cache()
+
+# def sam3_video(frames_dir, mask_segments, video_args) -> None:
+
+#     output_size = video_args.sam3_height
+#     folder = Path(frames_dir)
+#     image_files = sorted(list(folder.glob("*.png")) + list(folder.glob("*.jpg")))
+#     image_files = [f for f in image_files if "_mask" not in f.stem]
+
+#     if not image_files:
+#         return
+
+#     seq_dir = folder / "_sam3video_seq"
+#     video_frames_dir = folder / "_sam3video_frames"
+
+#     if seq_dir.exists():
+#         shutil.rmtree(seq_dir)
+#     if video_frames_dir.exists():
+#         shutil.rmtree(video_frames_dir)
+
+#     video_frames_dir.mkdir(parents=True, exist_ok=True)
+#     seq_dir.mkdir(parents=True, exist_ok=True)
+#     frame_shapes: list[tuple[int, int]] = []
+#     output_paths: list[Path] = []
+
+#     soft_masks = []
+#     valid_flags = []
+#     min_valid_pixels = int(output_size * 0.8)
+
+#     for i, frame_path in enumerate(image_files):
+#         out_path = frame_path.parent / f"{frame_path.stem}_mask.png"
+#         output_paths.append(out_path)
+#         raw = Image.open(frame_path)
+#         image = raw.convert("RGB")
+#         raw.close()
+
+#         if image.height != output_size:
+#             full = image
+#             image = full.resize((output_size, output_size), Image.Resampling.BICUBIC)
+#             full.close()
+
+#         frame_shapes.append((image.height, image.width))
+#         image.save(seq_dir / f"{i:06d}.jpg", format="JPEG", quality=100)
+#         image.close()
+        
+#     tracker = sam3_video_inference(video_path=str(seq_dir), video_args=video_args)
+#     inference_state = tracker.track(frame=image)
+
+#     with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
+#         for i, out_path in enumerate(output_paths):
+#             out_h, out_w = frame_shapes[i]
+#             outputs = inference_state.get(i)
+#             masks = (outputs or {}).get("out_binary_masks", None)
+#             scores = (outputs or {}).get("out_probs", None)
+
+#             if masks is None:
+#                 return None
+
+#             if isinstance(scores, torch.Tensor):
+#                 scores = scores.cpu().numpy()
+            
+#             else:
+#                 scores = np.asarray(scores)
+
+#             if isinstance(masks, torch.Tensor):
+#                 masks = masks.cpu().numpy()
+           
+#             else:
+#                 masks = np.asarray(masks)
+
+#             if len(masks) == 0 or scores.size == 0:
+#                 best_soft = np.zeros((out_h, out_w), dtype=np.float32)
+#                 print(f"No SAM3 masks/scores for {out_path.name}; marking as missing for temporal fill")
+            
+#             else:
+#                 best_idx = int(np.argmax(scores))
+#                 best_soft = masks[best_idx]
+#                 if len(best_soft.shape) == 3:
+#                     best_soft = best_soft[0]
+#                 best_soft = np.asarray(best_soft, dtype=np.float32)
+#                 print("Confidence:", scores[best_idx])
+
+#             soft_masks.append(best_soft)
+#             valid_flags.append(np.count_nonzero(best_soft >= 0.5) >= min_valid_pixels)
+
+#     filled_masks, filled_count = fill_soft(soft_masks, valid_flags, max_interp_gap=6)
+#     if filled_count > 0:
+#         print(f"Filled {filled_count} missing/weak SAM3 masks using temporal soft-mask interpolation")
+    
+#     for out_path, soft_mask in zip(output_paths, filled_masks):
+#         mask = Image.fromarray((np.clip((soft_mask - 0.5) * 10.0 + 0.5, 0.0, 1.0) * 255).astype(np.uint8), mode="L")
+        
+#         mask.save(out_path)
+
+#     if seq_dir.exists():
+#         shutil.rmtree(seq_dir)
+
+#     del tracker, inference_state
+#     gc.collect()
+#     torch.cuda.empty_cache()
 
 def fill_soft(
     soft_masks,
@@ -1692,7 +1955,7 @@ def sam3_masks(
             mask_segments: List[SegmentInfo], 
 ):
 
-    sam3_video(str(frames_dir), mask_segments, video_args)
+    sam3_video(str(frames_dir),video_args)
 
     for seg in mask_segments:
         if seg.left_frame_path:
@@ -1855,7 +2118,7 @@ def _matanyone_process_segment(matanyone_model, device, inference_core, job, vid
     n_warmup = video_args.warmup
     input_path = job['input_path']
     mask_path = job['mask_path']
-    max_size = video_args.mask_height
+    max_size = video_args.matanyone_height
     output_path = job['output_path']
     r_erode = video_args.erode
     r_dilate = video_args.dilate
@@ -1940,9 +2203,6 @@ def _matanyone_process_segment(matanyone_model, device, inference_core, job, vid
 
     cmd.extend([
         '-sws_flags', 'lanczos+full_chroma_int+accurate_rnd+full_chroma_inp', '-c:v', 'hevc_nvenc', '-profile:v', 'main', '-pix_fmt', 'yuv420p', '-tag:v', 'hvc1', '-g', '20', '-b:v', '50M', '-c:a', 'aac', '-b:a', '256k', '-colorspace', 'bt709', '-color_primaries', 'bt709', '-fps_mode', 'cfr', '-r', str(fps), '-movflags', '+faststart+write_colr+use_metadata_tags', '-metadata:s:v:0', 'stereo_mode=left_right', '-color_trc', 'bt709', output_file])
-
-        # cmd.extend([
-        # '-sws_flags', 'lanczos+full_chroma_int+accurate_rnd+full_chroma_inp', '-c:v', 'hevc_qsv', '-profile:v', 'main10', '-pix_fmt', 'p010le', '-tag:v', 'hvc1', '-g', '20', '-b:v', '50M', '-preset', 'medium', '-c:a', 'aac', '-b:a', '256k', '-colorspace', 'bt709', '-color_primaries', 'bt709', '-fps_mode', 'cfr', '-r', str(fps), '-movflags', '-color_trc', 'bt709', out_path])
 
     process = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
 
@@ -2263,7 +2523,7 @@ def extract_segments(
                         stereo_video=video_args.video_path,
                         start=seg.start_time,
                         end=seg.end_time,
-                        target_height=video_args.mask_height,
+                        target_height=video_args.matanyone_height,
                         sbs_frame_out = sbs_frame,
                         sbs_video_out = sbs_video,
                         progress_prefix=f'[{i + 1}/{len(mask_segments)}]')
@@ -2280,7 +2540,7 @@ def extract_segments(
                 start=seg.start_time,
                 end=seg.end_time,
                 height=data['height'],
-                target_height=video_args.mask_height,
+                target_height=video_args.matanyone_height,
                 left_frame_out=left_frame,
                 right_frame_out=right_frame,
                 left_video_out=seg_left_video,
@@ -2308,7 +2568,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="VR Video Masking and things and stuff")
     parser.add_argument("--model", type=str, default="sam3.1")
     parser.add_argument("input_path", type=str, default="videos")
-    parser.add_argument("--mask-height", type=int, default=1280)
+    parser.add_argument("--matanyone-height", type=int, default=1280)
+    parser.add_argument("--sam3-height", type=int, default=1008)
     parser.add_argument("--segment-length", type=float, default=1)
     parser.add_argument("--erode", type=int, default=6)
     parser.add_argument("--dilate", type=int, default=0)
