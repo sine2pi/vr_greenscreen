@@ -1433,8 +1433,9 @@ class sam3_video_inference:
                     type="propagate_in_video",
                     session_id=session_id,
                     propagation_direction="forward",
-                    output_prob_thresh = 0.1,
+                    output_prob_thresh = 0.4,
                     frame_idx=0,
+                    max_frame_num_to_track=max_frame_num_to_track,
 
                 )):
 
@@ -1536,6 +1537,7 @@ class sam3_video_inference:
             request=dict(
                 type="close_session",
                 session_id=session_id,
+                run_gc_collect=True,
             )
         )
 
@@ -2274,24 +2276,36 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path) -> str:
             str(video_path),
         )
 
-        if alpha_output or run_all:
-            overlay_video = packer(
+        if run_all:
+            video_args.fisheye180 = True
+            packer(
                 video_path, 
                 video_args
                 )
             
-        if not alpha_output or run_all:
-            output_path = str(Path(video_path).with_name(f"{video_name}_overlay.mp4"))
-            overlay_video = mask_overlay(
+            mask_overlay(
                 video_path,
                 output_mask,
-                output_path,
+                output_path = str(Path(video_path).with_name(f"{video_name}_overlay.mp4")),
                 background_color=video_args.overlay_color,
                 video_args=video_args,
-            )
+                )
 
-            overlay_data = info(output_path)
-            print(f"Overlay video info: {overlay_data['width']}x{overlay_data['height']} @ {overlay_data['fps']}fps, duration: {overlay_data['duration']}, format: {overlay_data['pix_fmt']}, frames: {overlay_data['frames']}")
+        if alpha_output:
+            packer(
+                video_path, 
+                video_args
+                )
+            
+        else:
+            mask_overlay(
+                video_path,
+                output_mask,
+                output_path = str(Path(video_path).with_name(f"{video_name}_overlay.mp4")),
+                background_color=video_args.overlay_color,
+                video_args=video_args,
+                )
+
         print('=' * 60)
         print(f'Segments: {len(segments)} ({len(mask_segments)} masks) - Output: {output_mask}')
         print()
@@ -2414,7 +2428,7 @@ def main() -> int:
     parser.add_argument("--sbs", type=bool, default=False)
     parser.add_argument('--sam3-sbs', action='store_true', help='Seed both eyes from one SAM3 pass over side-by-side frames (falls back to per-eye SAM3 if the halves disagree)')
     parser.add_argument('--matanyone-version', type=str, default='v2', choices=['v1', 'v2'], help='Select MatAnyone runtime version')
-    parser.add_argument('--ma2-mem-every', type=int, default=8, help='Override MatAnyone mem_every')
+    parser.add_argument('--ma2-mem-every', type=int, default=2, help='Override MatAnyone mem_every')
     parser.add_argument('--ma2-max-mem-frames', type=int, default=2, help='Override MatAnyone memory window in frames (works for v1 and v2)')
     parser.add_argument('--ma2-use-long-term', type=str, default='off', choices=['auto', 'on', 'off'], help='Override MatAnyone long-term memory ')
     parser.add_argument('--overlay-color', type=str, default='0x00ff00', help='Background color for overlay (use 0x00ff00 for pure green)')
