@@ -2226,6 +2226,7 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path) -> str:
     video_args = argparse.Namespace(**vars(args), video_path=video_path)
     alpha_output = video_args.alpha
     overlay_mask = video_args.overlay_mask
+    run_all = video_args.all
 
     if overlay_mask is None:
         segments = calculate_segments(
@@ -2273,13 +2274,13 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path) -> str:
             str(video_path),
         )
 
-        if alpha_output:
+        if alpha_output or run_all:
             overlay_video = packer(
                 video_path, 
                 video_args
                 )
-      
-        else:
+            
+        if not alpha_output or run_all:
             output_path = str(Path(video_path).with_name(f"{video_name}_overlay.mp4"))
             overlay_video = mask_overlay(
                 video_path,
@@ -2422,6 +2423,7 @@ def main() -> int:
     parser.add_argument('--decompose-alpha', '--decompose_alpha', dest='decompose_alpha', action='store_true', help='Reverse of alpha packer')
     parser.add_argument('--decompose-clean-mask', type=str, default='assets/black_mask.png', help='PNG overlay used to clean alpha payload regions')
     parser.add_argument('--alpha', type=bool, default=False, help='Run alpha packer instead of overlay. --alpha <true|false>')
+    parser.add_argument('--all', type=bool, default=False, help='Run alpha packer and overlay. --all <true|false>')
     parser.add_argument('--alpha-erode', type=int, default=1, help='Alpha pack matte choke (3x3 erosion passes at --alpha-ref-size payload size; 0 = off)')
     parser.add_argument('--alpha-blur', type=float, default=1.8, help='Alpha pack matte feather (gblur sigma at --alpha-ref-size payload size; 0 = off)')
     parser.add_argument('--alpha-contrast', type=float, default=None, help='Alpha pack matte contrast (default: 2.0 up to 2400px high, else 2.5; 1.0 = off)')
