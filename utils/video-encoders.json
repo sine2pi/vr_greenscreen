@@ -1,0 +1,746 @@
+[
+    {
+        "id": "prores-422-proxy-win",
+        "encoder": "ProRes",
+        "profile": "422 Proxy",
+        "allowsAlpha": 0,
+        "ffmpegOpts": "-c:v prores_ks -profile:v 0 -vendor apl0 -quant_mat lt -bits_per_mb 525 -pix_fmt yuv422p10le",
+        "ext": [
+            "mov"
+        ],
+        "os": "windows|linux",
+        "minSize": [
+            1,
+            1
+        ],
+        "maxSize": [
+            16386,
+            16386
+        ],
+        "maxBitDepth": 10,
+        "doNotScaleFullColorRange": "transcode"
+    },
+    {
+        "id": "prores-422-std-win",
+        "encoder": "ProRes",
+        "profile": "422 Std",
+        "allowsAlpha": 0,
+        "ffmpegOpts": "-c:v prores_ks -profile:v 2 -vendor apl0 -quant_mat hq -bits_per_mb 1350 -pix_fmt yuv422p10le",
+        "ext": [
+            "mov"
+        ],
+        "os": "windows|linux",
+        "minSize": [
+            1,
+            1
+        ],
+        "maxSize": [
+            16386,
+            16386
+        ],
+        "maxBitDepth": 10,
+        "doNotScaleFullColorRange": "transcode"
+    },
+    {
+        "id": "prores-422-lt-win",
+        "encoder": "ProRes",
+        "profile": "422 LT",
+        "allowsAlpha": 0,
+        "ffmpegOpts": "-c:v prores_ks -profile:v 1 -vendor apl0 -quant_mat lt -bits_per_mb 525 -pix_fmt yuv422p10le",
+        "ext": [
+            "mov"
+        ],
+        "os": "windows|linux",
+        "minSize": [
+            1,
+            1
+        ],
+        "maxSize": [
+            16386,
+            16386
+        ],
+        "maxBitDepth": 10,
+        "doNotScaleFullColorRange": "transcode"
+    },
+    {
+        "id": "prores-422-hq-win",
+        "encoder": "ProRes",
+        "profile": "422 HQ",
+        "allowsAlpha": 0,
+        "ffmpegOpts": "-c:v prores_ks -profile:v 3 -vendor apl0 -quant_mat hq -bits_per_mb 1350 -pix_fmt yuv422p10le",
+        "ext": [
+            "mov"
+        ],
+        "os": "windows|linux",
+        "minSize": [
+            1,
+            1
+        ],
+        "maxSize": [
+            16386,
+            16386
+        ],
+        "maxBitDepth": 10,
+        "doNotScaleFullColorRange": "transcode"
+    },
+    {
+        "id": "dnxhr-lb",
+        "encoder": "DNxHR",
+        "profile": "LB",
+        "allowsAlpha": 0,
+        "ffmpegOpts": "-strict experimental -c:v dnxhd -profile:v dnxhr_lb -pix_fmt yuv422p",
+        "ext": [
+            "mov",
+            "mxf"
+        ],
+        "os": "windows|linux",
+        "minSize": [
+            1,
+            1
+        ],
+        "maxSize": [
+            16386,
+            16386
+        ],
+        "maxBitDepth": 8,
+        "doNotScaleFullColorRange": "transcode"
+    },
+    {
+        "id": "dnxhr-sq",
+        "encoder": "DNxHR",
+        "profile": "SQ",
+        "allowsAlpha": 0,
+        "ffmpegOpts": "-strict experimental -c:v dnxhd -profile:v dnxhr_sq -pix_fmt yuv422p",
+        "ext": [
+            "mov",
+            "mxf"
+        ],
+        "os": "windows|linux",
+        "minSize": [
+            1,
+            1
+        ],
+        "maxSize": [
+            16386,
+            16386
+        ],
+        "maxBitDepth": 8,
+        "doNotScaleFullColorRange": "transcode"
+    },
+    {
+        "id": "dnxhr-hq",
+        "encoder": "DNxHR",
+        "profile": "HQ",
+        "allowsAlpha": 0,
+        "ffmpegOpts": "-strict experimental -c:v dnxhd -profile:v dnxhr_hq -pix_fmt yuv422p",
+        "ext": [
+            "mov",
+            "mxf"
+        ],
+        "os": "windows|linux",
+        "minSize": [
+            1,
+            1
+        ],
+        "maxSize": [
+            16386,
+            16386
+        ],
+        "maxBitDepth": 8,
+        "doNotScaleFullColorRange": "transcode"
+    },
+    {
+        "id": "dnxhr-hqx",
+        "encoder": "DNxHR",
+        "profile": "HQX",
+        "allowsAlpha": 0,
+        "ffmpegOpts": "-strict experimental -c:v dnxhd -profile:v dnxhr_hqx -pix_fmt yuv422p10le",
+        "ext": [
+            "mov",
+            "mxf"
+        ],
+        "os": "windows|linux",
+        "minSize": [
+            1,
+            1
+        ],
+        "maxSize": [
+            16386,
+            16386
+        ],
+        "maxBitDepth": 12,
+        "doNotScaleFullColorRange": "transcode"
+    },
+    {
+        "id": "dnxhr-444",
+        "encoder": "DNxHR",
+        "profile": "444",
+        "allowsAlpha": 0,
+        "ffmpegOpts": "-strict experimental -c:v dnxhd -profile:v dnxhr_444 -pix_fmt yuv444p10le",
+        "ext": [
+            "mov",
+            "mxf"
+        ],
+        "os": "windows|linux",
+        "minSize": [
+            1,
+            1
+        ],
+        "maxSize": [
+            16386,
+            16386
+        ],
+        "maxBitDepth": 12,
+        "doNotScaleFullColorRange": "transcode"
+    },
+    {
+        "id": "h264-main-win-nvidia",
+        "encoder": "H264",
+        "profile": "High",
+        "allowsAlpha": 0,
+        "gpu": "nvidia",
+        "ffmpegOpts": "-c:v h264_nvenc -profile:v high -pix_fmt yuv420p -g 30",
+        "bitrateOpts": {
+            "cbr": "-rc cbr -b:v <CONST_BITRATE_VALUE> -preset p6 ",
+            "vbr": "-preset p7 -tune hq -rc constqp -qp <QP_VALUE> -rc-lookahead 20 -spatial_aq 1 -aq-strength 15 -b:v 0"
+        },
+        "cqpValues": {
+            "High": [
+                18
+            ],
+            "Mid": [
+                25
+            ],
+            "Low": [
+                28
+            ]
+        },
+        "ext": [
+            "mp4",
+            "mkv",
+            "mov"
+        ],
+        "maxBitRate": 2000,
+        "os": "windows|linux",
+        "device": "nvidia|tesla",
+        "minSize": [
+            145,
+            145
+        ],
+        "maxSize": [
+            4096,
+            4096
+        ],
+        "maxBitDepth": 8
+    },
+    {
+        "id": "h265-main-win-nvidia",
+        "encoder": "H265",
+        "profile": "Main",
+        "allowsAlpha": 0,
+        "gpu": "nvidia",
+        "ffmpegOpts": "-c:v hevc_nvenc -profile:v main -pix_fmt yuv420p -b_ref_mode disabled -tag:v hvc1 -g 30",
+        "bitrateOpts": {
+            "cbr": "-rc cbr -b:v <CONST_BITRATE_VALUE> -preset p6",
+            "vbr": "-preset p7 -tune hq -rc constqp -qp <QP_VALUE> -rc-lookahead 20 -spatial_aq 1 -aq-strength 15 -b:v 0"
+        },
+        "cqpValues": {
+            "High": [
+                17
+            ],
+            "Mid": [
+                25
+            ],
+            "Low": [
+                28
+            ]
+        },
+        "ext": [
+            "mp4",
+            "mkv",
+            "mov"
+        ],
+        "maxBitRate": 2000,
+        "os": "windows|linux",
+        "device": "nvidia|tesla",
+        "minSize": [
+            129,
+            129
+        ],
+        "maxSize": [
+            8192,
+            8192
+        ],
+        "maxBitDepth": 12
+    },
+    {
+        "id": "h265-main10-win-nvidia",
+        "encoder": "H265",
+        "profile": "Main10",
+        "allowsAlpha": 0,
+        "gpu": "nvidia",
+        "ffmpegOpts": "-c:v hevc_nvenc -profile:v main10 -pix_fmt p010le -b_ref_mode disabled -tag:v hvc1 -g 30",
+        "bitrateOpts": {
+            "cbr": "-rc cbr -b:v <CONST_BITRATE_VALUE> -preset p6",
+            "vbr": "-preset p7 -tune hq -rc constqp -qp <QP_VALUE> -rc-lookahead 20 -spatial_aq 1 -aq-strength 15 -b:v 0"
+        },
+        "cqpValues": {
+            "High": [
+                17
+            ],
+            "Mid": [
+                25
+            ],
+            "Low": [
+                28
+            ]
+        },
+        "ext": [
+            "mp4",
+            "mkv",
+            "mov"
+        ],
+        "maxBitRate": 2000,
+        "os": "windows|linux",
+        "device": "nvidia|tesla",
+        "minSize": [
+            129,
+            129
+        ],
+        "maxSize": [
+            8192,
+            8192
+        ],
+        "maxBitDepth": 12
+    },
+    {
+        "id": "h264-high-win-intel",
+        "encoder": "H264",
+        "profile": "High",
+        "allowsAlpha": 0,
+        "ffmpegOpts": "-c:v h264_qsv -profile:v high -preset medium -max_frame_size 65534 -pix_fmt nv12 -g 30",
+        "ext": [
+            "mp4",
+            "mkv",
+            "mov"
+        ],
+        "autoBitsPerPixel": "1.0",
+        "maxBitRate": 2000,
+        "os": "windows",
+        "device": "intel",
+        "minSize": [
+            17,
+            17
+        ],
+        "maxSize": [
+            3840,
+            2160
+        ]
+    },
+    {
+        "id": "h265-main-win-intel",
+        "encoder": "H265",
+        "profile": "Main",
+        "allowsAlpha": 0,
+        "ffmpegOpts": "-c:v hevc_qsv -profile:v main -preset medium -max_frame_size 65534 -pix_fmt nv12 -g 30",
+        "ext": [
+            "mp4",
+            "mkv",
+            "mov"
+        ],
+        "autoBitsPerPixel": "0.8",
+        "maxBitRate": 2000,
+        "os": "windows",
+        "device": "intel",
+        "minSize": [
+            1,
+            1
+        ],
+        "maxSize": [
+            15360,
+            8640
+        ]
+    },
+    {
+        "id": "h265-main10-win-intel",
+        "encoder": "H265",
+        "profile": "Main10",
+        "allowsAlpha": 0,
+        "ffmpegOpts": "-c:v hevc_qsv -profile:v main10 -preset medium -max_frame_size 65534 -pix_fmt p010le -g 30",
+        "ext": [
+            "mp4",
+            "mkv",
+            "mov"
+        ],
+        "autoBitsPerPixel": "1.0",
+        "maxBitRate": 2000,
+        "os": "windows",
+        "device": "intel",
+        "minSize": [
+            1,
+            1
+        ],
+        "maxSize": [
+            15360,
+            8640
+        ]
+    },
+    {
+        "id": "av1-win-nvidia",
+        "encoder": "AV1",
+        "profile": "8-bit",
+        "allowsAlpha": 0,
+        "gpu": "nvidia",
+        "ffmpegOpts": "-c:v av1_nvenc -preset p7 -pix_fmt yuv420p",
+        "bitrateOpts": {
+            "cbr": "-rc cbr -b:v <CONST_BITRATE_VALUE> -preset p7",
+            "vbr": "-preset p7 -tune hq -cq <QP_VALUE> -rc-lookahead 20 -spatial_aq 1 -aq-strength 1 -b:v 0"
+        },
+        "cqpValues": {
+            "High": [
+                23
+            ],
+            "Mid": [
+                31
+            ],
+            "Low": [
+                40
+            ]
+        },
+        "ext": [
+            "mp4",
+            "webm",
+            "mkv"
+        ],
+        "os": "windows|linux",
+        "device": "nvidia",
+        "maxBitRate": 800,
+        "minSize": [
+            1,
+            1
+        ],
+        "maxSize": [
+            16384,
+            8704
+        ],
+        "maxBitDepth": 12,
+        "compute": 809
+    },
+    {
+        "id": "av1-10bit-win-nvidia",
+        "encoder": "AV1",
+        "profile": "10-bit",
+        "allowsAlpha": 0,
+        "gpu": "nvidia",
+        "ffmpegOpts": "-c:v av1_nvenc -preset p7 -pix_fmt p010le",
+        "bitrateOpts": {
+            "cbr": "-rc cbr -b:v <CONST_BITRATE_VALUE> -preset p7",
+            "vbr": "-preset p7 -tune hq -cq <QP_VALUE> -rc-lookahead 20 -spatial_aq 1 -aq-strength 1 -b:v 0"
+        },
+        "cqpValues": {
+            "High": [
+                20
+            ],
+            "Mid": [
+                28
+            ],
+            "Low": [
+                33
+            ]
+        },
+        "ext": [
+            "mp4",
+            "webm",
+            "mkv"
+        ],
+        "os": "windows|linux",
+        "device": "nvidia",
+        "maxBitRate": 800,
+        "minSize": [
+            1,
+            1
+        ],
+        "maxSize": [
+            16384,
+            8704
+        ],
+        "maxBitDepth": 12,
+        "compute": 809
+    },
+    {
+        "id": "ffv1-8bit-420",
+        "encoder": "FFV1",
+        "profile": "8-bit 4:2:0",
+        "allowsAlpha": 0,
+        "ffmpegOpts": "-level 3 -c:v ffv1 -pix_fmt yuv420p -slices 9 -slicecrc 1 -g 1",
+        "ext": [
+            "mkv",
+            "mov",
+            "avi"
+        ]
+    },
+    {
+        "id": "ffv1-10bit-420",
+        "encoder": "FFV1",
+        "profile": "10-bit 4:2:0",
+        "allowsAlpha": 0,
+        "ffmpegOpts": "-level 3 -c:v ffv1 -pix_fmt yuv420p10le -slices 9 -slicecrc 1 -g 1",
+        "ext": [
+            "mkv",
+            "mov",
+            "avi"
+        ]
+    },
+    {
+        "id": "ffv1-12bit-420",
+        "encoder": "FFV1",
+        "profile": "12-bit 4:2:0",
+        "allowsAlpha": 0,
+        "ffmpegOpts": "-level 3 -c:v ffv1 -pix_fmt yuv420p12le -slices 9 -slicecrc 1 -g 1",
+        "ext": [
+            "mkv",
+            "mov",
+            "avi"
+        ]
+    },
+    {
+        "id": "ffv1-8bit-422",
+        "encoder": "FFV1",
+        "profile": "8-bit 4:2:2",
+        "allowsAlpha": 0,
+        "ffmpegOpts": "-level 3 -c:v ffv1 -pix_fmt yuv422p -slices 9 -slicecrc 1 -g 1",
+        "ext": [
+            "mkv",
+            "mov",
+            "avi"
+        ]
+    },
+    {
+        "id": "ffv1-10bit-422",
+        "encoder": "FFV1",
+        "profile": "10-bit 4:2:2",
+        "allowsAlpha": 0,
+        "ffmpegOpts": "-level 3 -c:v ffv1 -pix_fmt yuv422p10le -slices 9 -slicecrc 1 -g 1",
+        "ext": [
+            "mkv",
+            "mov",
+            "avi"
+        ]
+    },
+    {
+        "id": "ffv1-12bit-422",
+        "encoder": "FFV1",
+        "profile": "12-bit 4:2:2",
+        "allowsAlpha": 0,
+        "ffmpegOpts": "-level 3 -c:v ffv1 -pix_fmt yuv422p12le -slices 9 -slicecrc 1 -g 1",
+        "ext": [
+            "mkv",
+            "mov",
+            "avi"
+        ]
+    },
+    {
+        "id": "ffv1-8bit-444",
+        "encoder": "FFV1",
+        "profile": "8-bit 4:4:4",
+        "allowsAlpha": 0,
+        "ffmpegOpts": "-level 3 -c:v ffv1 -pix_fmt yuv444p -slices 9 -slicecrc 1 -g 1",
+        "ext": [
+            "mkv",
+            "mov",
+            "avi"
+        ]
+    },
+    {
+        "id": "ffv1-10bit-444",
+        "encoder": "FFV1",
+        "profile": "10-bit 4:4:4",
+        "allowsAlpha": 0,
+        "ffmpegOpts": "-level 3 -c:v ffv1 -pix_fmt yuv444p10le -slices 9 -slicecrc 1 -g 1",
+        "ext": [
+            "mkv",
+            "mov",
+            "avi"
+        ]
+    },
+    {
+        "id": "ffv1-12bit-444",
+        "encoder": "FFV1",
+        "profile": "12-bit 4:4:4",
+        "allowsAlpha": 0,
+        "ffmpegOpts": "-level 3 -c:v ffv1 -pix_fmt yuv444p12le -slices 9 -slicecrc 1 -g 1",
+        "ext": [
+            "mkv",
+            "mov",
+            "avi"
+        ]
+    },
+    {
+        "id": "vp9-good",
+        "encoder": "VP9",
+        "profile": "Good",
+        "allowsAlpha": 0,
+        "ffmpegOpts": "-strict experimental -c:v libvpx-vp9 -pix_fmt yuv420p -row-mt 1 -deadline good",
+        "ext": [
+            "mp4",
+            "mkv",
+            "webm"
+        ],
+        "maxBitRate": 2000,
+        "minSize": [
+            1,
+            1
+        ],
+        "maxSize": [
+            15360,
+            8640
+        ],
+        "maxBitDepth": 12
+    },
+    {
+        "id": "vp9-best",
+        "encoder": "VP9",
+        "profile": "Best",
+        "allowsAlpha": 0,
+        "ffmpegOpts": "-strict experimental -c:v libvpx-vp9 -pix_fmt yuv420p -row-mt 1 -deadline best",
+        "ext": [
+            "mp4",
+            "mkv",
+            "webm"
+        ],
+        "maxBitRate": 2000,
+        "minSize": [
+            1,
+            1
+        ],
+        "maxSize": [
+            15360,
+            8640
+        ],
+        "maxBitDepth": 12
+    },
+    {
+        "id": "QuickTime-v210",
+        "encoder": "QuickTime V210",
+        "shortName": "QT V210",
+        "profile": "Uncompressed YUV 10-bit 4:2:2",
+        "allowsAlpha": 0,
+        "ffmpegOpts": "-c:v v210 -pix_fmt yuv422p10le",
+        "ext": [
+            "mov",
+            "mkv",
+            "avi"
+        ]
+    },
+    {
+        "id": "QuickTime-r210",
+        "encoder": "QuickTime R210",
+        "shortName": "QT R210",
+        "profile": "Uncompressed RGB 10-bit",
+        "allowsAlpha": 0,
+        "ffmpegOpts": "-c:v r210 -pix_fmt gbrp10le",
+        "ext": [
+            "mov",
+            "mkv",
+            "avi"
+        ]
+    },
+    {
+        "id": "QTRLE",
+        "encoder": "QuickTime Animation",
+        "shortName": "QT Animation",
+        "profile": "Run-length compressed RGB 8-bit",
+        "allowsAlpha": 1,
+        "ffmpegOpts": "-c:v qtrle -pix_fmt rgb24",
+        "ext": [
+            "mov"
+        ]
+    },
+    {
+        "id": "tiff-8bit",
+        "encoder": "TIFF",
+        "profile": "8-bit",
+        "allowsAlpha": 1,
+        "ffmpegOpts": "-c:v tiff -pix_fmt rgb24 -compression_algo deflate",
+        "ext": [
+            "tiff"
+        ],
+        "isImage": true
+    },
+    {
+        "id": "tiff-16bit",
+        "encoder": "TIFF",
+        "profile": "16-bit",
+        "allowsAlpha": 1,
+        "ffmpegOpts": "-c:v tiff -pix_fmt rgb48le -compression_algo deflate",
+        "ext": [
+            "tiff"
+        ],
+        "isImage": true
+    },
+    {
+        "id": "png-8bit",
+        "encoder": "PNG",
+        "profile": "8-bit",
+        "allowsAlpha": 1,
+        "ffmpegOpts": "-c:v png -pix_fmt rgb24",
+        "ext": [
+            "png"
+        ],
+        "isImage": true
+    },
+    {
+        "id": "png-16bit",
+        "encoder": "PNG",
+        "profile": "16-bit",
+        "allowsAlpha": 1,
+        "ffmpegOpts": "-c:v png -pix_fmt rgb48be",
+        "ext": [
+            "png"
+        ],
+        "isImage": true
+    },
+    {
+        "id": "jpeg-8bit",
+        "encoder": "JPEG",
+        "profile": "8-bit",
+        "allowsAlpha": 0,
+        "ffmpegOpts": "-pix_fmt rgb24 -q:v 2",
+        "ext": [
+            "jpg"
+        ],
+        "isImage": true
+    },
+    {
+        "id": "exr",
+        "encoder": "EXR",
+        "allowsAlpha": 0,
+        "ffmpegOpts": "-q:v 2",
+        "ext": [
+            "exr"
+        ],
+        "isImage": true
+    },
+    {
+        "id": "dpx-10",
+        "encoder": "DPX",
+        "allowsAlpha": 0,
+        "ffmpegOpts": "-c:v dpx -pix_fmt gbrp10le",
+        "profile": "10-bit",
+        "ext": [
+            "dpx"
+        ],
+        "isImage": true
+    },
+    {
+        "id": "dpx-12",
+        "encoder": "DPX",
+        "allowsAlpha": 0,
+        "ffmpegOpts": "-c:v dpx -pix_fmt gbrp12le",
+        "profile": "12-bit",
+        "ext": [
+            "dpx"
+        ],
+        "isImage": true
+    }
+]
