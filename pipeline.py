@@ -48,6 +48,18 @@ MATANYONE_V2 = "https://github.com/pq-yang/MatAnyone2/releases/download/v1.0.0/m
 FFMPEG_BIN = shutil.which('ffmpeg') or 'ffmpeg'
 FFPROBE_BIN = shutil.which('ffprobe') or 'ffprobe'
 
+class StageTimer:
+    """Prints elapsed time since the previous mark; no-op unless enabled (tied to --debug)."""
+    def __init__(self, enabled: bool = False):
+        self.enabled = enabled
+        self.last = time.perf_counter()
+
+    def mark(self, label: str):
+        now = time.perf_counter()
+        if self.enabled:
+            print(f'[timing] {label}: {now - self.last:.2f}s')
+        self.last = now
+
 def have(a):
     if a == bool:
         if a:
@@ -59,6 +71,24 @@ def aborc(a, b, c):
     return aorb(a, aorb(b, c))
 def abcord(a, b, c, d):
     return aorb(a, aborc(b, c, d))
+
+class VideoMetadataManager:
+    _instance = None
+    data = {}
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(VideoMetadataManager, cls).__new__(cls)
+        return cls._instance
+
+    def set_metadata(self, ffprobe_dict):
+        self.data = ffprobe_dict
+
+    def get_metadata(self):
+        return self.data
+        
+    def clear(self):
+        self.data = {}
 
 def check_vfr(video_path: str, max_packets_to_read: int = 500) -> bool:
 
@@ -141,7 +171,7 @@ def encoder_args(data=None) -> list[str]:
 
     return [
 
-        '-sws_flags', 'lanczos+full_chroma_int+accurate_rnd+full_chroma_inp',
+        # '-sws_flags', 'lanczos+full_chroma_int+accurate_rnd+full_chroma_inp',
         '-fps_mode', 'cfr',
         '-r', str(fps),
         '-c:v', ENCODER,
@@ -196,7 +226,7 @@ def info(path, ffprobe_bin=FFPROBE_BIN):
     if f_tot:
         frames = int(f_tot)
     else:
-        frames = int(duration * fps) if duration > 0 else 0
+        frames = round(duration * fps) if duration > 0 else 0
         
     metadata.update({
         'width': width,
@@ -336,21 +366,22 @@ def concat_video(video_list: list[str], output_path: str, fps: float | None = No
 
     BATCH_SIZE = 50
     n = len(video_list)
-    enc = ['-c:v', 'ffv1', '-level', '3', '-slices', '4', '-pix_fmt', 'gray'] if lossless else encoder_args(data)
+    enc = encoder_args(data)
 
     if n > BATCH_SIZE:
 
-        base_path, _ = os.path.splitext(os.path.abspath(output_path))
+        base_path, ext = os.path.splitext(os.path.abspath(output_path))
         temp_batches = []
 
         try:
             for i in range(0, n, BATCH_SIZE):
                 batch_files = video_list[i:i + BATCH_SIZE]
-                batch_out = f"{base_path}_batch_{i//BATCH_SIZE}.mkv"
+                batch_out = f"{base_path}_batch_{i//BATCH_SIZE}{ext}"
                 temp_batches.append(batch_out)
-                concat_video(batch_files, batch_out, fps=fps, lossless=True)
+                concat_video(batch_files, batch_out, fps=fps)
 
-            return concat_video(temp_batches, output_path, fps=fps, lossless=lossless)
+            return concat_video(temp_batches, output_path, fps=fps)
+        
         finally:
             for tb in temp_batches:
                 if os.path.exists(tb):
@@ -359,6 +390,33 @@ def concat_video(video_list: list[str], output_path: str, fps: float | None = No
     abs_vid = [os.path.abspath(v) for v in video_list]
     abs_output = os.path.abspath(output_path)
     common_dir = os.path.commonpath(abs_vid)
+
+    # BATCH_SIZE = 50
+    # n = len(video_list)
+
+    # enc = ['-c:v', 'ffv1', '-level', '3', '-slices', '4', '-pix_fmt', 'gray'] if lossless else encoder_args(data)
+
+    # if n > BATCH_SIZE:
+
+    #     base_path, _ = os.path.splitext(os.path.abspath(output_path))
+    #     temp_batches = []
+
+    #     try:
+    #         for i in range(0, n, BATCH_SIZE):
+    #             batch_files = video_list[i:i + BATCH_SIZE]
+    #             batch_out = f"{base_path}_batch_{i//BATCH_SIZE}.mkv"
+    #             temp_batches.append(batch_out)
+    #             concat_video(batch_files, batch_out, fps=fps, lossless=True)
+
+    #         return concat_video(temp_batches, output_path, fps=fps, lossless=lossless)
+    #     finally:
+    #         for tb in temp_batches:
+    #             if os.path.exists(tb):
+    #                 os.remove(tb)
+
+    # abs_vid = [os.path.abspath(v) for v in video_list]
+    # abs_output = os.path.abspath(output_path)
+    # common_dir = os.path.commonpath(abs_vid)
 
     if not os.path.isdir(common_dir):
         common_dir = os.path.dirname(common_dir)
@@ -1389,6 +1447,7 @@ class sam3_video_inference:
 
         self.video_path = video_path
         self.video_args = video_args
+
         bpe_path = 'assets/bpe_simple_vocab_16e6.txt.gz'
         checkpoint_path = download_ckpt_from_hf(version=video_args.model, force_download=False, local_files_only=False)
 
@@ -1415,7 +1474,56 @@ class sam3_video_inference:
        
         )
 
-    def propagate_in_video(self, predictor=None, session_id=None, max_frame_num_to_track=200):
+    # class Sam3MultiplexBase(Sam3VideoBase): reference
+    #     def __init__(
+    #         self,
+    #         tracker,
+    #         detector,
+    #         ckpt_path=None,
+    #         sam3_ckpt_path=None,
+    #         score_threshold_detection=0.5,
+    #         image_only_det_thresh=0.5,
+    #         det_nms_thresh=0.0,
+    #         det_nms_use_iom=False,
+    #         assoc_iou_thresh=0.5,
+    #         trk_assoc_iou_thresh=0.5,
+    #         new_det_thresh=0.5,
+    #         hotstart_delay=0,
+    #         hotstart_unmatch_thresh=3,
+    #         hotstart_dup_thresh=3,
+    #         suppress_unmatched_only_within_hotstart=True,
+    #         init_trk_keep_alive=0,
+    #         max_trk_keep_alive=8,
+    #         min_trk_keep_alive=-4,
+    #         suppress_overlapping_based_on_recent_occlusion_threshold=0.0,
+    #         allow_unoccluded_to_suppress: bool = False,
+    #         decrease_trk_keep_alive_for_empty_masklets=False,
+    #         o2o_matching_masklets_enable=False,
+    #         suppress_det_close_to_boundary=False,
+    #         fill_hole_area=16,
+    #         sprinkle_removal_area=16,
+    #         max_num_objects=1,
+    #         num_obj_for_compile=1,
+    #         max_num_kboxes=20,
+    #         recondition_every_nth_frame=-1,
+    #         use_iom_recondition=False,
+    #         iom_thresh_recondition=0.8,
+    #         iou_thresh_recondition=0.8,
+    #         is_multiplex=False,
+    #         masklet_confirmation_enable=False,
+    #         masklet_confirmation_consecutive_det_thresh=3,
+    #         reconstruction_bbox_iou_thresh=0.0,
+    #         reconstruction_bbox_det_score=0.5,
+    #         reapply_no_object_pointer: bool = False,
+    #         running_in_prod=False,
+    #         use_batched_grounding=False,
+    #         batched_grounding_batch_size=1,
+    #         **kwargs,
+    #     ):
+        
+    def propagate_in_video(self, predictor=None, session_id=None, max_frame_num_to_track=None):
+
+        self.predictor.model.hotstart_delay = 0
 
         print()
         print(f"Sam3 inference. ... ♩ ♪ ♫ ♬")
@@ -1426,7 +1534,7 @@ class sam3_video_inference:
 
         predictor=self.predictor
         outputs = {}
-
+        
         for response in predictor.handle_stream_request(
 
                 request=dict(
@@ -1435,7 +1543,7 @@ class sam3_video_inference:
                     propagation_direction="forward",
                     output_prob_thresh = 0.1,
                     frame_idx=0,
-                    max_frame_num_to_track=max_frame_num_to_track,
+                    # max_frame_num_to_track=total_frames,
 
                 )):
 
@@ -1451,7 +1559,7 @@ class sam3_video_inference:
         else:
             raise ValueError(f"Unknown coord_type: {coord_type}")
 
-    def track(self, video_path = None, boxes = None, labels = None):
+    def track(self, video_path = None, boxes = None, labels = None, refine_object_0=False, refine_object_1=False, refine_object_2=False, refine_object_3=False):
 
         predictor, video_path, prompt, show_plots, add_box, sub_box = self.predictor, self.video_path, self.video_args.prompt, self.video_args.show_plots, self.video_args.add_box, self.video_args.sub_box
         
@@ -1475,7 +1583,7 @@ class sam3_video_inference:
                 print(f'frame names are not in "<frame_idx>.jpg" format: {frames[:5]=}, '
                     f"falling back to lexicographic sort.")
                 frames.sort()
-
+  
         image = Image.fromarray(load_frame(frames[0]))
         W, H = image.size
 
@@ -1498,19 +1606,52 @@ class sam3_video_inference:
         )
 
         print(f'is_success: {is_success["is_success"]}')
-        predictor.model.hotstart_delay = 0
-
-        if add_box:
-            boxes = np.array([[0.2, 0.2, 0.6, 0.6]])
+   
+        if add_box and not sub_box:
+            boxes = np.array([[W // 4, H // 4, W // 2, H // 2]])
             labels = np.array([1])
-        if sub_box:
-            boxes = np.array([[0.1, 0.8, 0.7, 0.1]]) 
-            labels = np.array([0])
 
+            boxes = torch.tensor(
+                self.abs_to_rel_coords(boxes, W, H, coord_type="box"),
+                dtype=torch.float32,
+            )
+            labels = torch.tensor(labels, dtype=torch.int32)
+
+        if sub_box and not add_box:
+            boxes = np.array([
+                [0, H * 0.9, W, H * 0.1],  # bottom 10%
+                [W * 0.9, 0, W * 0.1, H], # right 10%
+                [0, 0, W * 0.1, H], # left 10%
+            ])
+            labels = np.array([0, 0, 0])
+
+            boxes = torch.tensor(
+                self.abs_to_rel_coords(boxes, W, H, coord_type="box"),
+                dtype=torch.float32,
+            )
+            labels = torch.tensor(labels, dtype=torch.int32)
+
+        if add_box and sub_box:
+            boxes = np.array([
+                [W // 4, H // 4, W // 2, H // 2], 
+                [0, H * 0.9, W, H * 0.1],  # bottom 10%
+                [W * 0.9, 0, W * 0.1, H], # right 10%
+                [0, 0, W * 0.1, H], # left 10%
+                ])
+            
+            labels = np.array([1, 0, 0, 0])
+
+            boxes = torch.tensor(
+                self.abs_to_rel_coords(boxes, W, H, coord_type="box"),
+                dtype=torch.float32,
+            )
+            labels = torch.tensor(labels, dtype=torch.int32)
+         
         prompt_text = prompt if prompt is not None else None
         frame_idx = 0
-        obj_id = 0
+        obj_ids = 0
 
+        predictor.model.hotstart_delay = 0
         response = predictor.handle_request(
             request=dict(
                 type = "add_prompt",
@@ -1519,18 +1660,84 @@ class sam3_video_inference:
                 text = prompt_text,
                 bounding_boxes = boxes,
                 bounding_box_labels = labels,
-                obj_id = obj_id
-            )
+                rel_coordinates=True,
+                obj_id = obj_ids,           
+                output_prob_thresh=0.5,
+                    )
         )
 
         frame_idx = response["frame_idx"]
-        outputs = self.propagate_in_video(predictor, session_id)
+        outputs = self.propagate_in_video(predictor, session_id, max_frame_num_to_track=None)
+
+        if refine_object_0:
+            frame_idx = 0
+            obj_id = 0
+
+            center = np.array([[W // 2, H // 2]])
+            center_bottom = np.array([[W // 2, H]])
+
+            points_abs = np.array(
+                [
+                    [W // 2, H // 2],  # positive click
+                    [W // 2, H - H // 10],  # negative click
+                ]
+            )
+            # positive clicks have label 1, while negative clicks have label 0
+            labels = np.array([1, 0])
+                
+            points_tensor = torch.tensor(
+                self.abs_to_rel_coords(points_abs, W, H, coord_type="point"),
+                dtype=torch.float32,
+            )
+            points_labels_tensor = torch.tensor(labels, dtype=torch.int32)
+
+            response = predictor.handle_request(
+                request=dict(
+                    type="add_prompt",
+                    session_id=session_id,
+                    frame_idx=frame_idx,
+                    points=points_tensor,
+                    point_labels=points_labels_tensor,
+                    obj_id=obj_id,
+                )
+            )
+
+        if refine_object_1:
+            frame_idx = 0
+            obj_id = 1
+            points_abs = np.array(
+                [
+                    [740, 450],  # positive click
+                    [760, 630],  # negative click
+                    [840, 640],  # negative click
+                    [760, 550],  # positive click
+                ]
+            )
+
+            labels = np.array([1, 0, 0, 1])
+    
+            points_tensor = torch.tensor(
+                self.abs_to_rel_coords(points_abs, W, H, coord_type="point"),
+                dtype=torch.float32,
+            )
+            points_labels_tensor = torch.tensor(labels, dtype=torch.int32)
+
+            response = predictor.handle_request(
+                request=dict(
+                    type="add_prompt",
+                    session_id=session_id,
+                    frame_idx=frame_idx,
+                    points=points_tensor,
+                    point_labels=points_labels_tensor,
+                    obj_id=obj_id,
+                )
+            )
 
         if show_plots:
 
             out = response["outputs"]
             outputs_per_frame = prepare_masks_for_visualization({frame_idx: out})
-            vis_frame_stride = 2
+            vis_frame_stride = 1
             plt.close("all")
             for frame_idx in range(0, len(outputs_per_frame), vis_frame_stride):
                 visualize_formatted_frame_output(
@@ -1740,8 +1947,7 @@ def sam3_masks_sbs(
             masks_dir: Path,
             mask_segments: List[SegmentInfo],
 ) -> List[SegmentInfo]:
-    """Seed both eyes with one SAM3 pass over side-by-side frames. Returns the segments that need the per-eye fallback."""
-
+  
     sbs_dir.mkdir(parents=True, exist_ok=True)
     candidates = [s for s in mask_segments if s.left_frame_path and s.right_frame_path]
 
@@ -1983,12 +2189,12 @@ def _matanyone_process_segment(matanyone_model, device, inference_core, job, vid
         mask = gen_erosion(mask, r_erode, r_erode)
 
     if mask.shape != (max_size, max_size):
-        print(f"Mask shape before interpolation: {mask.shape}")
+        # print(f"Mask shape before interpolation: {mask.shape}")
         if max_size > 0:
             mask = F.interpolate(
                 mask.unsqueeze(0).unsqueeze(0), size=(max_size, max_size), mode="nearest-exact"
             )[0, 0]
-        print(f"Mask shape after interpolation: {mask.shape}")
+        # print(f"Mask shape after interpolation: {mask.shape}")
 
     objects = [1]
     phas = []
@@ -2014,13 +2220,42 @@ def _matanyone_process_segment(matanyone_model, device, inference_core, job, vid
                 pha = torch.clamp(pha, 0, 255).cpu()
                 phas.append(pha)
 
-    output_file = os.path.join(output_path, f'{video_name}_pha.mkv')
+    # output_file = os.path.join(output_path, f'{video_name}_pha.mkv')
+    # first_frame = phas[0]
+    # print(f"first_frame.shape: {first_frame.shape}")
+ 
+    # if first_frame.ndim == 3:
+    #     first_frame = first_frame.squeeze(0)
+    # height, width = first_frame.shape
+
+    output_file = os.path.join(output_path, f'{video_name}_pha.mp4')
     first_frame = phas[0]
     print(f"first_frame.shape: {first_frame.shape}")
  
     if first_frame.ndim == 3:
         first_frame = first_frame.squeeze(0)
     height, width = first_frame.shape
+
+    # cmd = [
+    #     'ffmpeg', '-y', '-f', 'rawvideo', '-vcodec', 'rawvideo', '-s', f'{width}x{height}', "-pix_fmt", "gray", '-r', str(fps),
+    #     '-i', '-']
+
+    # if input_path:
+    #     cmd.extend(['-i', input_path, '-map', '0:v', '-map', '1:a?'])
+
+    # cmd.extend([
+    #     '-c:v', 'hevc_nvenc', '-profile:v', 'main', '-pix_fmt', 'yuv420p', '-tag:v', 'hvc1', '-g', '20', '-b:v', '50M', '-c:a', 'aac', '-b:a', '256k', '-colorspace', 'bt709', '-color_primaries', 'bt709', '-fps_mode', 'cfr', '-r', str(fps), output_file])
+
+    # process = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
+
+    # try:
+    #     for pha in phas:
+    #         process.stdin.write(pha.numpy().tobytes())
+    # finally:
+    #     process.stdin.close()
+    #     process.wait()
+
+    # return output_file
 
     cmd = [
         'ffmpeg', '-y', '-v', 'error', '-f', 'rawvideo', '-vcodec', 'rawvideo', '-s', f'{width}x{height}', '-pix_fmt', 'gray', '-r', str(fps),
@@ -2180,15 +2415,15 @@ def matanyone(
     for seg in mask_segments:
         left_basename = os.path.splitext(os.path.basename(f'seg{seg.index:02d}_left.mp4'))[0]
         right_basename = os.path.splitext(os.path.basename(f'seg{seg.index:02d}_right.mp4'))[0]
-        left_pha = os.path.join(matanyout, f'{left_basename}_pha.mkv')
-        right_pha = os.path.join(matanyout, f'{right_basename}_pha.mkv')
+        left_pha = os.path.join(matanyout, f'{left_basename}_pha.mp4')
+        right_pha = os.path.join(matanyout, f'{right_basename}_pha.mp4')
 
         if not os.path.exists(left_pha) or not os.path.exists(right_pha):
             raise RuntimeError(f'Could not find generated masks for segment {seg.index}')
 
         # stereo_matte_report(left_pha, right_pha, f'seg{seg.index:02d}')
 
-        stereo_output = str(segments_dir / f'seg{seg.index:02d}_stereo.mkv')
+        stereo_output = str(segments_dir / f'seg{seg.index:02d}_stereo.mp4')
         seg.video_path = stereo_video(
             left_pha,
             right_pha,
@@ -2216,7 +2451,9 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path) -> str:
     
     video_path = str(Path(video_path).expanduser().resolve())
     video_name = Path(video_path).stem
+    timer = StageTimer(args.debug is not None)
     data = info(video_path)
+    timer.mark('ffprobe info()')
     print(f"Specs: {data['width']}x{data['height']} @ {data['fps']}fps, duration: {data['duration']}, format: {data['pix_fmt']}")
     print()
     
@@ -2238,110 +2475,134 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path) -> str:
     overlay_mask = video_args.overlay_mask
     run_all = video_args.all
 
-    if overlay_mask is None:
-        segments = calculate_segments(
-            data['duration'],
-            video_args.segment_length,
-            debug=video_args.debug,
-            )
+    # if overlay_mask is None:
 
-        mask_segments = [s for s in segments if s.seg_type == SegmentType.MASK]
-
-        mask_segments = extract_segments(
-            video_args,
-            frames_dir, 
-            segments_dir, 
-            mask_segments, 
-            segments,
-            data,
+    segments = calculate_segments(
+        data['duration'],
+        video_args.segment_length,
+        debug=video_args.debug,
+        frames=int(data['frames']) if video_args.segment_frames else 0,
+        fps=data['fps'],
         )
 
-        if video_args.sam3_sbs:
-            failed = sam3_masks_sbs(video_args, temp_dir / 'sbs_frames', masks_dir, mask_segments)
-            if failed:
-                sam3_masks(video_args, frames_dir, masks_dir, failed)
-        else:
-            mask_segments = sam3_masks(
-                video_args,
-                frames_dir, 
-                masks_dir, 
-                mask_segments, 
-            )
+    mask_segments = [s for s in segments if s.seg_type == SegmentType.MASK]
+    timer.mark('calculate_segments')
 
-        # stereo_seed_report(mask_segments)
+    mask_segments = extract_segments(
+        video_args,
+        frames_dir, 
+        segments_dir, 
+        mask_segments, 
+        segments,
+        data,
+    )
+    timer.mark('extract_segments (ffmpeg)')
 
-        segments = matanyone(
-            video_args,
-            segments_dir, 
-            mask_segments, 
-            segments,
-            data,
-            )
+    # if video_args.sam3_sbs:
+    #     failed = sam3_masks_sbs(video_args, temp_dir / 'sbs_frames', masks_dir, mask_segments)
+    #     if failed:
+    #         sam3_masks(video_args, frames_dir, masks_dir, failed)
+    # else:
+    mask_segments = sam3_masks(
+        video_args,
+        frames_dir, 
+        masks_dir, 
+        mask_segments, 
+    )
+    timer.mark('sam3_masks')
 
-        output_mask = finalize(
-            segments,
-            video_name,
-            str(video_path),
+    # stereo_seed_report(mask_segments)
+
+    segments = matanyone(
+        video_args,
+        segments_dir, 
+        mask_segments, 
+        segments,
+        data,
         )
+    timer.mark('matanyone')
 
-        if run_all:
-            video_args.fisheye180 = True
-            packer(
-                video_path, 
-                video_args
-                )
-            
-            mask_overlay(
-                video_path,
-                output_mask,
-                output_path = str(Path(video_path).with_name(f"{video_name}_overlay.mp4")),
-                background_color=video_args.overlay_color,
-                video_args=video_args,
-                )
+    output_mask = finalize(
+        segments,
+        video_name,
+        str(video_path),
+    )
+    timer.mark('finalize')
 
-        if alpha_output:
-            packer(
-                video_path, 
-                video_args
-                )
-            
-        else:
-            mask_overlay(
-                video_path,
-                output_mask,
-                output_path = str(Path(video_path).with_name(f"{video_name}_overlay.mp4")),
-                background_color=video_args.overlay_color,
-                video_args=video_args,
-                )
-
-        print('=' * 60)
-        print(f'Segments: {len(segments)} ({len(mask_segments)} masks) - Output: {output_mask}')
-        print()
-
-        with open(temp_dir / 'segments.txt', 'w', encoding='utf-8') as f:
-            f.write(f'# {video_name}\n')
-            for seg in segments:
-                f.write(f'{seg.index},{seg.seg_type.value},{seg.start_time:.3f},{seg.end_time:.3f},{seg.video_path}\n')
-
-        print(f"info() cache: {info.cache_info()}")
-        return output_mask
-
-    else:
-        overlay_target = str(Path(video_path).with_name(f"{video_name}_overlay.mp4"))
-        overlay_video = mask_overlay(
+    if run_all:
+        video_args.fisheye180 = True
+        packer(
+            video_path, 
+            video_args
+            )
+        
+        mask_overlay(
             video_path,
-            overlay_mask,
-            overlay_target,
+            output_mask,
+            output_path = str(Path(video_path).with_name(f"{video_name}_overlay.mp4")),
             background_color=video_args.overlay_color,
             video_args=video_args,
-            data=data,
             )
 
-        print(f'Overlay preview: {overlay_video}')
-        print('=' * 60)
-        return overlay_video
+    if alpha_output:
 
-def calculate_segments(video_duration: float, max_segment_length: float = 5.0, debug = None) -> List[SegmentInfo]:
+        packer(
+            video_path, 
+            video_args
+            )
+        
+    else:
+        mask_overlay(
+            video_path,
+            output_mask,
+            output_path = str(Path(video_path).with_name(f"{video_name}_overlay.mp4")),
+            background_color=video_args.overlay_color,
+            video_args=video_args,
+            )
+
+    timer.mark('packer/overlay')
+    print('=' * 60)
+    print(f'Segments: {len(segments)} ({len(mask_segments)} masks) - Output: {output_mask}')
+    print()
+
+    with open(temp_dir / 'segments.txt', 'w', encoding='utf-8') as f:
+        f.write(f'# {video_name}\n')
+        for seg in segments:
+            f.write(f'{seg.index},{seg.seg_type.value},{seg.start_time:.3f},{seg.end_time:.3f},{seg.video_path}\n')
+
+    print(f"info() cache: {info.cache_info()}")
+    return output_mask
+
+    # else:
+    #     overlay_target = str(Path(video_path).with_name(f"{video_name}_overlay.mp4"))
+    #     overlay_video = mask_overlay(
+    #         video_path,
+    #         overlay_mask,
+    #         overlay_target,
+    #         background_color=video_args.overlay_color,
+    #         video_args=video_args,
+    #         data=data,
+    #         )
+
+    #     print(f'Overlay preview: {overlay_video}')
+    #     print('=' * 60)
+    #     # return overlay_video
+
+def calculate_segments(video_duration: float, max_segment_length: float = 5.0, debug = None, frames: int = 0, fps: float = 0.0) -> List[SegmentInfo]:
+
+    if frames and fps:
+        # Split on integer frame boundaries; times stay in seconds (frame / fps) so extraction is unchanged.
+        seg_frames = max(1, round(max_segment_length * fps))
+        segments = []
+        start = 0
+        while start < frames:
+            end = min(start + seg_frames, frames)
+            if 0 < frames - end < 2:
+                end = frames
+            segments.append(SegmentInfo(index=len(segments), start_time=start / fps,
+                    end_time=end / fps, seg_type=SegmentType.MASK))
+            start = end
+        return segments
 
     segments: List[SegmentInfo] = []
     chunk_start = 0.0
@@ -2371,6 +2632,7 @@ def extract_segments(
     print(f'Total: {len(segments)} segments')
 
     for i, seg in enumerate(mask_segments) if video_args.debug is None else enumerate(mask_segments[:video_args.debug]):
+        seg_t0 = time.perf_counter()
         
         if video_args.sbs:
             sbs_frame = str(frames_dir / f'seg{seg.index:02d}_sbs.png')
@@ -2405,6 +2667,8 @@ def extract_segments(
             seg.left_frame_path = left_frame_path
             seg.right_frame_path = right_frame_path
 
+        if video_args.debug is not None:
+            print(f'[timing] segment {seg.index} extract: {time.perf_counter() - seg_t0:.2f}s')
     return mask_segments
 
 def finalize(segments: List[SegmentInfo], video_name: str, video_path: str) -> str:
@@ -2426,10 +2690,10 @@ def main() -> int:
     parser.add_argument("input_path", type=str, default="videos")
     parser.add_argument("--matanyone-height", type=int, default=1024)
     parser.add_argument("--sam3-height", type=int, default=1024)
-    parser.add_argument("--segment-length", type=float, default=2)
+    parser.add_argument("--segment-length", type=float, default=4)
     parser.add_argument("--erode", type=int, default=0)
     parser.add_argument("--dilate", type=int, default=0)
-    parser.add_argument("--prompt", type=str, default="agirl")
+    parser.add_argument("--prompt", type=str, default=None)
     parser.add_argument("--warmup", type=int, default=6)
     parser.add_argument("--add-box", type=bool, default=False)
     parser.add_argument("--sub-box", type=bool, default=False)
@@ -2454,6 +2718,7 @@ def main() -> int:
     parser.add_argument('--alpha-tmix', type=int, default=1, help='Odd number of frames to average the matte over before packing (1 = off)')
     parser.add_argument('--show-plots', type=bool, default=False, help='Sam3 mask plots will be displayed if True.')
     parser.add_argument('--fisheye180', type=bool, default=False, help='Convert video or folder to SBS fisheye180. Works with alphapacker')
+    parser.add_argument('--segment-frames', action='store_true', help='Split segments on exact frame boundaries (uses frame count and fps) instead of duration')
     parser.add_argument('--debug', type=int, default=None, help='Debug mode: process only the first N segments')
     args = parser.parse_args()
     args.matanyone_version = str(args.matanyone_version).lower()
