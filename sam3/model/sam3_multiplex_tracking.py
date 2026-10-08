@@ -81,6 +81,8 @@ class Sam3MultiplexTracking(Sam3MultiplexBase):
         postprocess_batch_size=1,
         num_obj_for_compile=1,
         max_num_objects=1,
+        video_loader_type="torchcodec",
+        apply_temporal_disambiguation=True,
         **kwargs,
     ):
         """
@@ -104,6 +106,8 @@ class Sam3MultiplexTracking(Sam3MultiplexBase):
         self.postprocess_batch_size = int(postprocess_batch_size)
         self.num_obj_for_compile = num_obj_for_compile
         self.max_num_objects = max_num_objects
+        self.video_loader_type = video_loader_type
+        self.apply_temporal_disambiguation = apply_temporal_disambiguation  
 
     TEXT_ID_FOR_TEXT = 0
     TEXT_ID_FOR_VISUAL = 1
@@ -2197,6 +2201,8 @@ class Sam3MultiplexTrackingWithInteractivity(Sam3MultiplexTracking):
         refinement_detector_cond_frame_removal_window=30 * 4,
         num_obj_for_compile=1,
         max_num_objects = 1,
+        video_loader_type="torchcodec",
+        apply_temporal_disambiguation=True,
         **kwargs,
     ):
         """
@@ -2206,7 +2212,7 @@ class Sam3MultiplexTrackingWithInteractivity(Sam3MultiplexTracking):
             is within this many frames of a user refined frame. Set to a large value (e.g. 10000) to
             always remove detector conditioning frames if there is any user refinement in the video.
         """
-        super().__init__(**kwargs, num_obj_for_compile=num_obj_for_compile, max_num_objects=max_num_objects)
+        super().__init__(**kwargs, num_obj_for_compile=num_obj_for_compile, max_num_objects=max_num_objects, video_loader_type=video_loader_type, apply_temporal_disambiguation=apply_temporal_disambiguation)
         self.use_prev_mem_frame = use_prev_mem_frame
         self.use_stateless_refinement = use_stateless_refinement
         self.refinement_detector_cond_frame_removal_window = (
@@ -2214,6 +2220,8 @@ class Sam3MultiplexTrackingWithInteractivity(Sam3MultiplexTracking):
         )
         self.num_obj_for_compile = num_obj_for_compile
         self.max_num_objects = max_num_objects
+        self.video_loader_type = video_loader_type
+        self.apply_temporal_disambiguation = apply_temporal_disambiguation
 
     @torch.inference_mode()
     def init_state(

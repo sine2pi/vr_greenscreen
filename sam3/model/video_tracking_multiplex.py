@@ -2770,6 +2770,8 @@ class VideoTrackingDynamicMultiplex(VideoTrackingMultiplex):
         is_dynamic_vos_evaluation: bool = False,  # For datasets like YouTubeVOS which have new objects
         num_obj_for_compile: int = 1,
         max_num_objects: int = 1,
+        video_loader_type: str = "torchcodec",
+        apply_temporal_disambiguation: bool = True,
         **kwargs,
     ):
         super().__init__(is_dynamic_model=is_dynamic_model, **kwargs)
@@ -2781,6 +2783,8 @@ class VideoTrackingDynamicMultiplex(VideoTrackingMultiplex):
         self.add_all_transition_frames_as_cond = add_all_transition_frames_as_cond
         self.max_trans_frames_in_attn = max_trans_frames_in_attn
         self.is_dynamic_vos_evaluation = is_dynamic_vos_evaluation
+        self.video_loader_type = video_loader_type
+        self.apply_temporal_disambiguation = apply_temporal_disambiguation
 
     def prepare_prompt_inputs(self, backbone_out, input, start_frame_idx=0):
         """

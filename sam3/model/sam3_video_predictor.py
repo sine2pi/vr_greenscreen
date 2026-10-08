@@ -56,6 +56,8 @@ class Sam3VideoPredictor(Sam3BasePredictor):
                 num_obj_for_compile=num_obj_for_compile,
                 use_fa3 = use_fa3,
                 use_rope_real = use_rope_real,
+                video_loader_type=video_loader_type,
+  
             )
             .cuda()
             .eval()

@@ -312,6 +312,9 @@ class TransformerDecoder(nn.Module):
         assert self.return_intermediate, "support return_intermediate only"
         assert self.box_refine, "support box refine only"
 
+        self.ignore_pixels = None
+        self._keep_cache = {}
+
         self.compile_mode = compile_mode
         self.compiled = False
         # We defer compilation till after the first forward, to first warm-up the boxRPB cache
@@ -321,6 +324,32 @@ class TransformerDecoder(nn.Module):
         # in selected layers)
         for layer_idx, layer in enumerate(self.layers):
             layer.layer_idx = layer_idx
+
+    def set_ignore_pixels(self, ignore):
+        """Pass a bool HxW mask (True = ignore), or None to disable. Image tokens whose whole
+        patch is ignored are removed from the decoder's image cross-attention (inference only)."""
+        self._keep_cache = {}
+        self.ignore_pixels = (
+            None if ignore is None else torch.as_tensor(ignore).float()
+        )
+
+    def _get_keep_idx(self, num_tokens, device):
+        if self.ignore_pixels is None:
+            return None
+        key = (num_tokens, str(device))
+        if key not in self._keep_cache:
+            g = math.isqrt(num_tokens)
+            idx = None
+            if g * g == num_tokens:
+                frac = torchF.adaptive_avg_pool2d(
+                    self.ignore_pixels[None, None].to(device), (g, g)
+                ).flatten()
+                keep = frac < 0.999
+                num_keep = int(keep.sum())
+                if 0 < num_keep < num_tokens:
+                    idx = keep.nonzero().squeeze(1)
+            self._keep_cache[key] = idx
+        return self._keep_cache[key]
 
     @staticmethod
     def _get_coords(H, W, device):
@@ -467,6 +496,23 @@ class TransformerDecoder(nn.Module):
                 reference_boxes = reference_boxes.repeat(2, 1, 1)
 
         bs = tgt.shape[1]
+
+        keep_idx = None
+        if not self.training:
+            keep_idx = self._get_keep_idx(memory.shape[0], memory.device)
+        if keep_idx is not None:
+            num_tokens = memory.shape[0]
+            memory = memory.index_select(0, keep_idx)
+            if pos is not None:
+                pos = pos.index_select(0, keep_idx)
+            if memory_key_padding_mask is not None:
+                pad_dim = 0 if memory_key_padding_mask.shape[0] == num_tokens else 1
+                memory_key_padding_mask = memory_key_padding_mask.index_select(
+                    pad_dim, keep_idx
+                )
+            if memory_mask is not None:
+                memory_mask = memory_mask.index_select(-1, keep_idx)
+
         intermediate = []
         intermediate_presence_logits = []
         presence_feats = None
@@ -522,6 +568,8 @@ class TransformerDecoder(nn.Module):
                     (spatial_shapes[0, 0], spatial_shapes[0, 1]),
                 )
                 memory_mask = memory_mask.flatten(0, 1)  # (bs*n_heads, nq, H*W)
+                if keep_idx is not None:
+                    memory_mask = memory_mask.index_select(-1, keep_idx)
             if self.training:
                 assert self.use_act_checkpoint, (
                     "Activation checkpointing not enabled in the decoder"
@@ -999,13 +1047,39 @@ def functional_attention(
                 repeat_freqs_k=rope_k_repeat,
             )
 
-    with sdpa_kernel([SDPBackend.FLASH_ATTENTION, SDPBackend.CUDNN_ATTENTION]):
+    # if use_fa3:
+    #     from sam3.perflib.fa3 import flash_attn_func
+
+    #     assert dropout == 0.0
+    #     out = flash_attn_func(q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2))
+    # else:
+    #     with sdpa_kernel(SDPBackend.EFFICIENT_ATTENTION):
+    #         out = torchF.scaled_dot_product_attention(q, k, v, dropout_p=dropout)
+    #     out = out.transpose(1, 2)  #  B * n * n_heads * (cv // num_heads)
+
+    # out = out.reshape(b, n, cv)
+    # return out
+
+    # if use_fa3:
+
+    #     with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
+    #         out = torchF.scaled_dot_product_attention(q, k, v, dropout_p=dropout)
+    #     out = out.transpose(1, 2) 
+
+    #     # from flash_attn import flash_attn_func
+    #     # assert dropout == 0.0
+    #     # out = flash_attn_func(q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2))
+        
+    # else:
+  
+    # with sdpa_kernel(
+        # [SDPBackend.FLASH_ATTENTION, SDPBackend.CUDNN_ATTENTION, SDPBackend.EFFICIENT_ATTENTION], set_priority=True
+    # ):
+        # print(torch.nn.attention.sdpa_kernel(backends=[SDPBackend.FLASH_ATTENTION, SDPBackend.CUDNN_ATTENTION, SDPBackend.EFFICIENT_ATTENTION]))
+
+    with sdpa_kernel([SDPBackend.FLASH_ATTENTION, SDPBackend.CUDNN_ATTENTION], set_priority=True):
         out = torchF.scaled_dot_product_attention(q, k, v, dropout_p=dropout)
     out = out.transpose(1, 2)
-
-    # with sdpa_kernel([SDPBackend.CUDNN_ATTENTION, SDPBackend.MATH]):
-    #     out = torchF.scaled_dot_product_attention(q, k, v, dropout_p=dropout)
-    # out = out.transpose(1, 2)
 
     out = out.reshape(b, n, cv)
     return out

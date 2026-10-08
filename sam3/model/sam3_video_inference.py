@@ -39,6 +39,8 @@ class Sam3VideoInference(Sam3VideoBase):
         max_num_objects=1,
         num_obj_for_compile=1,        
         use_fa3 = False,
+        video_loader_type="cv2",
+        apply_temporal_disambiguation=True,
         **kwargs,
     ):
         """
@@ -59,6 +61,8 @@ class Sam3VideoInference(Sam3VideoBase):
         self.use_fa3 = use_fa3
         self.max_num_objects = max_num_objects
         self.num_obj_for_compile = num_obj_for_compile
+        self.video_loader_type = video_loader_type
+        self.apply_temporal_disambiguation = apply_temporal_disambiguation  
 
     @torch.inference_mode()
     def init_state(
@@ -67,7 +71,7 @@ class Sam3VideoInference(Sam3VideoBase):
         offload_video_to_cpu=False,
         offload_state_to_cpu=False,
         async_loading_frames=False,
-        video_loader_type="cv2",
+        video_loader_type="torchcodec",
     ):
         """Initialize an inference state from `resource_path` (an image or a video)."""
         images, orig_height, orig_width = load_resource_as_video_frames(
@@ -977,6 +981,8 @@ class Sam3VideoInferenceWithInstanceInteractivity(Sam3VideoInference):
         refinement_detector_cond_frame_removal_window=16,
         max_num_objects=1,
         num_obj_for_compile=1,
+        video_loader_type="torchcodec",
+        apply_temporal_disambiguation=True,
         **kwargs,
     ):
         """
@@ -994,6 +1000,8 @@ class Sam3VideoInferenceWithInstanceInteractivity(Sam3VideoInference):
         self.use_prev_mem_frame = use_prev_mem_frame
         self.max_num_objects = max_num_objects
         self.num_obj_for_compile = num_obj_for_compile 
+        self.video_loader_type = video_loader_type
+        self.apply_temporal_disambiguation = apply_temporal_disambiguation
         self.use_stateless_refinement = use_stateless_refinement
         self.refinement_detector_cond_frame_removal_window = (
             refinement_detector_cond_frame_removal_window

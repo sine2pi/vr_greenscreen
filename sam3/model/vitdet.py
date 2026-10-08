@@ -20,7 +20,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.checkpoint as checkpoint
-from torch.nn.attention import sdpa_kernel, SDPBackend
+
 try:
     from timm.layers import DropPath, trunc_normal_
 except ModuleNotFoundError:
@@ -553,14 +553,19 @@ class Attention(nn.Module):
 
         assert self.freqs_cis is not None
 
+        rope_idx = getattr(self, "_rope_idx", None)
         if self.use_rope_real:
+            real, imag = self.freqs_cis_real, self.freqs_cis_imag
+            if rope_idx is not None:
+                real, imag = real[rope_idx], imag[rope_idx]
             return apply_rotary_enc_real(
                 q,
                 k,
-                freqs_cis_imag=self.freqs_cis_imag,
-                freqs_cis_real=self.freqs_cis_real,
+                freqs_cis_imag=imag,
+                freqs_cis_real=real,
             )
-        return apply_rotary_enc(q, k, freqs_cis=self.freqs_cis)
+        freqs_cis = self.freqs_cis if rope_idx is None else self.freqs_cis[rope_idx]
+        return apply_rotary_enc(q, k, freqs_cis=freqs_cis)
 
     def forward(self, x: Tensor) -> Tensor:
         s = 1 if self.cls_token else 0  # used to exclude cls_token
@@ -594,6 +599,7 @@ class Attention(nn.Module):
                 relative_coords=self.relative_coords,
             )
 
+            # sdpa expects [B, nheads, H*W, C] so we transpose back
             q = q.reshape(B, self.num_heads, H * W, -1)
             k = k.reshape(B, self.num_heads, H * W, -1)
 
@@ -608,12 +614,6 @@ class Attention(nn.Module):
                 x = F.scaled_dot_product_attention(q, k, v)
         else:
             raise NotImplementedError
-
-        # if self.attn_type == AttentionType.Vanilla:
-        #     # with sdpa_kernel([SDPBackend.CUDNN_ATTENTION, SDPBackend.MATH]):
-        #     x = F.scaled_dot_product_attention(q, k, v)
-        # else:
-        #     raise NotImplementedError
 
         if ndim == 4:
             x = (
@@ -942,6 +942,45 @@ class ViT(nn.Module):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
 
+    def set_ignore_pixels(self, ignore):
+        """bool HxW mask (True = ignore) or None. The ViT then runs on a crop of the patch grid that
+        covers all non-ignored patches (inference only). Windowed blocks see the crop re-tiled in
+        full windows; global blocks use the original RoPE positions of the kept tokens."""
+        self._crop_cache = {}
+        self.ignore_pixels = None if ignore is None else torch.as_tensor(ignore).float()
+
+    def _get_crop(self, h, w, device):
+        if getattr(self, "ignore_pixels", None) is None or self.retain_cls_token:
+            return None
+        key = (h, w, str(device))
+        if key not in self._crop_cache:
+            frac = F.adaptive_avg_pool2d(
+                self.ignore_pixels[None, None].to(device), (h, w)
+            )[0, 0]
+            keep = frac < 0.999
+            crop = None
+            if keep.any():
+                rows = keep.any(1).nonzero().squeeze(1)
+                cols = keep.any(0).nonzero().squeeze(1)
+                ws = max((b.window_size for b in self.blocks), default=0) or 1
+
+                def span(lo, hi, dim):
+                    # grow to whole windows (using real neighbouring tokens, not padding)
+                    n = min(dim, -(-(hi - lo + 1) // ws) * ws)
+                    s = min(max(lo - (n - (hi - lo + 1)) // 2, 0), dim - n)
+                    return s, s + n
+
+                r0, r1 = span(int(rows[0]), int(rows[-1]), h)
+                c0, c1 = span(int(cols[0]), int(cols[-1]), w)
+                if (r1 - r0) * (c1 - c0) < h * w:
+                    idx = (
+                        torch.arange(r0, r1, device=device)[:, None] * w
+                        + torch.arange(c0, c1, device=device)[None, :]
+                    ).flatten()
+                    crop = (r0, r1, c0, c1, idx)
+            self._crop_cache[key] = crop
+        return self._crop_cache[key]
+
     def forward(self, tensor_list):
         if isinstance(tensor_list, NestedTensor):
             x = tensor_list.tensors
@@ -952,6 +991,16 @@ class ViT(nn.Module):
 
         x = self.patch_embed(x)
         h, w = x.shape[1], x.shape[2]
+
+        crop = None
+        if not self.training and not self.return_interm_layers and self.pos_embed is None:
+            crop = self._get_crop(h, w, x.device)
+        if crop is not None:
+            r0, r1, c0, c1, crop_idx = crop
+            x = x[:, r0:r1, c0:c1]
+            for blk in self.blocks:
+                if blk.window_size == 0:
+                    blk.attn._rope_idx = crop_idx
 
         s = 0
         if self.retain_cls_token:
@@ -987,6 +1036,11 @@ class ViT(nn.Module):
                 feats = x[:, s:]
                 if feats.ndim == 4:
                     feats = feats.permute(0, 3, 1, 2)
+                    if crop is not None:
+                        # restore the full grid by replicating the crop's edge features
+                        feats = F.pad(
+                            feats, (c0, w - c1, r0, h - r1), mode="replicate"
+                        )
                 else:
                     assert feats.ndim == 3
                     h = w = math.sqrt(feats.shape[1])
@@ -1003,6 +1057,11 @@ class ViT(nn.Module):
                     outputs.append(NestedTensor(feats, masks))
                 else:
                     outputs.append(feats)
+
+        if crop is not None:
+            for blk in self.blocks:
+                if blk.window_size == 0:
+                    blk.attn._rope_idx = None
 
         return outputs
 

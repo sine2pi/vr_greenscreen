@@ -3,6 +3,7 @@
 
 # pyre-unsafe
 
+import math
 from typing import Any, Dict, List, Optional, Tuple
 
 import torch
@@ -10,7 +11,6 @@ from torch import nn, Tensor
 
 from .act_ckpt_utils import activation_ckpt_wrapper
 from .model_misc import get_activation_fn, get_clones, get_valid_ratio
-
 
 class TransformerEncoderLayer(nn.Module):
     """
@@ -250,7 +250,6 @@ class TransformerEncoderLayer(nn.Module):
             # **kwds,
         )
 
-
 class TransformerEncoder(nn.Module):
     """
     Transformer encoder that processes multi-level features.
@@ -298,6 +297,31 @@ class TransformerEncoder(nn.Module):
         # in selected layers)
         for layer_idx, layer in enumerate(self.layers):
             layer.layer_idx = layer_idx
+
+    def set_ignore_pixels(self, ignore):
+        """bool HxW mask (True = ignore) or None. Fully ignored patches skip the encoder layers (inference only)."""
+        self._keep_cache = {}
+        self.ignore_pixels = None if ignore is None else torch.as_tensor(ignore).float()
+
+    def _get_keep_idx(self, num_tokens, device):
+        ignore = getattr(self, "ignore_pixels", None)
+        if ignore is None:
+            return None
+        cache = self.__dict__.setdefault("_keep_cache", {})
+        key = (num_tokens, str(device))
+        if key not in cache:
+            g = math.isqrt(num_tokens)
+            idx = None
+            if g * g == num_tokens:
+                frac = torch.nn.functional.adaptive_avg_pool2d(
+                    ignore[None, None].to(device), (g, g)
+                ).flatten()
+                keep = frac < 0.999
+                num_keep = int(keep.sum())
+                if 0 < num_keep < num_tokens:
+                    idx = keep.nonzero().squeeze(1)
+            cache[key] = idx
+        return cache[key]
 
     @staticmethod
     def get_reference_points(spatial_shapes, valid_ratios, device):
@@ -428,15 +452,32 @@ class TransformerEncoder(nn.Module):
         )
 
         output = src_flatten
+        full_output = None
+        keep_idx = None
+        if not self.training and self.num_feature_levels == 1:
+            keep_idx = self._get_keep_idx(src_flatten.shape[1], src_flatten.device)
+        if keep_idx is not None:
+            # Fuse only the kept tokens; ignored positions keep their backbone features
+            full_output = src_flatten
+            output = src_flatten.index_select(1, keep_idx)
+            layer_pos = lvl_pos_embed_flatten.index_select(1, keep_idx)
+            layer_pad = (
+                key_padding_masks_flatten.index_select(1, keep_idx)
+                if key_padding_masks_flatten is not None
+                else None
+            )
+        else:
+            layer_pos = lvl_pos_embed_flatten
+            layer_pad = key_padding_masks_flatten
         for layer in self.layers:
             layer_kwargs = {}
 
             assert isinstance(layer, TransformerEncoderLayer)
             layer_kwargs["memory"] = prompt
             layer_kwargs["memory_key_padding_mask"] = prompt_key_padding_mask
-            layer_kwargs["query_pos"] = lvl_pos_embed_flatten
+            layer_kwargs["query_pos"] = layer_pos
             layer_kwargs["tgt"] = output
-            layer_kwargs["tgt_key_padding_mask"] = key_padding_masks_flatten
+            layer_kwargs["tgt_key_padding_mask"] = layer_pad
 
             if self.training:
                 assert self.use_act_checkpoint, "activation ckpt not enabled in encoder"
@@ -446,6 +487,8 @@ class TransformerEncoder(nn.Module):
                 **layer_kwargs,
                 act_ckpt_enable=self.training and self.use_act_checkpoint,
             )
+        if keep_idx is not None:
+            output = full_output.index_copy(1, keep_idx, output)
         # return as seq first
         return (
             output.transpose(0, 1),
@@ -459,7 +502,6 @@ class TransformerEncoder(nn.Module):
             spatial_shapes,
             valid_ratios,
         )
-
 
 class TransformerEncoderFusion(TransformerEncoder):
     """
@@ -577,7 +619,6 @@ class TransformerEncoderFusion(TransformerEncoder):
             "spatial_shapes": spatial_shapes,
             "valid_ratios": valid_ratios,
         }
-
 
 def pool_text_feat(prompt, prompt_mask, pool_with_mask):
     # prompt has shape (seq, bs, dim)
