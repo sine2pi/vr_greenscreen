@@ -44,6 +44,7 @@ from sam3.model.video_tracking_multiplex import VideoTrackingDynamicMultiplex
 from sam3.model.vitdet import ViT
 from sam3.model.vl_combiner import SAM3VLBackbone, SAM3VLBackboneTri, TriHeadVisionOnly
 from sam3.sam.transformer import RoPEAttention
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def _setup_tf32() -> None:
@@ -57,46 +58,6 @@ def _setup_tf32() -> None:
 _setup_tf32()
 
 IMAGE_SIZE = 1008
-
-def download_ckpt_from_hf(version="sam3", force_download=False, local_files_only=False, token=None):
-    from huggingface_hub import hf_hub_download
-
-    if version == "sam3.1":
-        repo_id = "sin2piusc/sam31sin"
-        ckpt_name = "sam3.1_multiplex.pt"
-        cfg_name = "config.json"
-
-    elif version == "sam3lite":
-        repo_id = "vil-uob/sam3-litetext-l"
-        # repo_id = vil-uob/sam3-litetext-s0
-        ckpt_name = "model.safetensors"
-        cfg_name = "config.json"
-
-    elif version == "sam3image":
-        repo_id = "sin2piusc/sam3_fta"
-        ckpt_name = "sam3.pth"
-        cfg_name = "config.json"
-
-    elif version == "sam3m":
-        repo_id = "feyninc/multimatte"
-        ckpt_name = "model.safetensors"
-        cfg_name = "config.json"
-
-    elif version == "local":
-        checkpoint_path = r"sam3/sam3.pt"
-
-    else:
-        repo_id = "facebook/sam3"
-        ckpt_name = "sam3.pt"
-        cfg_name = "config.json"
-
-    return hf_hub_download(
-            repo_id=repo_id,
-            filename=ckpt_name,
-            force_download=force_download,
-            local_files_only=local_files_only,
-            token=token,
-        )
 
 def _slice_tensor_to_shape_if_possible(src: torch.Tensor, target_shape: torch.Size):
     """Slice src to target_shape when every target dim is <= src dim."""
@@ -148,11 +109,11 @@ def _create_position_encoding(precompute_resolution=None):
         scale=None,
         temperature=10000,
         precompute_resolution=precompute_resolution,
-        
+        use_fa3=False,
     )
 
-def _create_vit_backbone(compile_mode=None, use_rope_real=True):
-    print(f"Creating ViT backbone with compile_mode={compile_mode}, use_rope_real={use_rope_real}")
+def _create_vit_backbone(compile_mode=None, use_fa3=False, use_rope_real=True):
+    # print(f"Creating ViT backbone with compile_mode={compile_mode}, use_fa3={use_fa3}, use_rope_real={use_rope_real}")
     return ViT(
         img_size=1008,
         pretrain_img_size=336,
@@ -164,8 +125,8 @@ def _create_vit_backbone(compile_mode=None, use_rope_real=True):
         norm_layer="LayerNorm",
         drop_path_rate=0.1,
         qkv_bias=True,
-        use_abs_pos=True,
-        tile_abs_pos=True,
+        use_abs_pos=False,
+        tile_abs_pos=False,
         global_att_blocks=(7, 15, 23, 31),
         rel_pos_blocks=(),
         use_rope=True,
@@ -178,8 +139,8 @@ def _create_vit_backbone(compile_mode=None, use_rope_real=True):
         return_interm_layers=False,
         bias_patch_embed=False,
         compile_mode=compile_mode,
-        
-        use_rope_real=False,
+        use_fa3=use_fa3,
+        use_rope_real=use_rope_real,
 
     )
 
@@ -214,14 +175,14 @@ def _create_transformer_encoder(use_fa3=False) -> TransformerEncoderFusion:
             dropout=0.1,
             embed_dim=256,
             batch_first=True,
-            
+            use_fa3=use_fa3,
         ),
         cross_attention=MultiheadAttention(
             num_heads=8,
             dropout=0.1,
             embed_dim=256,
             batch_first=True,
-            
+            use_fa3=use_fa3,
         ),
     )
 
@@ -248,7 +209,7 @@ def _create_transformer_decoder(use_fa3=False) -> TransformerDecoder:
             num_heads=8,
             dropout=0.1,
             embed_dim=256,
-            
+            use_fa3=use_fa3,
         ),
         n_heads=8,
         use_text_cross_attention=True,
@@ -300,7 +261,7 @@ def _create_segmentation_head(compile_mode=None, use_fa3=False):
         num_heads=8,
         dropout=0,
         embed_dim=256,
-        
+        use_fa3=use_fa3,
     )
 
     segmentation_head = UniversalSegmentationHead(
@@ -449,7 +410,7 @@ def _create_tracker_transformer():
         dropout=0.1,
         rope_theta=10000.0,
         feat_sizes=[72, 72],
-        
+        use_fa3=False,
         use_rope_real=True,
     )
 
@@ -462,7 +423,7 @@ def _create_tracker_transformer():
         rope_theta=10000.0,
         feat_sizes=[72, 72],
         rope_k_repeat=True,
-        
+        use_fa3=False,
         use_rope_real=True,
     )
 
@@ -563,7 +524,7 @@ def _create_vision_backbone(
     compile_mode=None, enable_inst_interactivity=True, use_fa3 = False,
 ) -> Sam3DualViTDetNeck:
     position_encoding = _create_position_encoding(precompute_resolution=1008)
-    vit_backbone: ViT = _create_vit_backbone(compile_mode=compile_mode, use_fa3=False)
+    vit_backbone: ViT = _create_vit_backbone(compile_mode=compile_mode, use_fa3=use_fa3)
     vit_neck: Sam3DualViTDetNeck = _create_vit_neck(
         position_encoding,
         vit_backbone,
@@ -574,9 +535,8 @@ def _create_vision_backbone(
 def _create_sam3_transformer(
     has_presence_token: bool = True, use_fa3: bool = False
 ) -> TransformerWrapper:
-    encoder: TransformerEncoderFusion = _create_transformer_encoder(use_fa3=False)
-    decoder: TransformerDecoder = _create_transformer_decoder(use_fa3=False)
-
+    encoder: TransformerEncoderFusion = _create_transformer_encoder(use_fa3=use_fa3)
+    decoder: TransformerDecoder = _create_transformer_decoder(use_fa3=use_fa3)
     return TransformerWrapper(encoder=encoder, decoder=decoder, d_model=256)
 
 def _setup_device_and_mode(model, device, eval_mode):
@@ -588,16 +548,16 @@ def _setup_device_and_mode(model, device, eval_mode):
 
 def build_sam3_image_model(
     bpe_path=None,
-    device="cuda" if torch.cuda.is_available() else "cpu",
+    device=device,
     eval_mode=True,
     checkpoint_path=None,
     load_from_HF=True,
     enable_segmentation=True,
     enable_inst_interactivity=False,
     compile=False,
-    
+    use_fa3=False,
     model=None,
-    version="sam3",
+    version="sam3image",
 
 ):
 
@@ -620,7 +580,7 @@ def build_sam3_image_model(
     dot_prod_scoring = _create_dot_product_scoring()
 
     segmentation_head = (
-        _create_segmentation_head(compile_mode=compile_mode, use_fa3=False)
+        _create_segmentation_head(compile_mode=compile_mode, use_fa3=use_fa3)
         if enable_segmentation
         else None
     )
@@ -643,7 +603,7 @@ def build_sam3_image_model(
     )
 
     if checkpoint_path is None:
-        checkpoint_path = download_ckpt_from_hf(version=version)
+        checkpoint_path = _download_ckpt_from_hf(version=version)
     with g_pathmgr.open(checkpoint_path, "rb") as f:
         loaded_ckpt = torch.load(f, weights_only=True, map_location="cpu")
 
@@ -670,13 +630,12 @@ def build_sam3_video_model(
     geo_encoder_use_img_cross_attn: bool = True,
     strict_state_dict_loading: bool = False,
     apply_temporal_disambiguation: bool = True,
-    device="cuda" if torch.cuda.is_available() else "cpu",
+    device=device,
     compile=False,
     max_num_objects=1,
     num_obj_for_compile=1,
     image_size: int = IMAGE_SIZE,
     eval_mode=False,
-    model=None,
     enable_segmentation=None,
     use_rope_real = False,
 
@@ -698,7 +657,7 @@ def build_sam3_video_model(
     visual_neck = _create_vision_backbone(use_fa3 = use_fa3)
     text_encoder = _create_text_encoder(bpe_path)
     backbone = SAM3VLBackbone(scalp=1, visual=visual_neck, text=text_encoder)
-    transformer = _create_sam3_transformer(has_presence_token=has_presence_token, use_fa3=False)
+    transformer = _create_sam3_transformer(has_presence_token=has_presence_token, use_fa3=use_fa3)
     segmentation_head: UniversalSegmentationHead = _create_segmentation_head()
     input_geometry_encoder = _create_geometry_encoder()
 
@@ -791,12 +750,15 @@ def build_sam3_video_model(
         )
 
     if checkpoint_path is not None:
-
         with g_pathmgr.open(checkpoint_path, "rb") as f:
-
             model.load_state_dict(torch.load(f, weights_only=True, map_location='cpu'), strict=False)
 
-    model.to(device=device)
+    model.to(device)
+    if eval_mode:
+        model.eval()
+    else:
+        model.train()
+
     return model
 
 def build_sam3_video_predictor(
@@ -820,7 +782,7 @@ def build_sam3_video_predictor(
 
     from sam3.model.sam3_video_predictor import Sam3VideoPredictorMultiGPU
 
-    return Sam3VideoPredictorMultiGPU(checkpoint_path=checkpoint_path, bpe_path=bpe_path, has_presence_token=has_presence_token, geo_encoder_use_img_cross_attn=geo_encoder_use_img_cross_attn, strict_state_dict_loading=strict_state_dict_loading, async_loading_frames=async_loading_frames, video_loader_type=video_loader_type, apply_temporal_disambiguation=apply_temporal_disambiguation, compile=compile, max_num_objects=max_num_objects, num_obj_for_compile=num_obj_for_compile, **model_kwargs)
+    return Sam3VideoPredictorMultiGPU(checkpoint_path=checkpoint_path, bpe_path=bpe_path, has_presence_token=has_presence_token, geo_encoder_use_img_cross_attn=geo_encoder_use_img_cross_attn, strict_state_dict_loading=strict_state_dict_loading, async_loading_frames=async_loading_frames, video_loader_type=video_loader_type, apply_temporal_disambiguation=apply_temporal_disambiguation, compile=compile, max_num_objects=max_num_objects, num_obj_for_compile=num_obj_for_compile, use_fa3=use_fa3, **model_kwargs)
 
 def _create_multiplex_maskmem_backbone(multiplex_count=16):
     position_encoding = PositionEmbeddingSine(
@@ -860,14 +822,14 @@ def _create_multiplex_maskmem_backbone(multiplex_count=16):
 
     return maskmem_backbone
 
-def _create_multiplex_transformer(use_rope_real=True):
+def _create_multiplex_transformer(use_fa3=False, use_rope_real=True):
     self_attention_rope = SimpleRoPEAttention(
         d_model=256,
         num_heads=8,
         dropout_p=0.1,
         rope_theta=10000.0,
         feat_sizes=[72, 72],
-        
+        use_fa3=use_fa3,
         use_rope_real=use_rope_real,
     )
 
@@ -878,7 +840,7 @@ def _create_multiplex_transformer(use_rope_real=True):
         rope_theta=10000.0,
         feat_sizes=[72, 72],
         rope_k_repeat=True,
-        
+        use_fa3=use_fa3,
         use_rope_real=use_rope_real,
     )
 
@@ -915,11 +877,11 @@ def _create_multiplex_transformer(use_rope_real=True):
     return transformer
 
 def _create_multiplex_tri_backbone(
-    compile_mode=None, use_rope_real=True
+    compile_mode=None, use_fa3=False, use_rope_real=True
 ):
     position_encoding = _create_position_encoding(precompute_resolution=1008)
     vit_backbone = _create_vit_backbone(
-        compile_mode=compile_mode, use_rope_real=use_rope_real
+        compile_mode=compile_mode, use_fa3=use_fa3, use_rope_real=use_rope_real
     )
     tri_neck = Sam3TriViTDetNeck(
         trunk=vit_backbone,
@@ -935,6 +897,7 @@ def build_sam3_multiplex_video_model(
     checkpoint_path=None,
     load_from_HF=False,
     multiplex_count=16,
+    use_fa3=False,
     use_rope_real=False,
     compile=False,
     default_output_prob_thresh=0.1,
@@ -942,18 +905,20 @@ def build_sam3_multiplex_video_model(
     num_obj_for_compile=1,
     warm_up=False,
     strict_state_dict_loading=False,
-    device="cuda",
+    device=device,
     eval_mode=False,
     model=None,
     enable_segmentation=None,
+    video_loader_type="torchcodec", 
+    apply_temporal_disambiguation=True,
 ):
     maskmem_backbone = _create_multiplex_maskmem_backbone(
         multiplex_count=multiplex_count)
 
     transformer = _create_multiplex_transformer(
-        use_rope_real=use_rope_real)
+        use_fa3=use_fa3, use_rope_real=use_rope_real)
 
-    tri_neck = _create_multiplex_tri_backbone(
+    tri_neck = _create_multiplex_tri_backbone(use_fa3=use_fa3,
         compile_mode="max-autotune" if compile else None)
 
     backbone = TriHeadVisionOnly(
@@ -1023,9 +988,16 @@ def build_sam3_multiplex_video_model(
         use_memory_selection=False,
         max_num_objects=max_num_objects,
         num_obj_for_compile=num_obj_for_compile,
+        video_loader_type=video_loader_type,
+        apply_temporal_disambiguation=apply_temporal_disambiguation,
     )
 
     model.to(device)
+    if eval_mode:
+        model.eval()
+    else:
+        model.train()
+
     return model
 
 def build_sam3_multiplex_video_predictor(
@@ -1033,6 +1005,7 @@ def build_sam3_multiplex_video_predictor(
     checkpoint_path=None,
     load_from_HF=False,
     multiplex_count=16,
+    use_fa3=False,
     use_rope_real=False,
     compile=False,
     default_output_prob_thresh=0.1,
@@ -1042,10 +1015,11 @@ def build_sam3_multiplex_video_predictor(
     max_num_objects=1,
     num_obj_for_compile=1,
     session_expiration_sec=1200,
-    device="cuda",
+    device=device,
     eval_mode=False,
-    model=None,
     enable_segmentation=None,
+    video_loader_type="cv2", 
+    apply_temporal_disambiguation=True,
 ):
     from sam3.model.sam3_multiplex_base import Sam3MultiplexPredictorWrapper
     from sam3.model.sam3_multiplex_detector import Sam3MultiplexDetector
@@ -1067,7 +1041,7 @@ def build_sam3_multiplex_video_predictor(
         checkpoint_path=checkpoint_path,
         load_from_HF=load_from_HF,
         multiplex_count=multiplex_count,
-        
+        use_fa3=use_fa3,
         use_rope_real=use_rope_real,
         compile=compile,
         default_output_prob_thresh=default_output_prob_thresh,
@@ -1076,6 +1050,9 @@ def build_sam3_multiplex_video_predictor(
         strict_state_dict_loading=False,
         max_num_objects=max_num_objects,
         num_obj_for_compile=num_obj_for_compile,
+        device=device,
+        video_loader_type=video_loader_type,
+        apply_temporal_disambiguation=apply_temporal_disambiguation,
     )
     del tracker_model.backbone
     tracker_model.backbone = None
@@ -1091,12 +1068,12 @@ def build_sam3_multiplex_video_predictor(
     )
 
     tri_neck = _create_multiplex_tri_backbone(
-        compile_mode=None, use_rope_real=use_rope_real
+        compile_mode=None, use_fa3=use_fa3, use_rope_real=use_rope_real
     )
     text_encoder = _create_text_encoder(bpe_path)
     backbone = SAM3VLBackboneTri(scalp=0, visual=tri_neck, text=text_encoder)
-    transformer = _create_sam3_transformer(use_fa3=False)
-    segmentation_head = _create_segmentation_head(use_fa3=False)
+    transformer = _create_sam3_transformer(use_fa3=use_fa3)
+    segmentation_head = _create_segmentation_head(use_fa3=use_fa3)
     geometry_encoder = _create_geometry_encoder()
     dot_prod_scoring = _create_dot_product_scoring()
 
@@ -1131,7 +1108,7 @@ def build_sam3_multiplex_video_predictor(
         suppress_unmatched_only_within_hotstart=False,
         suppress_overlapping_based_on_recent_occlusion_threshold=0.0,
         suppress_det_close_to_boundary=True,
-        fill_hole_area=0,
+        fill_hole_area=8,
         recondition_every_nth_frame=16,
         use_iom_recondition=False,
         iom_thresh_recondition=0,
@@ -1142,7 +1119,7 @@ def build_sam3_multiplex_video_predictor(
         use_batched_grounding=False,
         batched_grounding_batch_size=0,
         max_num_kboxes=0,
-        sprinkle_removal_area=0,
+        sprinkle_removal_area=16,
         is_multiplex=True,
         image_size=1008,
         image_mean=(0.5, 0.5, 0.5),
@@ -1153,7 +1130,7 @@ def build_sam3_multiplex_video_predictor(
     )
 
     if checkpoint_path is None:
-        checkpoint_path = download_ckpt_from_hf(version="sam3")
+        checkpoint_path = _download_ckpt_from_hf(version="sam3")
 
     if checkpoint_path is not None:
         with g_pathmgr.open(checkpoint_path, "rb") as f:
@@ -1183,7 +1160,11 @@ def build_sam3_multiplex_video_predictor(
         prepared_ckpt = _prepare_multiplex_compatible_state_dict(model, loaded_ckpt)
         model.load_state_dict(prepared_ckpt, strict=False)
 
-    model.cuda().eval()
+    model.to(device)
+    if eval_mode:
+        model.eval()
+    else:
+        model.train()
 
     predictor = Sam3MultiplexVideoPredictor(
         model=model,
@@ -1204,6 +1185,7 @@ def build_sam3_predictor(
     warm_up: bool = False,
     max_num_objects: int = 1,
     multiplex_count: int = 16,
+    use_fa3: bool = False,
     use_rope_real: bool = False,
     async_loading_frames: bool = True,
     num_obj_for_compile=1,
@@ -1219,12 +1201,15 @@ def build_sam3_predictor(
             bpe_path=bpe_path,
             max_num_objects=max_num_objects,
             multiplex_count=multiplex_count,
+            use_fa3=use_fa3,
             use_rope_real=use_rope_real,
             compile=compile,
             warm_up=warm_up,
             async_loading_frames=async_loading_frames,
             num_obj_for_compile=num_obj_for_compile,
-            device="cuda",
+            video_loader_type=video_loader_type,
+            apply_temporal_disambiguation=apply_temporal_disambiguation,
+            device=device,
             **kwargs,
         )
         
@@ -1234,10 +1219,13 @@ def build_sam3_predictor(
             bpe_path=bpe_path,
             compile=compile,
             async_loading_frames=async_loading_frames,
+            use_fa3 = use_fa3,
             use_rope_real=use_rope_real,
             max_num_objects= max_num_objects,
             num_obj_for_compile=num_obj_for_compile,
             apply_temporal_disambiguation=apply_temporal_disambiguation,
+            video_loader_type=video_loader_type,
+            device=device,
             **kwargs,
         )
 
@@ -1248,7 +1236,7 @@ def _remove_freqs_cis_keys(state_dict):
         if not key.endswith("freqs_cis")
     }
 
-def _torch_load_with(f, ckpt_path):
+def _torch_load_fallback(f, ckpt_path):
     try:
         return torch.load(f, map_location="cpu", weights_only=True)
     except TypeError:
@@ -1264,17 +1252,19 @@ def _torch_load_with(f, ckpt_path):
             f.seek(0)
         return torch.load(f, map_location="cpu", weights_only=False)
 
-# def _setup_device_and_mode(model, eval_mode):
+def _setup_device_and_mode(model, eval_mode):
 
-#     if device.startswith("cuda"):
-#         model = model.to(device)
-#     if eval_mode:
-#         model.eval()
-#     return model
+    model.to(device=device)
+    if eval_mode:
+        model.eval()
+    else:
+        model.train()
+
+    return model
 
 # def _load_checkpoint(model, checkpoint_path, version = version, interactive=False, image_size=1008, strict_state_dict_loading=False):
 #     if checkpoint_path is None:
-#         checkpoint_path = download_ckpt_from_hf(version=version)
+#         checkpoint_path = _download_ckpt_from_hf(version=version)
 
 #     if checkpoint_path is not None:
 #         with g_pathmgr.open(checkpoint_path, "rb") as f:
@@ -1304,54 +1294,402 @@ def _torch_load_with(f, ckpt_path):
 #         prepared_ckpt = _prepare_multiplex_compatible_state_dict(model, loaded_ckpt)
 #         model.load_state_dict(prepared_ckpt, strict=False)
 
-#     model.cuda().eval()
-
-# def _load_checkpoint(model, checkpoint_path, interactive=False, image_size=1008, strict_state_dict_loading=False):
-#     image_size = 1008
-#     if checkpoint_path is None:
-#         checkpoint_path = download_ckpt_from_hf()
-
-#     if checkpoint_path is not None:
-#         with g_pathmgr.open(checkpoint_path, "rb") as f:
-#             ckpt = torch.load(f, map_location="cpu", weights_only=True)
-#         if "model" in ckpt and isinstance(ckpt["model"], dict):
-#             ckpt = ckpt["model"]
-#         if image_size != IMAGE_SIZE:
-#             ckpt = _remove_freqs_cis_keys(ckpt)
-
-#         missing_keys, unexpected_keys = model.load_state_dict(
-#             ckpt,
-#             strict=(
-#                 strict_state_dict_loading
-#                 and image_size == IMAGE_SIZE
-#             ),
-#         )
-#         if image_size != IMAGE_SIZE:
-#             missing_keys = [
-#                 key for key in missing_keys if not key.endswith("freqs_cis")
-#             ]
-#             if strict_state_dict_loading and (missing_keys or unexpected_keys):
-#                 raise RuntimeError(
-
-#                 )
-#         if missing_keys:
-#             print(f"")
-#         if unexpected_keys:
-#             print(f"")
+#     model.to(device)
+#     if eval_mode:
+#         model.eval()
+#     else:
+#         model.train()
 
 #     return model
 
-def _torch_load_with_fallback(f, ckpt_path):
-    try:
-        return torch.load(f, map_location="cpu", weights_only=True)
-    except TypeError:
-        if hasattr(f, "seek"):
-            f.seek(0)
-        return torch.load(f, map_location="cpu")
-    except Exception as error:
-        if "" not in str(error):
-            raise
+def _download_ckpt_from_hf(version="sam3", force_download=False, local_files_only=False, token=None):
+    from huggingface_hub import hf_hub_download
 
-        if hasattr(f, "seek"):
-            f.seek(0)
-        return torch.load(f, map_location="cpu", weights_only=False)
+    if version == "sam3.1":
+        repo_id = "sin2piusc/sam31sin"
+        ckpt_name = "sam3.1_multiplex.pt"
+        cfg_name = "config.json"
+
+    elif version == "sam3lite":
+        repo_id = "vil-uob/sam3-litetext-l"
+        # repo_id = vil-uob/sam3-litetext-s0
+        ckpt_name = "model.safetensors"
+        cfg_name = "config.json"
+
+    elif version == "sam3image":
+        repo_id = "sin2piusc/sam3_fta"
+        ckpt_name = "sam3.pth"
+        cfg_name = "config.json"
+
+    elif version == "sam3m":
+        repo_id = "feyninc/multimatte"
+        ckpt_name = "model.safetensors"
+        cfg_name = "config.json"
+
+    elif version == "local":
+        checkpoint_path = r"sam3/sam3.pt"
+
+    else:
+        repo_id = "facebook/sam3"
+        ckpt_name = "sam3.pt"
+        cfg_name = "config.json"
+
+    return hf_hub_download(
+            repo_id=repo_id,
+            filename=ckpt_name,
+            force_download=force_download,
+            local_files_only=local_files_only,
+            token=token,
+        )
+
+# from sam3.model.vitdet import ImageEncoderViT
+
+# # Initialize a custom downsized encoder
+# encoder_fewer_layers = ImageEncoderViT(
+#     img_size=1024,
+#     patch_size=16,
+#     in_chans=3,
+#     embed_dim=768,      # Keep original embedding dimension
+#     depth=6,            # Reduced from standard 12/24/32 depth
+#     num_heads=12,
+#     out_chans=256,
+#     # ... match other original architectural specs (window size, etc.)
+# )
+
+# import torch
+# from sam3.build_sam import sam3_model_registry
+
+# # 1. Load full checkpoint weights safely onto target device
+# checkpoint = torch.load("sam3_vit_b.pth", map_location="cuda")
+# state_dict = checkpoint["model"]
+
+# # 2. Define the sub-selection of layers to retain (e.g., uniform pruning)
+# # For 12 layers down to 6, you can take every 2nd layer or the first 6 layers.
+# retained_layer_indices = [0, 2, 4, 6, 8, 10] 
+# new_state_dict = {}
+
+# # 3. Remap weights dynamically
+# for key, value in state_dict.items():
+#     if "blocks." in key:
+#         # Extract layer index from key string: e.g., 'image_encoder.blocks.11.attn.qkv.weight'
+#         parts = key.split(".")
+#         layer_idx = int(parts[2])
+        
+#         if layer_idx in retained_layer_indices:
+#             new_idx = retained_layer_indices.index(layer_idx)
+#             parts[2] = str(new_idx)
+#             new_key = ".".join(parts)
+#             new_state_dict[new_key] = value
+#     else:
+#         # Keep neck, prompt encoder, and mask decoder keys unchanged
+#         new_state_dict[key] = value
+
+# # 4. Initialize backbone config with new depth and load
+# model_cfg = ... # Load base model config dict
+# model_cfg.image_encoder.depth = len(retained_layer_indices)
+
+# sam3_custom = sam3_model_registry["vit_b_custom"](config=model_cfg)
+# sam3_custom.load_state_dict(new_state_dict, strict=True)
+
+# import torch
+# from sam3.build_sam import sam3_model_registry
+
+# # 1. Fetch a standard base configuration dictionary
+# model_config = get_sam3_config("vit_b") # Placeholder name for your config loading utility
+
+# # 2. Modify the architecture parameters safely before compilation
+# model_config.image_encoder.depth = 4          # Downsize from 12 layers to 4
+# model_config.image_encoder.window_size = 14   # Example architectural adjustment
+
+# # 3. Instantiate a clean model from scratch (Un-trained)
+# sam3_custom = sam3_model_registry["vit_b_custom"](config=model_config)
+
+# # 4. Compile the custom model immediately to verify execution graph
+# # (Using dynamic=True helps if you plan to alter spatial dimensions later)
+# compiled_sam3 = torch.compile(sam3_custom, dynamic=True) 
+
+# # Load the full checkpoint
+# trained_checkpoint = torch.load("trained_sam3.pth", map_location="cuda")
+# trained_state_dict = trained_checkpoint["model"]
+
+# # Inject weights into your custom architecture safely
+# # Non-matching keys (like the deleted backbone layers) will be ignored without crashing
+# missing_keys, unexpected_keys = sam3_custom.load_state_dict(trained_state_dict, strict=False)
+
+# print(f"Successfully loaded matched layers. Mismatched backbone layers ignored: {len(unexpected_keys)}")
+
+# import torch
+# from sam3.model.vitdet import ImageEncoderViT
+# from sam3.model.sam import SAM3
+# from sam3.model.neck import Neck
+# from sam3.model.prompt_encoder import PromptEncoder
+# from sam3.model.mask_decoder import MaskDecoder
+
+# # 1. Define your downsized hyperparameters (Mathematically aligned)
+# TINY_DEPTH = 4          # Few layers
+# TINY_EMBED_DIM = 256    # Drastically reduced hidden dimensions
+# TINY_NUM_HEADS = 4      # Balanced with embed_dim (256 / 4 = 64 head dim)
+# FINAL_CHAN_DIM = 256    # Keep 256 so standard Prompt/Mask decoders compile untouched
+
+# # 2. Initialize the Downsized Backbone
+# image_encoder = ImageEncoderViT(
+#     img_size=1024,
+#     patch_size=16,
+#     in_chans=3,
+#     embed_dim=TINY_EMBED_DIM,
+#     depth=TINY_DEPTH,
+#     num_heads=TINY_NUM_HEADS,
+#     out_chans=FINAL_CHAN_DIM, # Internal projection dimension before the neck
+#     window_size=14,
+#     # Make sure global attention block indices map correctly within your new depth
+#     global_attn_indexes=[1, 3] # Standard SAM3 uses global blocks at specific intervals
+# )
+
+# # 3. Initialize the Neck (Adapts the small backbone dim to the final decoder expectations)
+# neck = Neck(
+#     in_chans=TINY_EMBED_DIM,
+#     out_chans=FINAL_CHAN_DIM
+# )
+
+# # 4. Standard Decoders (These operate independently of backbone size)
+# prompt_encoder = PromptEncoder(
+#     embed_dim=FINAL_CHAN_DIM,
+#     image_embedding_size=(64, 64),
+#     input_image_size=(1024, 1024),
+#     mask_in_chans=16
+# )
+
+# mask_decoder = MaskDecoder(
+#     num_multimask_outputs=3,
+#     transformer_dim=FINAL_CHAN_DIM,
+#     iou_head_depth=3,
+#     iou_head_hidden_dim=256
+# )
+
+# # 5. Assemble the complete custom SAM3 Model
+# sam3_mini_base = SAM3(
+#     image_encoder=image_encoder,
+#     neck=neck,
+#     prompt_encoder=prompt_encoder,
+#     mask_decoder=mask_decoder,
+#     pixel_mean=[123.675, 116.28, 103.53],
+#     pixel_std=[58.395, 57.12, 57.375]
+# )
+
+# # 6. Verify and Compile the Execution Graph
+# sam3_mini_base.to("cuda")
+# compiled_model = torch.compile(sam3_mini_base)
+# print("Model initialized and compiled successfully with fewer layers, dimensions, and heads.")
+
+# To initialize Meta SAM3 with fewer layers (layer pruning or depth downsizing) for the ViT backbone, you need to modify the model configuration dictionary or class initialization to alter the depth parameter and safely slice or map the pretrained weights.
+# Below is the standard programmatic pattern to initialize the model structure with a reduced depth and adapt existing state dicts if you are loading pretrained weights:
+# ## 1. Direct Model Initialization
+# If initializing the backbone from scratch with fewer layers, update the depth argument (e.g., reducing a standard ViT-Base from 12 layers down to 6):
+
+# from sam3.model.vitdet import ImageEncoderViT
+# # Initialize a custom downsized encoderencoder_fewer_layers = ImageEncoderViT(
+#     img_size=1024,
+#     patch_size=16,
+#     in_chans=3,
+#     embed_dim=768,      # Keep original embedding dimension
+#     depth=6,            # Reduced from standard 12/24/32 depth
+#     num_heads=12,
+#     out_chans=256,
+#     # ... match other original architectural specs (window size, etc.)
+# )
+
+# ## 2. Loading Pretrained Weights (Layer Pruning Strategy)
+# When downsizing an existing pretrained model, loading the state dictionary directly will throw an error due to missing keys or mismatched shapes in the sequential blocks. You must filter the state dict explicitly:
+
+# import torchfrom sam3.build_sam import sam3_model_registry
+# # 1. Load full checkpoint weights safely onto target devicecheckpoint = torch.load("sam3_vit_b.pth", map_location="cuda")state_dict = checkpoint["model"]
+# # 2. Define the sub-selection of layers to retain (e.g., uniform pruning)# For 12 layers down to 6, you can take every 2nd layer or the first 6 layers.retained_layer_indices = [0, 2, 4, 6, 8, 10] new_state_dict = {}
+# # 3. Remap weights dynamicallyfor key, value in state_dict.items():
+#     if "blocks." in key:
+#         # Extract layer index from key string: e.g., 'image_encoder.blocks.11.attn.qkv.weight'
+#         parts = key.split(".")
+#         layer_idx = int(parts[2])
+        
+#         if layer_idx in retained_layer_indices:
+#             new_idx = retained_layer_indices.index(layer_idx)
+#             parts[2] = str(new_idx)
+#             new_key = ".".join(parts)
+#             new_state_dict[new_key] = value
+#     else:
+#         # Keep neck, prompt encoder, and mask decoder keys unchanged
+#         new_state_dict[key] = value
+# # 4. Initialize backbone config with new depth and loadmodel_cfg = ... # Load base model config dict
+# model_cfg.image_encoder.depth = len(retained_layer_indices)
+# sam3_custom = sam3_model_registry["vit_b_custom"](config=model_cfg)
+# sam3_custom.load_state_dict(new_state_dict, strict=True)
+
+# ## Architectural Precautions
+
+# * Global/Window Attention Strides: SAM3 utilizes specific structural placements for global vs. window blocks (e.g., every 2nd or 4th block is global). Ensure your downsized depth maps to a valid stride structure so that reshape_for_broadcast and spatial attention configurations match your new layer layout.
+# * Neck Adaptation: Because the final neck expectation relies on feature dimensions from the backbone's terminal layer, maintaining embed_dim and standard output channels preserves downstream compatibility with the prompt encoder and mask decoder without shape mismatches.
+
+# To ensure the correct weight remapping strategy, let me know:
+
+# * Which backbone variant are you downsizing (ViT-B, ViT-L, or ViT-H)?
+# * Are you training from scratch or loading pretrained weights?
+# * What is your target layer count?
+
+# Yes, it is entirely possible to initialize a smaller/fewer-layer SAM3 architecture from scratch, compile it, and then selectively transfer weights in later. Since you plan to modify the architecture dramatically over time, initializing from scratch to ensure compilation first is an excellent, clean starting point.
+# ## Why This Approach Works
+# When you initialize a model from scratch in PyTorch, the network architecture is constructed purely based on configuration definitions. Pretrained weights are not required to compile or run the forward pass.
+# If you decide to transfer weights later from a larger, trained SAM3 checkpoint, you can bypass the strict structural checks by running load_state_dict(..., strict=False). This allows you to cherry-pick compatible components while ignoring mismatched layers.
+# ## Component-by-Component Transfer Strategy
+# A standard SAM3 model consists of several decoupled sub-modules. Even if you drastically reduce or modify the ImageEncoderViT backbone, the other modules can often accept trained weights directly without any structural modification:
+
+# | Module | Structural Impact of Reducing Backbone Layers | Transferability of Trained Weights |
+# |---|---|---|
+# | Image Encoder (Backbone) | High. Modifying the depth (layer count) changes the block indices. | Partial. You can map a subset of layers (e.g., loading blocks 0, 2, 4, 6... into 0, 1, 2, 3...) manually. |
+# | Neck / Spatial Conv | None. It only cares about the final embedding dimension (embed_dim) and output channels (out_chans). | Full. If you keep the hidden dimensions the same, this will load directly. |
+# | Prompt Encoder | None. It operates independently on points, boxes, or text embeddings. | Full. Seamless transfer. |
+# | Mask Decoder | None. It processes the outputs of the neck and prompt encoder. | Full. Seamless transfer. |
+
+# ## The Cleanest Path: Config-Driven Initialization
+# To implement this cleanly, define your structural modifications inside the configuration object before instantiation. This avoids hacking the core source files right away and guarantees the model compiles perfectly.
+
+# import torchfrom sam3.build_sam import sam3_model_registry
+# # 1. Fetch a standard base configuration dictionarymodel_config = get_sam3_config("vit_b") # Placeholder name for your config loading utility
+# # 2. Modify the architecture parameters safely before compilation
+# model_config.image_encoder.depth = 4          # Downsize from 12 layers to 4
+# model_config.image_encoder.window_size = 14   # Example architectural adjustment
+# # 3. Instantiate a clean model from scratch (Un-trained)sam3_custom = sam3_model_registry["vit_b_custom"](config=model_config)
+# # 4. Compile the custom model immediately to verify execution graph# (Using dynamic=True helps if you plan to alter spatial dimensions later)compiled_sam3 = torch.compile(sam3_custom, dynamic=True) 
+
+# ## Transferring Trained Layers Later (strict=False)
+# When you are ready to experiment with injecting trained weights into this custom structure, you can load them safely using the following pattern. Non-matching backbone blocks will be silently ignored, while identical structures (like the mask decoder) will absorb the pretrained weights:
+
+# # Load the full checkpointtrained_checkpoint = torch.load("trained_sam3.pth", map_location="cuda")trained_state_dict = trained_checkpoint["model"]
+# # Inject weights into your custom architecture safely# Non-matching keys (like the deleted backbone layers) will be ignored without crashingmissing_keys, unexpected_keys = sam3_custom.load_state_dict(trained_state_dict, strict=False)
+
+# print(f"Successfully loaded matched layers. Mismatched backbone layers ignored: {len(unexpected_keys)}")
+
+# To help tailor the initialization setup or weight-mapping logic as your architecture evolves, let me know:
+
+# * What specific hidden dimension / embedding dimension (embed_dim) do you plan to use?
+# * Are you planning to alter the attention mechanism itself (e.g., custom windowing or dynamic attention masks)?
+
+# Starting with a highly downsized, standard SAM3 base that compiles and runs is the absolute best way to establish a baseline before you start rewriting the core mechanics (like attention matrices or RoPE positional embeddings).
+# Since you are targeting a specific niche and want to scale down the dimensions (embed_dim), heads (num_heads), and layers (depth) simultaneously, you must keep these three values mathematically synchronized to avoid compilation errors.
+# ## The Dimension-to-Head Alignment Rule
+# When downsizing SAM3, your embedding dimension must be perfectly divisible by your number of attention heads:
+# $$\text{Head Dimension} = \frac{\text{embed\_dim}}{\text{num\_heads}}$$ 
+# In standard architectures (like ViT-B), the head dimension is typically 64 ($768 / 12$). For a ultra-lightweight niche model, you can safely scale down to configurations like:
+
+# * Micro: embed_dim=256, num_heads=4 (Head dim = 64)
+# * Mini: embed_dim=384, num_heads=6 (Head dim = 64)
+# * Slim: embed_dim=512, num_heads=8 (Head dim = 64)
+
+# ## Architectural Bottleneck: The Neck Adaptation
+# If you change the backbone's embed_dim, you must also change the input channel dimension of the Neck module. SAM3's neck expects the backbone's embedding dimension as its input, and scales it to out_chans=256 to feed into the prompt encoder and mask decoder.
+# ## Minimal, Ultra-Downsized SAM3 Base Setup
+# Here is the clean configuration pattern to safely initialize a tiny, un-trained version of SAM3 from scratch. This setup alters the dimensions, heads, and layers while ensuring the downstream neck and decoders remain structurally sound:
+
+# import torchfrom sam3.model.vitdet import ImageEncoderViTfrom sam3.model.sam import SAM3from sam3.model.neck import Neckfrom sam3.model.prompt_encoder import PromptEncoderfrom sam3.model.mask_decoder import MaskDecoder
+# # 1. Define your downsized hyperparameters (Mathematically aligned)TINY_DEPTH = 4          # Few layersTINY_EMBED_DIM = 256    # Drastically reduced hidden dimensionsTINY_NUM_HEADS = 4      # Balanced with embed_dim (256 / 4 = 64 head dim)FINAL_CHAN_DIM = 256    # Keep 256 so standard Prompt/Mask decoders compile untouched
+# # 2. Initialize the Downsized Backboneimage_encoder = ImageEncoderViT(
+#     img_size=1024,
+#     patch_size=16,
+#     in_chans=3,
+#     embed_dim=TINY_EMBED_DIM,
+#     depth=TINY_DEPTH,
+#     num_heads=TINY_NUM_HEADS,
+#     out_chans=FINAL_CHAN_DIM, # Internal projection dimension before the neck
+#     window_size=14,
+#     # Make sure global attention block indices map correctly within your new depth
+#     global_attn_indexes=[1, 3] # Standard SAM3 uses global blocks at specific intervals
+# )
+# # 3. Initialize the Neck (Adapts the small backbone dim to the final decoder expectations)neck = Neck(
+#     in_chans=TINY_EMBED_DIM,
+#     out_chans=FINAL_CHAN_DIM
+# )
+# # 4. Standard Decoders (These operate independently of backbone size)prompt_encoder = PromptEncoder(
+#     embed_dim=FINAL_CHAN_DIM,
+#     image_embedding_size=(64, 64),
+#     input_image_size=(1024, 1024),
+#     mask_in_chans=16
+# )
+# mask_decoder = MaskDecoder(
+#     num_multimask_outputs=3,
+#     transformer_dim=FINAL_CHAN_DIM,
+#     iou_head_depth=3,
+#     iou_head_hidden_dim=256
+# )
+# # 5. Assemble the complete custom SAM3 Modelsam3_mini_base = SAM3(
+#     image_encoder=image_encoder,
+#     neck=neck,
+#     prompt_encoder=prompt_encoder,
+#     mask_decoder=mask_decoder,
+#     pixel_mean=[123.675, 116.28, 103.53],
+#     pixel_std=[58.395, 57.12, 57.375]
+# )
+# # 6. Verify and Compile the Execution Graph
+# sam3_mini_base.to("cuda")compiled_model = torch.compile(sam3_mini_base)
+# print("Model initialized and compiled successfully with fewer layers, dimensions, and heads.")
+
+# ## Next Steps for Architectural Mutation
+# With this baseline compiling, you are perfectly positioned to swap out pieces incrementally:
+
+# * To alter Attention: You can inherit from or swap out the attention blocks inside image_encoder.blocks[i].attn.
+# * To alter RoPE: You can target the positional embedding assignments before the attention forward passes, safe in the knowledge that your tensor channel dimensions match the rest of the network pipeline.
+
+# To help structure the next phase of your pipeline, let me know:
+
+# * What spatial resolution are you planning to pass into the model (e.g., standard 1024x1024, or smaller for your niche data)?
+# * Are you planning to alter the Prompt Encoder inputs (e.g., using points/boxes, or will your niche focus purely on text/dense masks)?
+
+# To initialize Meta SAM3 with fewer layers (layer pruning or depth downsizing) for the ViT backbone, you need to modify the model configuration dictionary or class initialization to alter the depth parameter and safely slice or map the pretrained weights.
+# Below is the standard programmatic pattern to initialize the model structure with a reduced depth and adapt existing state dicts if you are loading pretrained weights:
+# ## 1. Direct Model Initialization
+# If initializing the backbone from scratch with fewer layers, update the depth argument (e.g., reducing a standard ViT-Base from 12 layers down to 6):
+
+# from sam3.model.vitdet import ImageEncoderViT
+# # Initialize a custom downsized encoderencoder_fewer_layers = ImageEncoderViT(
+#     img_size=1024,
+#     patch_size=16,
+#     in_chans=3,
+#     embed_dim=768,      # Keep original embedding dimension
+#     depth=6,            # Reduced from standard 12/24/32 depth
+#     num_heads=12,
+#     out_chans=256,
+#     # ... match other original architectural specs (window size, etc.)
+# )
+
+# ## 2. Loading Pretrained Weights (Layer Pruning Strategy)
+# When downsizing an existing pretrained model, loading the state dictionary directly will throw an error due to missing keys or mismatched shapes in the sequential blocks. You must filter the state dict explicitly:
+
+# import torchfrom sam3.build_sam import sam3_model_registry
+# # 1. Load full checkpoint weights safely onto target devicecheckpoint = torch.load("sam3_vit_b.pth", map_location="cuda")state_dict = checkpoint["model"]
+# # 2. Define the sub-selection of layers to retain (e.g., uniform pruning)# For 12 layers down to 6, you can take every 2nd layer or the first 6 layers.retained_layer_indices = [0, 2, 4, 6, 8, 10] new_state_dict = {}
+# # 3. Remap weights dynamicallyfor key, value in state_dict.items():
+#     if "blocks." in key:
+#         # Extract layer index from key string: e.g., 'image_encoder.blocks.11.attn.qkv.weight'
+#         parts = key.split(".")
+#         layer_idx = int(parts[2])
+        
+#         if layer_idx in retained_layer_indices:
+#             new_idx = retained_layer_indices.index(layer_idx)
+#             parts[2] = str(new_idx)
+#             new_key = ".".join(parts)
+#             new_state_dict[new_key] = value
+#     else:
+#         # Keep neck, prompt encoder, and mask decoder keys unchanged
+#         new_state_dict[key] = value
+# # 4. Initialize backbone config with new depth and loadmodel_cfg = ... # Load base model config dict
+# model_cfg.image_encoder.depth = len(retained_layer_indices)
+# sam3_custom = sam3_model_registry["vit_b_custom"](config=model_cfg)
+# sam3_custom.load_state_dict(new_state_dict, strict=True)
+
+# ## Architectural Precautions
+
+# * Global/Window Attention Strides: SAM3 utilizes specific structural placements for global vs. window blocks (e.g., every 2nd or 4th block is global). Ensure your downsized depth maps to a valid stride structure so that reshape_for_broadcast and spatial attention configurations match your new layer layout.
+# * Neck Adaptation: Because the final neck expectation relies on feature dimensions from the backbone's terminal layer, maintaining embed_dim and standard output channels preserves downstream compatibility with the prompt encoder and mask decoder without shape mismatches.
+
+# To ensure the correct weight remapping strategy, let me know:
+
+# * Which backbone variant are you downsizing (ViT-B, ViT-L, or ViT-H)?
+# * Are you training from scratch or loading pretrained weights?
+# * What is your target layer count?
