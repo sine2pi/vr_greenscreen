@@ -90,6 +90,18 @@ class VideoMetadataManager:
     def clear(self):
         self.data = {}
 
+def load_frame(frame):
+    if isinstance(frame, np.ndarray):
+        img = frame
+    elif isinstance(frame, Image.Image):
+        img = np.array(frame)
+    elif isinstance(frame, (str, os.PathLike)) and os.path.isfile(frame):
+        with Image.open(frame) as im:
+            img = np.array(im.convert("RGB"))
+    else:
+        raise ValueError(f"Invalid video frame type: {type(frame)=}")
+    return img
+
 def check_vfr(video_path: str, max_packets_to_read: int = 500) -> bool:
 
     cmd = [
@@ -171,7 +183,6 @@ def encoder_args(data=None) -> list[str]:
 
     return [
 
-        # '-sws_flags', 'lanczos+full_chroma_int+accurate_rnd+full_chroma_inp',
         '-fps_mode', 'cfr',
         '-r', str(fps),
         '-c:v', ENCODER,
@@ -258,7 +269,7 @@ def norm_video(source_video, w = None, h = None, fps = None, progress_prefix: st
 
     cmd = [
 
-        'ffmpeg', '-y', '-hwaccel', 'cuda',
+        'ffmpeg', '-y', '-hwaccel', 'auto',
         '-i', source_video,
         '-filter_complex', f'[0:v]fps={fps},setpts=N/({fps}*TB),scale=w={wi}:h={hi}:flags=bilinear:out_range=tv:threads=0',
         *enc,
@@ -290,7 +301,7 @@ def cfr_video(source_video) -> str:
     fps = normalize_fps(fps)
 
     cmd = [
-        'ffmpeg', '-y', '-hwaccel', 'cuda',
+        'ffmpeg', '-y', '-hwaccel', 'auto',
         '-i', source_video,
         '-filter_complex', (
             f'[0:v]fps={fps},setpts=N/({fps}*TB),scale=w={data["width"]}:h={data["height"]}:flags=bilinear:out_range=pc:threads=0[v];'
@@ -340,7 +351,7 @@ def resize_video(source_video, output_video, progress_prefix: str = "[resize] ")
 
     cmd = [
 
-        'ffmpeg', '-y', '-hwaccel', 'cuda',
+        'ffmpeg', '-y', '-hwaccel', 'auto',
         '-i', source_video,
         '-filter_complex', f'[0:v]fps={data["fps"]},setpts=N/({data["fps"]}*TB),scale={data["width"]}:{data["height"]}:flags=bilinear',
         *enc,
@@ -497,7 +508,7 @@ def eye_frames(video_path: str, timestamps: list[float], output_dir: str, height
 
         cmd = [
 
-            'ffmpeg', '-y', '-hwaccel', 'cuda',
+            'ffmpeg', '-y', '-hwaccel', 'auto',
             '-ss', str(ts),
             '-i', video_path,
             '-vf', crop_filter,
@@ -566,7 +577,7 @@ def extract_segment_frames(
     )
 
     cmd = [
-        'ffmpeg', '-y', '-hwaccel', 'cuda',
+        'ffmpeg', '-y', '-hwaccel', 'auto',
         "-hide_banner",
     ]
 
@@ -639,7 +650,7 @@ def extract_segment_sbs(
     )
 
     cmd_video = [
-        'ffmpeg', '-y', '-hwaccel', 'cuda',
+        'ffmpeg', '-y', '-hwaccel', 'auto',
         '-hide_banner',
         '-ss', str(keyframe_seek),
         '-i', stereo_video,
@@ -655,7 +666,7 @@ def extract_segment_sbs(
         raise RuntimeError(f"SBS segment extraction failed.\n\nFFmpeg tail:\n{tail}")
 
     cmd_frame = [
-        '-hwaccel', 'cuda',
+        '-hwaccel', 'auto',
         '-i', sbs_video_out,
         '-vf', 'select=eq(n\\,0)',
         '-frames:v', '1',
@@ -709,7 +720,7 @@ def mask_overlay(source_video: str, mask_video: str, output_path: str, backgroun
     )
 
     cmd = [
-        'ffmpeg', '-y', '-hwaccel', 'cuda',
+        'ffmpeg', '-y', '-hwaccel', 'auto',
         '-i', source_video,
         '-i', mask_video,
         '-f', 'lavfi', '-i', f'color=c={background_color}:s={data["width"]}x{data["height"]}:d={data["duration"]}:r={data["fps"]}',
@@ -953,7 +964,7 @@ def pack_video(
 
     cmd: list[str] = [
 
-        'ffmpeg', '-y', '-hwaccel', 'cuda',
+        'ffmpeg', '-y', '-hwaccel', 'auto',
         "-filter_threads", "0",
         "-threads", "0",
         "-i", video_path,
@@ -1076,7 +1087,7 @@ def alpha_decomp(
             "[video][mask]overlay=0:0:format=auto[out]"
         )
         copy_cmd = [
-            'ffmpeg', '-y', '-hwaccel', 'cuda',
+            'ffmpeg', '-y', '-hwaccel', 'auto',
             '-i', str(packed_path),
             '-i', str(cleanup_mask),
             '-filter_complex', clean_filter,
@@ -1086,7 +1097,7 @@ def alpha_decomp(
         ]
     else:
         copy_cmd = [
-            'ffmpeg', '-y', '-hwaccel', 'cuda',
+            'ffmpeg', '-y', '-hwaccel', 'auto',
             '-i', str(packed_path),
             '-map', '0',
             '-c', 'copy',
@@ -1125,7 +1136,7 @@ def alpha_decomp(
     ]
 
     mask_cmd = [
-        'ffmpeg', '-y', '-hwaccel', 'cuda',
+        'ffmpeg', '-y', '-hwaccel', 'auto',
         '-i', str(packed_path),
         '-filter_complex', ';'.join(filter_parts),
         '-map', '[out]',
@@ -1239,7 +1250,7 @@ def fisheye180(input_video: str, flag=False) -> str:
     filter_complex = ';'.join(filter_parts)
 
     cmd = [
-        'ffmpeg', '-y', '-hwaccel', 'cuda',
+        'ffmpeg', '-y', '-hwaccel', 'auto',
         '-i', input_video,
     ]
 
@@ -1443,9 +1454,10 @@ def download_ckpt_from_hf(version="sam3", force_download=False, local_files_only
         )
  
 class sam3_video_inference:
-    def __init__(self, video_path, video_args):
+    def __init__(self, video_path, video_args, frames=None):
 
         self.video_path = video_path
+        self.frames = frames
         self.video_args = video_args
 
         bpe_path = 'assets/bpe_simple_vocab_16e6.txt.gz'
@@ -1602,7 +1614,7 @@ class sam3_video_inference:
 
     @torch.inference_mode()
     def _compute_static_mask(self, tensors):
-        """Boolean HxW mask of border-connected pixels that never change across the sampled frames."""
+
         thresh = float(getattr(self.video_args, "ignore_static", 0.0) or 0.0)
         if thresh <= 0:
             return None
@@ -1620,7 +1632,6 @@ class sam3_video_inference:
             hi = frame.clone() if hi is None else torch.maximum(hi, frame)
         static = ((hi - lo).amax(0) * std < thresh).cpu().numpy()
 
-        # Keep only static regions touching the image border, so flat patches inside the subject are never blanked.
         _, labels = cv2.connectedComponents(static.astype(np.uint8), connectivity=4)
         border = np.unique(np.concatenate([labels[0], labels[-1], labels[:, 0], labels[:, -1]]))
         static = np.isin(labels, border[border != 0])
@@ -1639,7 +1650,6 @@ class sam3_video_inference:
 
     @torch.inference_mode()
     def blank_ignored(self, session_id):
-        """Set the ignored edges and static pixels of the model's input frames to the mean color (0 after normalization)."""
         fracs = self._ignore_fracs()
         state = self.predictor._get_session(session_id)["state"]
         tensors = state["input_batch"].img_batch.tensors
@@ -1650,7 +1660,6 @@ class sam3_video_inference:
         self._set_token_drop(tensors.shape[-2:], fracs, static)
 
     def _set_token_drop(self, hw, fracs, static):
-
         model = self.predictor.model
         mods = [m for m in model.modules() if hasattr(m, "set_ignore_pixels")]
         vits = [m for m in mods if type(m).__name__ == "ViT"]
@@ -1690,36 +1699,27 @@ class sam3_video_inference:
         else:
             raise ValueError(f"Unknown coord_type: {coord_type}")
 
-    def track(self, video_path = None, boxes = None, labels = None, refine_object_0=False, refine_object_1=False, refine_object_2=False, refine_object_3=False, shutdown=True):
+    def track(self, video_path = None, boxes = None, labels = None, refine_object_0=False, refine_object_1=False, refine_object_2=False, refine_object_3=False, shutdown=True, frames=None):
 
         predictor, video_path, prompt, show_plots, add_box, sub_box = self.predictor, self.video_path, self.video_args.prompt, self.video_args.show_plots, self.video_args.add_box, self.video_args.sub_box
         
         if video_path is None:
             video_path = self.video_path
 
-        # if isinstance(video_path, str) and video_path.endswith(".mp4"):
-        #     cap = cv2.VideoCapture(video_path)
-        #     frames = []
-        #     while True:
-        #         ret, frame = cap.read()
-        #         if not ret:
-        #             break
-        #         frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-        #     cap.release()
-        # else:
-        #     frames = glob.glob(os.path.join(video_path, "*.png"))
-        #     try:
-        #         frames.sort(key=lambda p: int(os.path.splitext(os.path.basename(p))[0]))
-        #     except ValueError:
-        #         print(f'frame names are not in "<frame_idx>.png" format: {frames[:5]=}, '
-        #             f"falling back to lexicographic sort.")
-        #         frames.sort()
+        if frames is not None:
+            frames = frames
+
+        else:
+            frames = glob.glob(os.path.join(video_path, "*.png"))
+            try:
+                frames.sort(key=lambda p: int(os.path.splitext(os.path.basename(p))[0]))
+            except ValueError:
+                print(f'frame names are not in "<frame_idx>.png" format: {frames[:5]=}, '
+                    f"falling back to lexicographic sort.")
+                frames.sort()
   
-        # image = Image.fromarray(load_frame(frames[0]))
-        # W, H = image.size
-        # print(f"Video dimensions: {W}x{H}")
-        W, H = self.video_args.sam3_height, self.video_args.sam3_height
-        print(f"Video dimensions: {W}x{H}")
+        H, W = load_frame(frames[0]).shape[:2]
+        print(f"Sam3.1 Video dimensions: {W}x{H} Make sure these match your expected input.")
 
         response = predictor.handle_request(
             request=dict(
@@ -1766,7 +1766,7 @@ class sam3_video_inference:
         if add_box and sub_box:
             boxes = np.array([
                 [W  * 0.1, H * 0.1, W  * 0.8, H * 0.8], 
-                [0, H * 0.8, W, H * 0.2],  # bottom 15%
+                [0, H * 0.8, W, H * 0.2],  # bottom 20%
                 ])
             
             labels = np.array([1, 0])
@@ -1863,20 +1863,20 @@ class sam3_video_inference:
                 )
             )
 
-        # if show_plots:
-        #     frame_idx = 0
+        if show_plots:
+            frame_idx = 0
 
-        #     out = response["outputs"]
-        #     outputs_per_frame = prepare_masks_for_visualization({frame_idx: out})
-        #     vis_frame_stride = 10
-        #     plt.close("all")
-        #     for frame_idx in range(0, len(outputs_per_frame), vis_frame_stride):
-        #         visualize_formatted_frame_output(
-        #             frame_idx,
-        #             frames,
-        #             outputs_list=[outputs_per_frame],
-        #             titles=["SAM 3.1 Dense Tracking outputs"],
-        #             figsize=(6, 6))
+            out = response["outputs"]
+            outputs_per_frame = prepare_masks_for_visualization({frame_idx: out})
+            vis_frame_stride = 10
+            plt.close("all")
+            for frame_idx in range(0, len(outputs_per_frame), vis_frame_stride):
+                visualize_formatted_frame_output(
+                    frame_idx,
+                    frames,
+                    outputs_list=[outputs_per_frame],
+                    titles=["SAM 3.1 Dense Tracking outputs"],
+                    figsize=(6, 6))
 
         _ = predictor.handle_request(
 
@@ -1918,32 +1918,25 @@ def sam3_video(frames_dir, video_args) -> None:
     min_valid_pixels = int(sam3_height * 0.8)
     chunk_size = max(1, int(getattr(video_args, "sam3_chunk", 0) or 150))
 
+    size = (sam3_height, sam3_height)
     for i, frame_path in enumerate(image_files):
-        out_path = frame_path.parent / f"{frame_path.stem}_mask.png"
-        output_paths.append(out_path)
+        output_paths.append(frame_path.with_name(f"{frame_path.stem}_mask.png"))
         chunk_dir = seq_dir / f"c{i // chunk_size:05d}"
         chunk_dir.mkdir(exist_ok=True)
-        dest = chunk_dir / f"{i % chunk_size:06d}{frame_path.suffix.lower()}"
 
         with Image.open(frame_path) as raw:
-            needs_resize = raw.size != (sam3_height, sam3_height)
-            if needs_resize:
-                raw.convert("RGB").resize((sam3_height, sam3_height), Image.Resampling.BILINEAR).save(
-                    dest.with_suffix(".png"), compress_level=1)
+            frames = raw.convert("RGB")
+            if frames.size != size:
+                frames = frames.resize(size, Image.Resampling.BILINEAR)
+            frames.save(chunk_dir / f"{i % chunk_size:06d}.png", compress_level=1)
 
-        if not needs_resize:
-            try:
-                os.link(frame_path, dest)
-            except OSError:
-                shutil.copyfile(frame_path, dest)
-
-        frame_shapes.append((sam3_height, sam3_height))
+        frame_shapes.append(size)
 
     tracker = sam3_video_inference(video_path=str(seq_dir), video_args=video_args)
 
     for i, out_path in enumerate(output_paths):
         if i % chunk_size == 0:
-            # One SAM3 session per chunk so GPU state is freed between chunks.
+      
             gc.collect()
             torch.cuda.empty_cache()
             tracker.video_path = str(seq_dir / f"c{i // chunk_size:05d}")
@@ -2296,7 +2289,7 @@ def gen_erosion(alpha: torch.Tensor, min_kernel_size: int, max_kernel_size: int)
     return (eroded[0, 0, :alpha.shape[-2], :alpha.shape[-1]] == kernel.sum()).to(alpha.dtype) * 255
 
 def _matanyone_crop_box(h, w, fracs, static, mult=16):
-    """Bounding box (r0, r1, c0, c1) of the non-ignored area, grown to multiples of `mult`; None if no saving."""
+
     ignore = np.zeros((h, w), dtype=bool)
     sam3_video_inference._blank_region(ignore, fracs, True, static)
     keep = ~ignore
@@ -2363,14 +2356,16 @@ def _matanyone_process_segment(matanyone_model, device, inference_core, input_pa
     static_mask = getattr(video_args, "static_mask", None)
     full_hw = tuple(frames.shape[-2:])
     crop = None
-    # if getattr(video_args, "blank_matanyone", False) and (static_mask is not None or any(ignore_fracs.values())):
-    #     # keep the geometry; MatAnyone just sees flat gray where we ignore
-    #     ign = np.zeros(full_hw, dtype=bool)
-    #     sam3_video_inference._blank_region(ign, ignore_fracs, True, static_mask)
-    #     frames[..., torch.from_numpy(ign)] = 128
-    #     # print(f"--blank-matanyone: {ign.mean() * 100:.1f}% of each frame set to gray (same size, no compute saved)")
-    # if getattr(video_args, "crop_matanyone", False) and mask.shape == full_hw:
-    crop = _matanyone_crop_box(full_hw[0], full_hw[1], ignore_fracs, static_mask)
+    if getattr(video_args, "blank_matanyone", False) and (static_mask is not None or any(ignore_fracs.values())):
+      
+        ign = np.zeros(full_hw, dtype=bool)
+        sam3_video_inference._blank_region(ign, ignore_fracs, True, static_mask)
+        frames[..., torch.from_numpy(ign)] = 128
+        print(f"--blank-matanyone: {ign.mean() * 100:.1f}% of each frame set to gray (same size, no compute saved)")
+    # if getattr(video_args, "crop_matanyone", False) and mask.shape == full_hw: # this seems to be working well so i am going to temporarily enable it full time :)
+    if mask.shape == full_hw:
+        print(f"Forcing sam3 mask shape on matanyone2")
+        crop = _matanyone_crop_box(full_hw[0], full_hw[1], ignore_fracs, static_mask)
     if crop is not None:
         r0, r1, c0, c1 = crop
         frames = frames[..., r0:r1, c0:c1]
