@@ -375,51 +375,24 @@ def concat_video(video_list: list[str], output_path: str, fps: float | None = No
 
     data = info(video_list[0])
 
-    BATCH_SIZE = 50
-    n = len(video_list)
-    enc = encoder_args(data)
-
-    if n > BATCH_SIZE:
-
-        base_path, ext = os.path.splitext(os.path.abspath(output_path))
-        temp_batches = []
-
-        try:
-            for i in range(0, n, BATCH_SIZE):
-                batch_files = video_list[i:i + BATCH_SIZE]
-                batch_out = f"{base_path}_batch_{i//BATCH_SIZE}{ext}"
-                temp_batches.append(batch_out)
-                concat_video(batch_files, batch_out, fps=fps)
-
-            return concat_video(temp_batches, output_path, fps=fps)
-        
-        finally:
-            for tb in temp_batches:
-                if os.path.exists(tb):
-                    os.remove(tb)
-
-    abs_vid = [os.path.abspath(v) for v in video_list]
-    abs_output = os.path.abspath(output_path)
-    common_dir = os.path.commonpath(abs_vid)
-
     # BATCH_SIZE = 50
     # n = len(video_list)
-
-    # enc = ['-c:v', 'ffv1', '-level', '3', '-slices', '4', '-pix_fmt', 'gray'] if lossless else encoder_args(data)
+    # enc = encoder_args(data)
 
     # if n > BATCH_SIZE:
 
-    #     base_path, _ = os.path.splitext(os.path.abspath(output_path))
+    #     base_path, ext = os.path.splitext(os.path.abspath(output_path))
     #     temp_batches = []
 
     #     try:
     #         for i in range(0, n, BATCH_SIZE):
     #             batch_files = video_list[i:i + BATCH_SIZE]
-    #             batch_out = f"{base_path}_batch_{i//BATCH_SIZE}.mkv"
+    #             batch_out = f"{base_path}_batch_{i//BATCH_SIZE}{ext}"
     #             temp_batches.append(batch_out)
-    #             concat_video(batch_files, batch_out, fps=fps, lossless=True)
+    #             concat_video(batch_files, batch_out, fps=fps)
 
-    #         return concat_video(temp_batches, output_path, fps=fps, lossless=lossless)
+    #         return concat_video(temp_batches, output_path, fps=fps)
+        
     #     finally:
     #         for tb in temp_batches:
     #             if os.path.exists(tb):
@@ -428,6 +401,33 @@ def concat_video(video_list: list[str], output_path: str, fps: float | None = No
     # abs_vid = [os.path.abspath(v) for v in video_list]
     # abs_output = os.path.abspath(output_path)
     # common_dir = os.path.commonpath(abs_vid)
+
+    BATCH_SIZE = 50
+    n = len(video_list)
+
+    enc = ['-c:v', 'ffv1', '-level', '3', '-slices', '4', '-pix_fmt', 'gray'] if lossless else encoder_args(data)
+
+    if n > BATCH_SIZE:
+
+        base_path, _ = os.path.splitext(os.path.abspath(output_path))
+        temp_batches = []
+
+        try:
+            for i in range(0, n, BATCH_SIZE):
+                batch_files = video_list[i:i + BATCH_SIZE]
+                batch_out = f"{base_path}_batch_{i//BATCH_SIZE}.mkv"
+                temp_batches.append(batch_out)
+                concat_video(batch_files, batch_out, fps=fps, lossless=True)
+
+            return concat_video(temp_batches, output_path, fps=fps, lossless=lossless)
+        finally:
+            for tb in temp_batches:
+                if os.path.exists(tb):
+                    os.remove(tb)
+
+    abs_vid = [os.path.abspath(v) for v in video_list]
+    abs_output = os.path.abspath(output_path)
+    common_dir = os.path.commonpath(abs_vid)
 
     if not os.path.isdir(common_dir):
         common_dir = os.path.dirname(common_dir)
@@ -705,6 +705,8 @@ def mask_overlay(source_video: str, mask_video: str, output_path: str, backgroun
         data = info(source_video)
     enc = encoder_args(data)
 
+    duration = data["duration"] if video_args.debug is None else video_args.debug
+
     os.makedirs(os.path.dirname(os.path.abspath(resolved_path)) or '.', exist_ok=True)
 
     orig_filter = f"setpts=PTS-STARTPTS,fps={data['fps']},format=yuva420p"
@@ -723,10 +725,10 @@ def mask_overlay(source_video: str, mask_video: str, output_path: str, backgroun
         'ffmpeg', '-y', '-hwaccel', 'auto',
         '-i', source_video,
         '-i', mask_video,
-        '-f', 'lavfi', '-i', f'color=c={background_color}:s={data["width"]}x{data["height"]}:d={data["duration"]}:r={data["fps"]}',
+        '-f', 'lavfi', '-i', f'color=c={background_color}:s={data["width"]}x{data["height"]}:d={duration}:r={data["fps"]}',
         '-filter_complex', filter_complex,
         '-map', '[out]',
-        '-t', str(data["duration"]),
+        '-t', str(duration),
         *enc,
         resolved_path,
     ]
@@ -851,6 +853,7 @@ def pack_video(
     gamma: float | None = None,
     ref_size: int = 1024,
     tmix: int = 1,
+    video_args = None,
 
 ) -> str:
 
@@ -961,7 +964,7 @@ def pack_video(
     ]
 
     filter_complex = ";".join(filter_parts)
-
+    duration = data["duration"] if video_args.debug is None else video_args.debug
     cmd: list[str] = [
 
         'ffmpeg', '-y', '-hwaccel', 'auto',
@@ -973,7 +976,7 @@ def pack_video(
         "-i", circle_mask,
         "-filter_complex", filter_complex,
         "-map", "[out]",
-        "-t", str(data["duration"]),
+        "-t", str(duration),
         *enc,
         output_path,
     ]
@@ -1012,7 +1015,7 @@ def packer(input_path, video_args=None) -> int:
         if video_args.fisheye180:
             video_path = fisheye180(str(video_path), flag=False)
             mask_path = fisheye180(str(mask_path), flag=True)
-        packed_path = pack_video(str(video_path), str(mask_path), **_alpha_pack_params(video_args))
+        packed_path = pack_video(str(video_path), str(mask_path), video_args=video_args, **_alpha_pack_params(video_args))
         processed.append((str(video_path), str(mask_path), packed_path))
         print()
 
@@ -1719,7 +1722,6 @@ class sam3_video_inference:
                 frames.sort()
   
         H, W = load_frame(frames[0]).shape[:2]
-        print(f"Sam3.1 Video dimensions: {W}x{H} Make sure these match your expected input.")
 
         response = predictor.handle_request(
             request=dict(
@@ -1884,8 +1886,19 @@ class sam3_video_inference:
                 type="close_session",
                 session_id=session_id,
                 run_gc_collect=True,
+                
             )
         )
+
+        if self.video_args.debug is not None:
+            mem = predictor._gpu_mem_snapshot()
+            print(f"GPU memory snapshot: {mem}")
+            print(f"First frame shape: {load_frame(frames[0]).shape}")
+            print(f"Sam3.1 Video dimensions: {W}x{H} Make sure these match your expected input.")
+            
+            print(f"Current frame index: {frame_idx}")
+            print(f"Promt: {prompt_text if prompt_text is not None else 'N/A'}")
+            # print(f"Outputs: {outputs if 'outputs' in locals() else 'N/A'}") this will print out all the tensors and can be very large
 
         if shutdown:
             predictor.shutdown()
@@ -1916,7 +1929,7 @@ def sam3_video(frames_dir, video_args) -> None:
     soft_masks = []
     valid_flags = []
     min_valid_pixels = int(sam3_height * 0.8)
-    chunk_size = max(1, int(getattr(video_args, "sam3_chunk", 0) or 150))
+    chunk_size = max(1, int(getattr(video_args, "sam3_chunk", 0) or 150)) if video_args.debug is None else video_args.debug
 
     size = (sam3_height, sam3_height)
     for i, frame_path in enumerate(image_files):
@@ -2342,12 +2355,15 @@ def _matanyone_process_segment(matanyone_model, device, inference_core, input_pa
         mask = gen_erosion(mask, r_erode, r_erode)
 
     if mask.shape != (max_size, max_size):
-        # print(f"Mask shape before interpolation: {mask.shape}")
+        if video_args.debug is not None:
+            print(f"Mask shape before interpolation: {mask.shape}")
+ 
         if max_size > 0:
             mask = F.interpolate(
                 mask.unsqueeze(0).unsqueeze(0), size=(max_size, max_size), mode="nearest-exact"
             )[0, 0]
-        # print(f"Mask shape after interpolation: {mask.shape}")
+        if video_args.debug is not None:
+            print(f"Mask shape after interpolation: {mask.shape}")
 
     objects = [1]
     phas = []
@@ -2357,20 +2373,19 @@ def _matanyone_process_segment(matanyone_model, device, inference_core, input_pa
     full_hw = tuple(frames.shape[-2:])
     crop = None
     if getattr(video_args, "blank_matanyone", False) and (static_mask is not None or any(ignore_fracs.values())):
-      
         ign = np.zeros(full_hw, dtype=bool)
         sam3_video_inference._blank_region(ign, ignore_fracs, True, static_mask)
         frames[..., torch.from_numpy(ign)] = 128
         print(f"--blank-matanyone: {ign.mean() * 100:.1f}% of each frame set to gray (same size, no compute saved)")
     # if getattr(video_args, "crop_matanyone", False) and mask.shape == full_hw: # this seems to be working well so i am going to temporarily enable it full time :)
     if mask.shape == full_hw:
-        print(f"Forcing sam3 mask shape on matanyone2")
         crop = _matanyone_crop_box(full_hw[0], full_hw[1], ignore_fracs, static_mask)
     if crop is not None:
         r0, r1, c0, c1 = crop
         frames = frames[..., r0:r1, c0:c1]
         mask = mask[r0:r1, c0:c1]
-        # print(f"--crop-matanyone: matting {r1 - r0}x{c1 - c0} of {full_hw[0]}x{full_hw[1]} ({(r1 - r0) * (c1 - c0) / (full_hw[0] * full_hw[1]) * 100:.0f}% of area)")
+        if video_args.debug is not None:
+            print(f"--crop-matanyone: matting {r1 - r0}x{c1 - c0} of {full_hw[0]}x{full_hw[1]} ({(r1 - r0) * (c1 - c0) / (full_hw[0] * full_hw[1]) * 100:.0f}% of area)")
 
     with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
         for ti in tqdm.tqdm(range(length)):
@@ -2406,27 +2421,6 @@ def _matanyone_process_segment(matanyone_model, device, inference_core, input_pa
     if first_frame.ndim == 3:
         first_frame = first_frame.squeeze(0)
     height, width = first_frame.shape
-
-    # cmd = [
-    #     'ffmpeg', '-y', '-f', 'rawvideo', '-vcodec', 'rawvideo', '-s', f'{width}x{height}', "-pix_fmt", "gray", '-r', str(fps),
-    #     '-i', '-']
-
-    # if input_path:
-    #     cmd.extend(['-i', input_path, '-map', '0:v', '-map', '1:a?'])
-
-    # cmd.extend([
-    #     '-c:v', 'hevc_nvenc', '-profile:v', 'main', '-pix_fmt', 'yuv420p', '-tag:v', 'hvc1', '-g', '20', '-b:v', '50M', '-c:a', 'aac', '-b:a', '256k', '-colorspace', 'bt709', '-color_primaries', 'bt709', '-fps_mode', 'cfr', '-r', str(fps), output_file])
-
-    # process = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
-
-    # try:
-    #     for pha in phas:
-    #         process.stdin.write(pha.numpy().tobytes())
-    # finally:
-    #     process.stdin.close()
-    #     process.wait()
-
-    # return output_file
 
     cmd = [
         'ffmpeg', '-y', '-v', 'error', '-f', 'rawvideo', '-vcodec', 'rawvideo', '-s', f'{width}x{height}', '-pix_fmt', 'gray', '-r', str(fps),
@@ -2489,7 +2483,7 @@ def matanyone(
         first = False
         return pha
 
-    for n, seg in enumerate(mask_segments):
+    for n, seg in enumerate(mask_segments if video_args.debug is None else mask_segments[:video_args.debug]):
         stereo_output = str(segments_dir / f'seg{seg.index:02d}_stereo.mp4')
         left_video = str(segments_dir / f'seg{seg.index:02d}_l.mp4')
         right_video = str(segments_dir / f'seg{seg.index:02d}_r.mp4')
@@ -2600,16 +2594,14 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path) -> str:
         failed = sam3_masks_sbs(video_args, temp_dir / 'sbs_frames', masks_dir, mask_segments)
         if failed:
             sam3_masks(video_args, frames_dir, masks_dir, failed)
-    # else:
-    mask_segments = sam3_masks(
-        video_args,
-        frames_dir, 
-        masks_dir, 
-        mask_segments, 
-    )
+    else:
+        mask_segments = sam3_masks(
+            video_args,
+            frames_dir, 
+            masks_dir, 
+            mask_segments, 
+        )
     timer.mark('sam3_masks')
-    if video_args.debug:
-        stereo_seed_report(mask_segments)
    
     segments = matanyone(
         video_args,
@@ -2658,6 +2650,9 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path) -> str:
             video_args=video_args,
             )
 
+    if video_args.debug:
+        stereo_seed_report(mask_segments)
+
     timer.mark('packer/overlay')
     print('=' * 60)
     print(f'Segments: {len(segments)} ({len(mask_segments)} masks) - Output: {output_mask}')
@@ -2672,11 +2667,13 @@ def process_video(video_path, args: argparse.Namespace, temp_root: Path) -> str:
     return output_mask
 
 def calculate_segments(video_duration: float, max_segment_length: float = 5.0, debug = None, frames: int = 0, fps: float = 0.0, segment_frames: int = 0) -> List[SegmentInfo]:
-
+    max_segment_length = debug if debug is not None else max_segment_length
+    video_duration = debug if debug is not None else video_duration
+    frames = int(round(debug * fps)) if debug is not None else frames
     if segment_frames and frames and fps:
-        # Fixed-size segments of segment_frames frames; times stay in seconds (frame / fps) so extraction is unchanged.
+
         seg_frames = max(1, int(segment_frames))
-        limit = frames# if debug is None else min(frames, max(1, int(round(debug * fps))))
+        limit =  frames
         segments = []
         start = 0
         while start < limit:
@@ -2691,7 +2688,7 @@ def calculate_segments(video_duration: float, max_segment_length: float = 5.0, d
     segments: List[SegmentInfo] = []
     chunk_start = 0.0
     index = 0
-    while chunk_start < (video_duration):# if debug is None else debug):
+    while chunk_start < (video_duration):
         chunk_end = min(chunk_start + max_segment_length, video_duration)
         if 0 < video_duration - chunk_end < 0.1:
             chunk_end = video_duration
@@ -2715,7 +2712,7 @@ def extract_segments(
         dur = seg.end_time - seg.start_time
     print(f'Total: {len(segments)} segments')
 
-    for i, seg in enumerate(mask_segments):# if video_args.debug is None else enumerate(mask_segments[:video_args.debug]):
+    for i, seg in enumerate(mask_segments) if video_args.debug is None else enumerate(mask_segments[:video_args.debug]):
         seg_t0 = time.perf_counter()
         
         if video_args.sbs:
@@ -2782,11 +2779,11 @@ def main() -> int:
     parser.add_argument("--warmup", type=int, default=3)
     parser.add_argument("--add-box", type=bool, default=False)
     parser.add_argument("--sub-box", type=bool, default=False)
-    parser.add_argument("--ignore-bottom", type=float, default=0.15, metavar='FRAC', help='Fraction (0-1) of each frame, measured from the bottom, that SAM3 should ignore (blanked in the model input and cleared from its masks)')
-    parser.add_argument("--ignore-left", type=float, default=0.1, metavar='FRAC', help='Fraction (0-1) of each frame, measured from the left, that SAM3 should ignore')
-    parser.add_argument("--ignore-right", type=float, default=0.1, metavar='FRAC', help='Fraction (0-1) of each frame, measured from the right, that SAM3 should ignore')
-    parser.add_argument("--ignore-static", type=float, default=0.04, metavar='THRESH', help='Ignore border-connected pixels whose value never changes by more than THRESH (0-1 pixel units, e.g. 0.04) across the SAM3 seed frames; 0 disables')
-    parser.add_argument("--static-margin", type=int, default=16, metavar='PX', help='Shrink the static region by PX pixels (at SAM3 resolution) to keep it away from the subject')
+    parser.add_argument("--ignore-bottom", type=float, default=0.2, metavar='FRAC', help='Fraction (0-1) of each frame, measured from the bottom, that SAM3 should ignore (blanked in the model input and cleared from its masks)')
+    parser.add_argument("--ignore-left", type=float, default=0.15, metavar='FRAC', help='Fraction (0-1) of each frame, measured from the left, that SAM3 should ignore')
+    parser.add_argument("--ignore-right", type=float, default=0.15, metavar='FRAC', help='Fraction (0-1) of each frame, measured from the right, that SAM3 should ignore')
+    parser.add_argument("--ignore-static", type=float, default=0.0, metavar='THRESH', help='Ignore border-connected pixels whose value never changes by more than THRESH (0-1 pixel units, e.g. 0.04) across the SAM3 seed frames; 0 disables')
+    parser.add_argument("--static-margin", type=int, default=32, metavar='PX', help='Shrink the static region by PX pixels (at SAM3 resolution) to keep it away from the subject')
     parser.add_argument("--blank-matanyone", action='store_true', help='Fill the ignored area of MatAnyone2 input frames with flat gray, keeping the full frame size (no speedup, no geometry change)')
     parser.add_argument("--crop-matanyone", action='store_true', help='Run MatAnyone2 only on the bounding box of the non-ignored area (multiple of 16); alpha is pasted back into a full-size zero frame. Needs --ignore-* or --ignore-static')
     parser.add_argument("--drop-tokens-enc", action='store_true', help='Experimental: also skip fully ignored patches in the SAM3 fusion encoder (can change boxes)')
@@ -2813,7 +2810,7 @@ def main() -> int:
     parser.add_argument('--alpha-tmix', type=int, default=1, help='Odd number of frames to average the matte over before packing (1 = off)')
     parser.add_argument('--show-plots', type=bool, default=False, help='Sam3 mask plots will be displayed if True.')
     parser.add_argument('--fisheye180', type=bool, default=False, help='Convert video or folder to SBS fisheye180. Works with alphapacker')
-    parser.add_argument('--segment-frames', type=int, default=30, metavar='N', help='Split into segments of exactly N frames each (overrides --segment-length; a final remainder shorter than N is kept as its own segment)')
+    parser.add_argument('--segment-frames', type=int, default=None, metavar='N', help='Split into segments of exactly N frames each (overrides --segment-length; a final remainder shorter than N is kept as its own segment)')
     parser.add_argument('--debug', type=int, default=None, help='Debug mode: process only the first N segments')
     args = parser.parse_args()
     args.matanyone_version = str(args.matanyone_version).lower()
