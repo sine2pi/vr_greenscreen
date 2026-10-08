@@ -1,0 +1,1 @@
+https://huggingface.co/sin2piusc/sam31sin/resolve/main/matanyone2.pth
