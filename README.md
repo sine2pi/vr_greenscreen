@@ -5,10 +5,11 @@
 
  Daily Breaking Changes
 
+To turn the videos that are in the videos folder into greenscreen videos:
  use:
      python pipeline.py "videos"
 
-To turn a folder of 180 sbs videos into fisheye alpha packed and create the matte/mask use : 
+To turn the videos that are in the videos folder into 180 sbs fisheye videos with an alpha packed mask ready for passthrough in deovr use: 
      python pipeline.py "Videos" --alpha True --fisheye180 True
 
 ```
